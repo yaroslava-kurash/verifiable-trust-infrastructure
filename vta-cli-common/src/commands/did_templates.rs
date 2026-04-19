@@ -238,6 +238,130 @@ pub async fn cmd_update(
     Ok(())
 }
 
+/// `pnm did-templates export <name> [--context X]` — emit a portable JSON
+/// file of a stored template, stripping server provenance (scope, timestamps,
+/// author DID). The output shape matches what `init` emits, so `export | edit
+/// | create --file -` round-trips without a format conversion step.
+///
+/// Writes to stdout so operators can redirect to a file or pipe through
+/// `jq`/`diff`. Never audits.
+pub async fn cmd_export(
+    client: &VtaClient,
+    name: &str,
+    context: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let record = match context {
+        Some(ctx) => client.get_context_did_template(ctx, name).await?,
+        None => client.get_did_template(name).await?,
+    };
+    let pretty = serde_json::to_string_pretty(&record.template)?;
+    println!("{pretty}");
+    Ok(())
+}
+
+/// `pnm did-templates diff <name> --file <path> [--context X]` — compare a
+/// local template file against what the VTA has stored. Walks the parsed JSON
+/// in parallel and reports every path whose value differs.
+///
+/// Exits non-zero when the two templates differ, so the command plugs into
+/// scripts ("is my local copy in sync?"). No changes → exit 0, silent stdout.
+pub async fn cmd_diff(
+    client: &VtaClient,
+    name: &str,
+    context: Option<&str>,
+    file: PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Load local first — if the file is malformed, fail fast without burning
+    // a round-trip.
+    let local = DidTemplate::load_file(&file)
+        .map_err(|e| format!("local template at {} is invalid: {e}", file.display()))?;
+
+    let remote_record = match context {
+        Some(ctx) => client.get_context_did_template(ctx, name).await?,
+        None => client.get_did_template(name).await?,
+    };
+    let remote = remote_record.template;
+
+    let remote_val = serde_json::to_value(&remote)?;
+    let local_val = serde_json::to_value(&local)?;
+
+    let mut differences = Vec::new();
+    walk_json_diff("", &remote_val, &local_val, &mut differences);
+
+    if differences.is_empty() {
+        println!(
+            "{GREEN}\u{2713}{RESET} Local {CYAN}'{name}'{RESET} matches stored {}.",
+            scope_label(context)
+        );
+        return Ok(());
+    }
+
+    println!(
+        "{YELLOW}Differences{RESET} between stored {CYAN}'{name}'{RESET} ({}) and {}:",
+        scope_label(context),
+        file.display()
+    );
+    println!("  {DIM}(\u{2212} stored, + local){RESET}");
+    for line in &differences {
+        println!("{line}");
+    }
+    Err(format!("{} field(s) differ", differences.len()).into())
+}
+
+/// Recursive JSON walker that reports every leaf path where `remote` and
+/// `local` disagree. Arrays are compared element-wise; length mismatches
+/// are reported as a single line.
+fn walk_json_diff(
+    path: &str,
+    remote: &serde_json::Value,
+    local: &serde_json::Value,
+    out: &mut Vec<String>,
+) {
+    use serde_json::Value;
+    match (remote, local) {
+        (Value::Object(a), Value::Object(b)) => {
+            let mut keys: std::collections::BTreeSet<&String> = a.keys().collect();
+            keys.extend(b.keys());
+            for key in keys {
+                let child_path = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                match (a.get(key), b.get(key)) {
+                    (Some(av), Some(bv)) => walk_json_diff(&child_path, av, bv, out),
+                    (Some(av), None) => {
+                        out.push(format!("  {RED}\u{2212}{RESET} {child_path} = {av}"));
+                    }
+                    (None, Some(bv)) => {
+                        out.push(format!("  {GREEN}+{RESET} {child_path} = {bv}"));
+                    }
+                    (None, None) => unreachable!(),
+                }
+            }
+        }
+        (Value::Array(a), Value::Array(b)) => {
+            if a.len() != b.len() {
+                out.push(format!(
+                    "  {YELLOW}~{RESET} {path}: array length {} \u{2192} {}",
+                    a.len(),
+                    b.len()
+                ));
+                return;
+            }
+            for (i, (av, bv)) in a.iter().zip(b.iter()).enumerate() {
+                walk_json_diff(&format!("{path}[{i}]"), av, bv, out);
+            }
+        }
+        (a, b) if a == b => {}
+        (a, b) => {
+            out.push(format!(
+                "  {RED}\u{2212}{RESET} {path} = {a}\n  {GREEN}+{RESET} {path} = {b}"
+            ));
+        }
+    }
+}
+
 /// `pnm did-templates delete <name> [--context X]` — remove a stored template.
 pub async fn cmd_delete(
     client: &VtaClient,

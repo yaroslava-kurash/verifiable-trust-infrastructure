@@ -264,6 +264,33 @@ enum DidTemplateCommands {
         #[arg(long)]
         context: Option<String>,
     },
+
+    /// Export a stored template to stdout as a portable JSON file.
+    ///
+    /// Strips server provenance so the output can be edited and re-uploaded
+    /// via `create --file`. Pipe into a file or `jq` for scripted workflows.
+    Export {
+        /// Template name.
+        name: String,
+        /// Export from this context's scope instead of global.
+        #[arg(long)]
+        context: Option<String>,
+    },
+
+    /// Compare a local template file against the VTA-stored version.
+    ///
+    /// Shows every JSON path whose value differs, exits non-zero when the
+    /// two diverge (so it plugs into drift-detection scripts).
+    Diff {
+        /// Template name.
+        name: String,
+        /// Path to the local template JSON file.
+        #[arg(long)]
+        file: std::path::PathBuf,
+        /// Look up the stored template in this context's scope.
+        #[arg(long)]
+        context: Option<String>,
+    },
 }
 
 fn parse_key_value(s: &str) -> Result<(String, String), String> {
@@ -1200,6 +1227,14 @@ async fn main() {
             DidTemplateCommands::Delete { name, context } => {
                 did_templates::cmd_delete(&client, &name, context.as_deref()).await
             }
+            DidTemplateCommands::Export { name, context } => {
+                did_templates::cmd_export(&client, &name, context.as_deref()).await
+            }
+            DidTemplateCommands::Diff {
+                name,
+                file,
+                context,
+            } => did_templates::cmd_diff(&client, &name, context.as_deref(), file).await,
         },
         Commands::Vta {
             command: VtaCommands::Restart,

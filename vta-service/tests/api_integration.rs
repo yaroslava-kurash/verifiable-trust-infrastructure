@@ -2298,6 +2298,38 @@ async fn create_did_webvh_template_unknown_name_errors() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+// Export round-trips: `GET /did-templates/{name}` body, with server-only
+// fields stripped, must parse back through the SDK loader. This is the
+// contract `pnm did-templates export | create --file -` depends on.
+#[tokio::test]
+async fn did_templates_export_round_trips_through_sdk_loader() {
+    use vta_sdk::did_templates::DidTemplate;
+
+    let (app, ctx) = TestApp::new().await;
+    let super_token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
+
+    let original = sample_template("round-trip");
+    let _ = app
+        .request(post_auth("/did-templates", &super_token, original))
+        .await;
+
+    let (status, mut body) = app
+        .request(get_auth("/did-templates/round-trip", &super_token))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Strip server metadata (what the CLI `export` command does).
+    let obj = body.as_object_mut().unwrap();
+    obj.remove("scope");
+    obj.remove("created_at");
+    obj.remove("updated_at");
+    obj.remove("created_by");
+
+    let tpl = DidTemplate::from_json(body).expect("export must round-trip");
+    assert_eq!(tpl.name, "round-trip");
+    assert_eq!(tpl.kind, "custom");
+}
+
 #[cfg(feature = "webvh")]
 #[tokio::test]
 async fn create_did_webvh_context_scoped_template_shadows_global() {
