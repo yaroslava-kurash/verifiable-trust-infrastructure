@@ -173,7 +173,7 @@ pub fn extract_admin_credential(
     payload: SealedPayloadV1,
 ) -> Result<CredentialBundle, Box<dyn std::error::Error>> {
     match payload {
-        SealedPayloadV1::AdminCredential(c) => Ok(c),
+        SealedPayloadV1::AdminCredential(c) => Ok(*c),
         SealedPayloadV1::ContextProvision(p) => Ok(p.credential),
         SealedPayloadV1::DidSecrets(_) => Err(
             "cannot install a DidSecrets bundle as an admin credential — use `bootstrap open` to inspect it"
@@ -235,12 +235,13 @@ mod tests {
         let recipient =
             SealedRecipient::from_json_str(&serde_json::to_string(&created.request).unwrap())
                 .unwrap();
-        let payload =
-            SealedPayloadV1::AdminCredential(vta_sdk::credentials::CredentialBundle::new(
+        let payload = SealedPayloadV1::AdminCredential(Box::new(
+            vta_sdk::credentials::CredentialBundle::new(
                 "did:key:z6Mk123",
                 "z1234567890",
                 "did:key:z6MkVTA",
-            ));
+            ),
+        ));
         let sealed = seal_for_recipient(&recipient, &payload).await.unwrap();
 
         // Write armored to file.
@@ -273,18 +274,19 @@ mod tests {
 
     #[test]
     fn extract_rejects_did_secrets() {
-        let payload = SealedPayloadV1::DidSecrets(vta_sdk::did_secrets::DidSecretsBundle {
-            did: "did:key:z6Mk".into(),
-            secrets: vec![],
-        });
+        let payload =
+            SealedPayloadV1::DidSecrets(Box::new(vta_sdk::did_secrets::DidSecretsBundle {
+                did: "did:key:z6Mk".into(),
+                secrets: vec![],
+            }));
         let err = extract_admin_credential(payload).unwrap_err();
         assert!(err.to_string().contains("DidSecrets"));
     }
 
     #[test]
     fn extract_accepts_context_provision() {
-        let payload =
-            SealedPayloadV1::ContextProvision(vta_sdk::context_provision::ContextProvisionBundle {
+        let payload = SealedPayloadV1::ContextProvision(Box::new(
+            vta_sdk::context_provision::ContextProvisionBundle {
                 context_id: "app".into(),
                 context_name: "App".into(),
                 vta_url: None,
@@ -296,7 +298,8 @@ mod tests {
                 ),
                 admin_did: "did:key:z6Mk123".into(),
                 did: None,
-            });
+            },
+        ));
         let cred = extract_admin_credential(payload).unwrap();
         assert_eq!(cred.did, "did:key:z6Mk123");
     }

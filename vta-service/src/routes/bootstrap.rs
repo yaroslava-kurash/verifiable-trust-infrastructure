@@ -227,7 +227,7 @@ async fn mint_mode_b(
     };
 
     let nonce_store = PersistentNonceStore::new(state.sealed_nonces_ks.clone());
-    let payload = SealedPayloadV1::AdminCredential(credential);
+    let payload = SealedPayloadV1::AdminCredential(Box::new(credential));
     let bundle = seal_payload(client_pubkey, bundle_id, assertion, &payload, &nonce_store)
         .await
         .map_err(|e| AppError::Internal(format!("sealed-transfer seal failed: {e}")))?;

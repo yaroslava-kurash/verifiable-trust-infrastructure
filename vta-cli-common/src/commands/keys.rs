@@ -372,7 +372,7 @@ pub async fn cmd_key_bundle(
     // Fetch all secrets for this context as a portable bundle
     let bundle = client.fetch_did_secrets_bundle(context).await?;
 
-    let payload = SealedPayloadV1::DidSecrets(bundle);
+    let payload = SealedPayloadV1::DidSecrets(Box::new(bundle));
     let sealed = crate::sealed_producer::seal_for_recipient(&recipient, &payload).await?;
 
     eprintln!();

@@ -22,12 +22,16 @@ pub struct LabeledKey {
 ///
 /// Every sensitive bundle type in the workspace is a variant here — after the
 /// final phase of the rollout, sealed-transfer is the only way these move.
+///
+/// The two largest variants (`ContextProvision`, `DidSecrets`) are boxed so
+/// the whole enum fits in one pointer on the stack regardless of which
+/// variant is in play. `RawPrivateKey` (smallest) stays inline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SealedPayloadV1 {
-    AdminCredential(CredentialBundle),
-    ContextProvision(ContextProvisionBundle),
-    DidSecrets(DidSecretsBundle),
+    AdminCredential(Box<CredentialBundle>),
+    ContextProvision(Box<ContextProvisionBundle>),
+    DidSecrets(Box<DidSecretsBundle>),
     AdminKeySet(Vec<LabeledKey>),
     /// A single raw private key bound to its algorithm tag. Used by the
     /// `POST /keys/import` flow: the client seals the key material to the

@@ -57,8 +57,11 @@ pub async fn cmd_context_bootstrap(
     }
     client.create_acl(acl_req).await?;
 
-    let sealed =
-        seal_for_recipient(&recipient, &SealedPayloadV1::AdminCredential(admin_bundle)).await?;
+    let sealed = seal_for_recipient(
+        &recipient,
+        &SealedPayloadV1::AdminCredential(Box::new(admin_bundle)),
+    )
+    .await?;
     println!();
     println!("Admin credential created:");
     println!("  DID:  {admin_did}");
@@ -514,7 +517,7 @@ pub async fn cmd_context_provision(
     };
 
     // 6. Seal and emit
-    let payload = SealedPayloadV1::ContextProvision(bundle);
+    let payload = SealedPayloadV1::ContextProvision(Box::new(bundle));
     let sealed = seal_for_recipient(&recipient, &payload).await?;
 
     eprintln!();
@@ -713,7 +716,7 @@ pub async fn cmd_context_reprovision(
     };
 
     // 7. Seal and emit
-    let payload = SealedPayloadV1::ContextProvision(bundle);
+    let payload = SealedPayloadV1::ContextProvision(Box::new(bundle));
     let sealed = seal_for_recipient(&recipient, &payload).await?;
 
     eprintln!();

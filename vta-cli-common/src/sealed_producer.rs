@@ -196,11 +196,11 @@ mod tests {
     use vta_sdk::sealed_transfer::open_bundle;
 
     fn sample_payload() -> SealedPayloadV1 {
-        SealedPayloadV1::AdminCredential(CredentialBundle::new(
+        SealedPayloadV1::AdminCredential(Box::new(CredentialBundle::new(
             "did:key:z6Mk123",
             "z1234567890",
             "did:key:z6MkVTA",
-        ))
+        )))
     }
 
     #[test]

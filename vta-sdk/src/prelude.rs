@@ -23,10 +23,12 @@ pub use crate::did_secrets::{DidSecretsBundle, SecretEntry};
 #[cfg(feature = "client")]
 pub use crate::client::{
     AclEntryResponse, AclListResponse, ConfigResponse, ContextListResponse, ContextResponse,
-    CreateAclRequest, CreateContextRequest, CreateKeyRequest, CreateKeyResponse,
-    GetKeySecretResponse, HealthResponse, ImportKeyRequest, ImportKeyResponse,
-    InvalidateKeyResponse, ListKeysResponse, RenameKeyResponse, SignResponse, UpdateAclRequest,
-    UpdateConfigRequest, UpdateContextDidRequest, VtaClient, WrappingKeyResponse,
+    CreateAclRequest, CreateContextRequest, CreateDidWebvhResponse, CreateKeyRequest,
+    CreateKeyResponse, DeleteContextPreviewResponse, DeleteContextResponse, DidTemplate,
+    DidTemplateError, DidTemplateRecord, DidTemplateScope, GetKeySecretResponse, HealthResponse,
+    ImportKeyRequest, ImportKeyResponse, InvalidateKeyResponse, ListDidsWebvhResponse,
+    ListKeysResponse, ListWebvhServersResponse, RenameKeyResponse, SignResponse, TemplateVars,
+    UpdateAclRequest, UpdateConfigRequest, UpdateContextDidRequest, VtaClient, WrappingKeyResponse,
 };
 
 // DID key utilities

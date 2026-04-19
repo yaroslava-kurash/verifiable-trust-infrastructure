@@ -33,7 +33,11 @@ pub async fn cmd_auth_credential_create(
     }
     client.create_acl(acl_req).await?;
 
-    let sealed = seal_for_recipient(&recipient, &SealedPayloadV1::AdminCredential(bundle)).await?;
+    let sealed = seal_for_recipient(
+        &recipient,
+        &SealedPayloadV1::AdminCredential(Box::new(bundle)),
+    )
+    .await?;
 
     println!("Credentials generated:");
     println!("  DID:  {did}");

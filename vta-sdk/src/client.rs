@@ -44,12 +44,41 @@ enum Transport {
 
 /// HTTP/DIDComm client for the VTA service API.
 ///
+/// **Requires the `client` feature.** Without it the struct and all
+/// methods below are absent — enable in `Cargo.toml`:
+/// ```toml
+/// vta-sdk = { version = "…", features = ["client"] }
+/// ```
+///
 /// Cloning a `VtaClient` is cheap — clones share the underlying HTTP
 /// connection pool and authentication state.
 #[derive(Clone)]
 pub struct VtaClient {
     transport: Transport,
 }
+
+// ── Protocol response aliases ──────────────────────────────────────
+//
+// Response types that live in the `protocols::` layer are re-exported
+// here with `*Response` naming so callers can import everything they
+// need from `vta_sdk::client::*` (or `vta_sdk::prelude::*`) without
+// reaching into the protocol path. The original `*ResultBody` names
+// stay exported from `protocols/` for DIDComm-layer consumers.
+
+pub use crate::protocols::context_management::delete::{
+    DeleteContextPreviewResultBody as DeleteContextPreviewResponse,
+    DeleteContextResultBody as DeleteContextResponse,
+};
+
+pub use crate::protocols::did_management::create::CreateDidWebvhResultBody as CreateDidWebvhResponse;
+pub use crate::protocols::did_management::list::ListDidsWebvhResultBody as ListDidsWebvhResponse;
+pub use crate::protocols::did_management::servers::ListWebvhServersResultBody as ListWebvhServersResponse;
+
+// DID-template response shape (Phase 2+).
+pub use crate::did_templates::{
+    BUILTIN_NAMES as DID_TEMPLATE_BUILTINS, DidTemplate, DidTemplateRecord,
+    Scope as DidTemplateScope, TemplateError as DidTemplateError, TemplateVars,
+};
 
 // ── Request / Response types ────────────────────────────────────────
 
@@ -175,6 +204,14 @@ pub struct WrappingKeyResponse {
 
 // ── Context types ───────────────────────────────────────────────────
 
+/// Request body for [`VtaClient::create_context`].
+///
+/// This is the ergonomic **client-side** shape — use the `.new(id, name)`
+/// constructor plus the `.description(...)` builder for the common case.
+/// The parallel `vta_sdk::protocols::context_management::create::CreateContextBody`
+/// type is the wire shape used by DIDComm consumers; the two serialize
+/// identically and either can be sent to the server, but the client
+/// shape is what the SDK methods take.
 #[derive(Debug, Serialize)]
 pub struct CreateContextRequest {
     pub id: String,

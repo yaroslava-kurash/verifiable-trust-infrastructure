@@ -240,11 +240,11 @@ mod tests {
     use crate::credentials::CredentialBundle;
 
     fn sample_payload() -> SealedPayloadV1 {
-        SealedPayloadV1::AdminCredential(CredentialBundle::new(
+        SealedPayloadV1::AdminCredential(Box::new(CredentialBundle::new(
             "did:key:z6Mk123",
             "z1234567890",
             "did:key:z6MkVTA",
-        ))
+        )))
     }
 
     fn sample_assertion(pubkey_b64: String) -> ProducerAssertion {
