@@ -41,7 +41,7 @@ pub async fn run_setup(
     }
 
     let choices = &[
-        "Connect to an existing VTA  — I have an armored sealed bundle from the admin",
+        "Connect to an existing VTA  — the admin will issue me a credential",
         "Set up a new VTA in a TEE   — generate admin identity for enclave deployment",
     ];
 
@@ -72,35 +72,37 @@ pub async fn run_setup(
 /// 4. Open and install.
 async fn connect_to_existing_vta(config: &mut PnmConfig) -> Result<(), Box<dyn std::error::Error>> {
     let have_bundle_options = &[
-        "Generate a bootstrap request now (I need one from my admin)",
-        "I already have an armored sealed bundle from my admin",
+        "I need to request one — create a request file to send to my admin",
+        "I already have a credential file from my admin",
     ];
     let have_bundle = Select::new()
-        .with_prompt("Bootstrap request")
+        .with_prompt("Admin credential")
         .items(have_bundle_options)
         .default(0)
         .interact()?;
 
     if have_bundle == 0 {
-        generate_and_show_bootstrap_request()?;
+        generate_and_show_connection_request()?;
     }
 
     eprintln!();
     let path: String = Input::new()
-        .with_prompt("Path to the armored sealed bundle (leave empty to exit and resume later)")
+        .with_prompt(
+            "Path to the credential file from your admin (leave empty to exit and resume later)",
+        )
         .allow_empty(true)
         .interact_text()?;
     if path.trim().is_empty() {
         eprintln!();
-        eprintln!("Exiting. When you receive the armored bundle, re-run:");
+        eprintln!("Exiting. When you receive the credential file, re-run:");
         eprintln!(
             "  pnm auth login --credential-bundle <file> --expect-digest <hex>    # to install",
         );
-        eprintln!("or re-run `pnm setup` and choose \"I already have an armored sealed bundle\".");
+        eprintln!("or re-run `pnm setup` and choose \"I already have a credential file\".");
         return Ok(());
     }
     let digest: String = Input::new()
-        .with_prompt("Expected SHA-256 digest (empty = skip verification)")
+        .with_prompt("Expected SHA-256 digest from your admin (empty = skip verification)")
         .allow_empty(true)
         .interact_text()?;
     let (expect_digest, no_verify) = if digest.trim().is_empty() {
@@ -117,22 +119,22 @@ async fn connect_to_existing_vta(config: &mut PnmConfig) -> Result<(), Box<dyn s
     .await
 }
 
-/// Generate a [`BootstrapRequest`] in-wizard, persist its secret, write the
-/// request JSON to a file the user picks, and print the contents + hand-off
-/// instructions. Mirrors `pnm bootstrap request --out` but inline so the
-/// user does not have to exit the wizard.
-fn generate_and_show_bootstrap_request() -> Result<(), Box<dyn std::error::Error>> {
+/// Generate a connection request (a [`BootstrapRequest`] under the hood),
+/// persist its secret, write the JSON to a file the user picks, and print
+/// the contents + hand-off instructions. Mirrors `pnm bootstrap request
+/// --out` but inline so the user does not have to exit the wizard.
+fn generate_and_show_connection_request() -> Result<(), Box<dyn std::error::Error>> {
     let config_dir = crate::config::config_dir()?;
 
     let label: String = Input::new()
-        .with_prompt("Label for this bootstrap request (shown to the admin)")
+        .with_prompt("Label for this request (shown to your admin)")
         .default("pnm-setup".to_string())
         .interact_text()?;
     let label = label.trim().to_string();
     let label_opt = if label.is_empty() { None } else { Some(label) };
 
     let out_path: String = Input::new()
-        .with_prompt("Write BootstrapRequest JSON to file")
+        .with_prompt("Write request to file")
         .default("request.json".to_string())
         .interact_text()?;
     let out_path = out_path.trim().to_string();
@@ -143,23 +145,21 @@ fn generate_and_show_bootstrap_request() -> Result<(), Box<dyn std::error::Error
     std::fs::write(&out_path, json.as_bytes()).map_err(|e| format!("write {out_path}: {e}"))?;
 
     eprintln!();
-    eprintln!("\x1b[1;32mBootstrap request generated.\x1b[0m");
+    eprintln!("\x1b[1;32mConnection request generated.\x1b[0m");
     eprintln!();
-    eprintln!("  Bundle-Id:     {}", created.bundle_id_hex);
     eprintln!("  Client pubkey: {}", created.request.client_pubkey);
     eprintln!("  Nonce (b64):   {}", created.request.nonce);
     if let Some(ref l) = label_opt {
         eprintln!("  Label:         {l}");
     }
-    eprintln!("  Secret stored: {}", created.secret_path.display());
     eprintln!("  Request file:  {out_path}");
     eprintln!();
-    eprintln!("── Request JSON ──");
+    eprintln!("── Request file contents ──");
     eprintln!("{json}");
     eprintln!("──");
     eprintln!();
-    eprintln!("Send the request file to your admin. They will produce an armored sealed");
-    eprintln!("bundle (and print a SHA-256 digest for out-of-band verification).");
+    eprintln!("Send the request file to your VTA admin. They will return a credential");
+    eprintln!("file and a SHA-256 digest for you to verify.");
     eprintln!();
     Ok(())
 }
