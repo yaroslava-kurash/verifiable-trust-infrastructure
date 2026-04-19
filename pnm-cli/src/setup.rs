@@ -41,8 +41,8 @@ pub async fn run_setup(
     }
 
     let choices = &[
-        "Connect to an existing VTA  — the admin will issue me a credential",
-        "Set up a new VTA in a TEE   — generate admin identity for enclave deployment",
+        "Connect to an existing non-TEE VTA",
+        "Set up a new VTA in a TEE  — generate admin identity for enclave deployment",
     ];
 
     let selection = Select::new()
@@ -52,14 +52,126 @@ pub async fn run_setup(
         .interact()?;
 
     match selection {
-        0 => connect_to_existing_vta(config).await,
+        0 => connect_to_non_tee_vta(config).await,
         1 => setup_tee(config).await,
         _ => unreachable!(),
     }
 }
 
-/// Walk the operator through the full bootstrap dance without leaving the
-/// wizard:
+/// "Connect to an existing non-TEE VTA" branch.
+///
+/// Splits into two sub-flows depending on whether the operator can reach the
+/// VTA directly from this machine:
+///
+/// - **Online**: PNM generates a fresh did:key locally, stores the session,
+///   and prints an `vta acl create ...` command the admin runs on the VTA
+///   host. The private key never leaves this machine; no sealed transfer
+///   is involved because there's nothing to transfer.
+/// - **Offline**: The full sealed-transfer credential dance. PNM creates a
+///   request file; admin mints and seals a credential; PNM opens it.
+async fn connect_to_non_tee_vta(config: &mut PnmConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let reachable_options = &[
+        "Online  — I can reach the VTA from this machine",
+        "Offline — I can't reach the VTA directly; my admin will send me a credential",
+    ];
+    let reachable = Select::new()
+        .with_prompt("Is the VTA reachable from here?")
+        .items(reachable_options)
+        .default(0)
+        .interact()?;
+
+    match reachable {
+        0 => connect_online_non_tee(config).await,
+        1 => connect_offline_non_tee(config).await,
+        _ => unreachable!(),
+    }
+}
+
+/// Online connection to a non-TEE VTA.
+///
+/// Generates a local did:key, stores a session pre-populated with the
+/// operator-provided VTA URL + DID, and prints the `vta acl create`
+/// command for the admin to run. The admin's action is authoritative —
+/// until they add the did:key to the ACL, PNM will fail to authenticate.
+async fn connect_online_non_tee(config: &mut PnmConfig) -> Result<(), Box<dyn std::error::Error>> {
+    eprintln!();
+    let url: String = Input::new()
+        .with_prompt("VTA URL (e.g. https://vta.example.com)")
+        .interact_text()?;
+    let url = url.trim().trim_end_matches('/').to_string();
+    if url.is_empty() {
+        return Err("VTA URL is required".into());
+    }
+
+    let vta_did: String = Input::new()
+        .with_prompt("VTA DID (ask your admin, or see `vta config show`)")
+        .interact_text()?;
+    let vta_did = vta_did.trim().to_string();
+    if !vta_did.starts_with("did:") {
+        return Err("VTA DID must start with `did:` (e.g. did:webvh:... or did:key:...)".into());
+    }
+
+    let default_name = vta_did
+        .rsplit(':')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("my-vta")
+        .to_string();
+    let name: String = Input::new()
+        .with_prompt("Name for this VTA")
+        .default(default_name)
+        .interact_text()?;
+
+    let slug = slugify(&name);
+    let keyring_key = vta_keyring_key(&slug);
+
+    // Mint admin did:key locally — private key never leaves this host.
+    let (bundle, did) =
+        vta_cli_common::local_keygen::generate_admin_did_key(&vta_did, Some(url.clone()));
+
+    // Store the session directly; PNM is ready to authenticate as soon as
+    // the admin adds the did to the ACL.
+    auth::store_session(
+        &keyring_key,
+        &did,
+        &bundle.private_key_multibase,
+        &vta_did,
+        &url,
+    )?;
+
+    // Save config
+    config.vtas.insert(
+        slug.clone(),
+        VtaConfig {
+            name: name.clone(),
+            url: Some(url.clone()),
+            vta_did: Some(vta_did.clone()),
+        },
+    );
+    if config.default_vta.is_none() || config.vtas.len() == 1 {
+        config.default_vta = Some(slug.clone());
+    }
+    save_config(config)?;
+
+    eprintln!();
+    eprintln!("\x1b[1;32mLocal admin identity created.\x1b[0m");
+    eprintln!();
+    eprintln!("  VTA:        {slug}  ({url})");
+    eprintln!("  Client DID: {did}");
+    eprintln!();
+    eprintln!("Ask your VTA admin to grant this identity admin access. On the VTA host,");
+    eprintln!("they should run:");
+    eprintln!();
+    eprintln!("  \x1b[1mvta acl create --did {did} --role admin\x1b[0m");
+    eprintln!();
+    eprintln!("Once that completes, verify with:");
+    eprintln!("  pnm health");
+    eprintln!();
+
+    Ok(())
+}
+
+/// Offline connection to a non-TEE VTA — the full sealed-transfer dance.
 ///
 /// 1. Either generate a `BootstrapRequest` inline (writes the secret to
 ///    `~/.config/pnm/bootstrap-secrets/` and the JSON to a file you pick),
@@ -70,7 +182,7 @@ pub async fn run_setup(
 /// 3. Prompt for the armored sealed bundle path + optional digest once the
 ///    admin has returned it.
 /// 4. Open and install.
-async fn connect_to_existing_vta(config: &mut PnmConfig) -> Result<(), Box<dyn std::error::Error>> {
+async fn connect_offline_non_tee(config: &mut PnmConfig) -> Result<(), Box<dyn std::error::Error>> {
     let have_bundle_options = &[
         "I need to request one — create a request file to send to my admin",
         "I already have a credential file from my admin",
