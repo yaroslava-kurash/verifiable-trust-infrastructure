@@ -122,7 +122,8 @@ enum Commands {
         #[command(subcommand)]
         command: WebvhCommands,
     },
-    /// Sealed-transfer bootstrap (seal for Mode C; token lifecycle for Mode A).
+    /// Sealed-transfer bootstrap — seal payloads for offline consumer
+    /// provisioning (mediators, webvh servers, and other complex clients).
     Bootstrap {
         #[command(subcommand)]
         command: BootstrapCommands,
@@ -134,15 +135,14 @@ enum BootstrapCommands {
     /// Seal a payload for a consumer's BootstrapRequest (offline / Mode C).
     ///
     /// Reads the consumer's request (containing their ephemeral X25519 pubkey
-    /// and a nonce), seals the supplied payload to that pubkey using HPKE, and
-    /// writes an armored bundle. Prints the canonical SHA-256 digest the
-    /// operator must communicate to the consumer out-of-band so they can pass
-    /// it to `pnm bootstrap open --expect-digest`.
+    /// and a nonce), seals the supplied payload to that pubkey using HPKE,
+    /// and writes an armored bundle. Prints the canonical SHA-256 digest the
+    /// operator must communicate to the consumer out-of-band so they can
+    /// pass it to `pnm bootstrap open --expect-digest`.
     ///
-    /// Producer authenticity in this mode is `PinnedOnly`: the consumer trusts
-    /// the producer pubkey embedded in the bundle because they pinned it
-    /// out-of-band. Stronger assertions (DID-signed, attestation) ship with
-    /// later phases.
+    /// Producer authenticity in this mode is `PinnedOnly`: the consumer
+    /// trusts the producer pubkey embedded in the bundle because they
+    /// pinned it out-of-band.
     Seal {
         /// Path to the consumer's BootstrapRequest JSON.
         #[arg(long)]
@@ -153,37 +153,6 @@ enum BootstrapCommands {
         /// Output path for the armored bundle.
         #[arg(long)]
         out: PathBuf,
-    },
-
-    /// Issue a one-time bootstrap token (online Mode A).
-    ///
-    /// Stores a `PendingBootstrap` row keyed by SHA-256(token); the token is
-    /// printed exactly once. Consumers present it to `POST /bootstrap/request`
-    /// which atomically deletes the row and mints an `AclEntry` with the
-    /// `--role` and `--contexts` frozen here.
-    IssueToken {
-        /// Target role for the eventual AclEntry (admin, initiator,
-        /// application, reader, or monitor).
-        #[arg(long)]
-        role: String,
-        /// Comma-separated context IDs. Required for non-admin roles.
-        #[arg(long, value_delimiter = ',')]
-        contexts: Vec<String>,
-        /// Validity window. Accepts `<N>[s|m|h|d]` (e.g. `24h`, `7d`).
-        #[arg(long)]
-        expires: String,
-        /// Optional label for operator-side management.
-        #[arg(long)]
-        label: Option<String>,
-    },
-
-    /// List pending bootstrap tokens (metadata only — token hashes are one-way).
-    ListTokens,
-
-    /// Revoke a pending bootstrap token by its hex hash or label.
-    RevokeToken {
-        /// Full hex-encoded token hash (preferred) or exact operator label.
-        id_or_label: String,
     },
 }
 
@@ -554,31 +523,12 @@ async fn main() {
             }
         }
         Some(Commands::Bootstrap { command }) => {
-            // Token lifecycle commands mutate ACL state — block when sealed.
-            if matches!(
-                command,
-                BootstrapCommands::IssueToken { .. } | BootstrapCommands::RevokeToken { .. }
-            ) {
-                check_seal(&cli.config).await;
-            }
             let result = match command {
                 BootstrapCommands::Seal {
                     request,
                     payload,
                     out,
                 } => bootstrap_cli::run_seal(cli.config.clone(), request, payload, out).await,
-                BootstrapCommands::IssueToken {
-                    role,
-                    contexts,
-                    expires,
-                    label,
-                } => {
-                    bootstrap_cli::run_issue_token(cli.config, role, contexts, expires, label).await
-                }
-                BootstrapCommands::ListTokens => bootstrap_cli::run_list_tokens(cli.config).await,
-                BootstrapCommands::RevokeToken { id_or_label } => {
-                    bootstrap_cli::run_revoke_token(cli.config, id_or_label).await
-                }
             };
             if let Err(e) = result {
                 eprintln!("Error: {e}");

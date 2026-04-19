@@ -1,21 +1,16 @@
-//! `POST /bootstrap/request` — unified sealed-transfer bootstrap endpoint.
+//! `POST /bootstrap/request` — TEE first-boot sealed-bootstrap endpoint.
 //!
-//! Two authorization branches, selected by whether a `token` is present:
+//! This endpoint only handles **Mode B**: a fresh TEE VTA that has no admin
+//! yet. The server generates an attestation quote committing to the client
+//! pubkey, nonce, and its own ephemeral producer pubkey, mints an Admin
+//! credential, and closes the first-boot carve-out permanently. The bundle's
+//! assertion is `Attested(quote)` so the consumer can verify end-to-end
+//! without any prior shared secret.
 //!
-//! - **Mode A (token)** — Consumer presents a one-time token issued out-of-band
-//!   by the operator. Server hashes the token, looks up the stored
-//!   [`PendingBootstrap`], atomically consumes it, mints a did:key credential
-//!   bound to the stored role/contexts, and returns an HPKE-sealed armored
-//!   bundle with a `PinnedOnly` producer assertion.
-//! - **Mode B (TEE first-boot)** — No token. Only available on the first
-//!   successful request against a TEE VTA that has no admin configured. The
-//!   server generates an attestation quote committing to the client pubkey,
-//!   nonce, and its own ephemeral producer pubkey, mints an Admin credential,
-//!   and closes the carve-out permanently. The bundle's assertion is
-//!   `Attested(quote)` so the consumer can verify end-to-end without any
-//!   prior shared secret.
-
-use std::sync::Arc;
+//! The former Mode A (token-gated online bootstrap for non-TEE VTAs) was
+//! removed: non-TEE clients now use `pnm setup`'s unified temp-did:key
+//! flow (client mints locally, admin grants via `vta acl create`, PNM
+//! rotates on first authenticated connect).
 
 use axum::Json;
 use axum::extract::State;
@@ -23,8 +18,7 @@ use axum::response::IntoResponse;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::info;
 
 #[cfg(feature = "tee")]
 use sha2::{Digest, Sha256};
@@ -38,21 +32,17 @@ use vta_sdk::sealed_transfer::{
 
 #[cfg(feature = "tee")]
 use crate::acl::store_acl_entry;
-use crate::acl::{
-    AclEntry, PendingBootstrap, Role, consume_pending_bootstrap, get_pending_bootstrap_by_token,
-};
+#[cfg(feature = "tee")]
+use crate::acl::{AclEntry, Role};
 use crate::audit::audit;
-use crate::auth::credentials::generate_did_key;
 use crate::auth::session::now_epoch;
-use crate::config::AppConfig;
 use crate::error::AppError;
 use crate::sealed_nonce_store::PersistentNonceStore;
 use crate::server::AppState;
-use crate::store::KeyspaceHandle;
 
 /// Request body. `#[serde(deny_unknown_fields)]` so a client cannot smuggle
-/// in `requested_role` / `allowed_contexts` — minting parameters are frozen
-/// at token issuance time.
+/// in `requested_role` / `allowed_contexts` — minting parameters are
+/// determined entirely by attestation policy.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BootstrapRequestBody {
@@ -62,11 +52,8 @@ pub struct BootstrapRequestBody {
     pub client_pubkey: String,
     /// Random 16-byte nonce, base64url-no-pad. Becomes the bundle_id.
     pub nonce: String,
-    /// One-time bootstrap token. Required for Mode A.
-    #[serde(default)]
-    pub token: Option<String>,
     /// Optional human-readable label (operator-visible only). Echoed into
-    /// server-side audit logs alongside the token hash.
+    /// server-side audit logs.
     #[serde(default)]
     pub label: Option<String>,
 }
@@ -95,154 +82,55 @@ pub async fn request(
     let bundle_id = decode_nonce(&req.nonce)?;
     let now = now_epoch();
 
-    let bundle = match req.token.as_deref() {
-        Some(token) => {
-            let pending = get_pending_bootstrap_by_token(&state.acl_ks, token)
-                .await?
-                .ok_or_else(|| {
-                    warn!("bootstrap request: token not found");
-                    AppError::Forbidden("invalid or consumed bootstrap token".into())
-                })?;
-            if pending.is_expired(now) {
-                return Err(AppError::Forbidden("bootstrap token expired".into()));
-            }
-            mint_mode_a(
-                &state.acl_ks,
-                &state.sealed_nonces_ks,
-                &state.config,
-                &pending,
-                &client_pubkey,
-                bundle_id,
-                now,
-            )
-            .await?
-        }
-        None => {
-            #[cfg(feature = "tee")]
-            {
-                mint_mode_b(&state, &client_pubkey, bundle_id, now).await?
-            }
-            #[cfg(not(feature = "tee"))]
-            {
-                return Err(AppError::Forbidden(
-                    "bootstrap request requires a token (TEE first-boot is not available \
-                     on this VTA build)"
-                        .into(),
-                ));
-            }
-        }
-    };
+    #[cfg(feature = "tee")]
+    let bundle = mint_mode_b(&state, &client_pubkey, bundle_id, now).await?;
 
-    let digest = bundle_digest(&bundle);
-    let armored = armor::encode(&bundle);
-
-    info!(
-        client_label = ?req.label,
-        "bootstrap swap completed"
-    );
-    audit!(
-        "bootstrap.swap",
-        actor = "bootstrap-endpoint",
-        resource = "bootstrap",
-        outcome = "success"
-    );
-    let _ = crate::audit::record(
-        &state.audit_ks,
-        "bootstrap.swap",
-        "bootstrap-endpoint",
-        None,
-        "success",
-        Some("rest"),
-        None,
-    )
-    .await;
-
-    Ok(Json(BootstrapResponseBody {
-        bundle: armored,
-        digest,
-    }))
-}
-
-async fn mint_mode_a(
-    acl_ks: &KeyspaceHandle,
-    sealed_nonces_ks: &KeyspaceHandle,
-    config: &Arc<RwLock<AppConfig>>,
-    pending: &PendingBootstrap,
-    client_pubkey: &[u8; 32],
-    bundle_id: [u8; 16],
-    now: u64,
-) -> Result<vta_sdk::sealed_transfer::SealedBundle, AppError> {
-    // Defense in depth: `PendingBootstrap` issuance already refuses the
-    // Bootstrap role, but re-check in case a row was written by a buggy
-    // caller or a storage migration.
-    if pending.target_role == Role::Bootstrap {
-        return Err(AppError::Internal(
-            "PendingBootstrap row has Bootstrap role — refusing to mint".into(),
+    #[cfg(not(feature = "tee"))]
+    {
+        let _ = (state, client_pubkey, bundle_id, now);
+        return Err(AppError::Forbidden(
+            "bootstrap request requires TEE first-boot attestation, which is not available on \
+             this VTA build. Non-TEE VTAs use the `pnm setup` temp-did:key + ACL flow instead."
+                .into(),
         ));
     }
 
-    let cfg = config.read().await;
-    let vta_did = cfg
-        .vta_did
-        .as_ref()
-        .ok_or_else(|| AppError::Internal("VTA DID not configured".into()))?
-        .clone();
-    let vta_url = cfg.public_url.clone();
-    drop(cfg);
+    #[cfg(feature = "tee")]
+    {
+        let digest = bundle_digest(&bundle);
+        let armored = armor::encode(&bundle);
 
-    let (did, private_key_multibase) = generate_did_key();
+        info!(client_label = ?req.label, "TEE first-boot bootstrap completed");
+        audit!(
+            "bootstrap.swap",
+            actor = "bootstrap-endpoint",
+            resource = "bootstrap",
+            outcome = "success"
+        );
+        let _ = crate::audit::record(
+            &state.audit_ks,
+            "bootstrap.swap",
+            "bootstrap-endpoint",
+            None,
+            "success",
+            Some("rest"),
+            None,
+        )
+        .await;
 
-    let entry = AclEntry {
-        did: did.clone(),
-        role: pending.target_role.clone(),
-        label: pending.label.clone(),
-        allowed_contexts: pending.target_contexts.clone(),
-        created_at: now,
-        created_by: pending.issued_by.clone(),
-        expires_at: None,
-    };
-    // Single-use consumption: delete the token row, then insert the fresh
-    // ACL entry. See the design doc for why the sequential form is
-    // acceptable here (token pre-image is never persisted, so a replayed
-    // token cannot recreate the deleted row).
-    consume_pending_bootstrap(acl_ks, &pending.hash_hex(), &entry).await?;
-
-    let credential = CredentialBundle {
-        did,
-        private_key_multibase,
-        vta_did,
-        vta_url,
-    };
-
-    // Per-request ephemeral producer pubkey. Mode A's integrity anchor is
-    // the token plus TLS — the `PinnedOnly` proof is retained for wire-format
-    // uniformity; clients that want stronger assurance pin the declared
-    // pubkey out-of-band when the token is issued. DidSigned assertions
-    // ship in a follow-up increment.
-    let (_producer_sk, producer_pk) = generate_keypair();
-    let assertion = ProducerAssertion {
-        producer_pubkey_b64: B64URL.encode(producer_pk),
-        proof: AssertionProof::PinnedOnly,
-    };
-
-    // Persistent bundle_id anti-replay log. Token consumption above already
-    // prevents cross-restart replay at the policy layer; this is
-    // belt-and-suspenders so a malformed caller that reuses a nonce against
-    // a freshly-minted token is still rejected.
-    let nonce_store = PersistentNonceStore::new(sealed_nonces_ks.clone());
-    let payload = SealedPayloadV1::AdminCredential(credential);
-    let bundle = seal_payload(client_pubkey, bundle_id, assertion, &payload, &nonce_store)
-        .await
-        .map_err(|e| AppError::Internal(format!("sealed-transfer seal failed: {e}")))?;
-    Ok(bundle)
+        Ok(Json(BootstrapResponseBody {
+            bundle: armored,
+            digest,
+        }))
+    }
 }
 
 /// Mode B: TEE first-boot sealed bootstrap. No token; the attestation quote
-/// is the sole authorization anchor. Gated on `feature = "tee"`.
+/// is the sole authorization anchor.
 ///
 /// On success, closes the first-boot carve-out permanently by writing the
-/// `BOOTSTRAP_CARVEOUT_CLOSED_KEY` sentinel. Any subsequent no-token request
-/// is rejected.
+/// `BOOTSTRAP_CARVEOUT_CLOSED_KEY` sentinel. Any subsequent request is
+/// rejected.
 #[cfg(feature = "tee")]
 async fn mint_mode_b(
     state: &AppState,

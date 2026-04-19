@@ -211,15 +211,13 @@ pub async fn run_open(
     Ok(())
 }
 
-// ── online flow (Mode A) ──────────────────────────────────────────────
+// ── online flow (Mode B — TEE first-boot attestation) ──────────────────
 
 #[derive(Debug, Serialize)]
 struct BootstrapRequestWire {
     version: u8,
     client_pubkey: String,
     nonce: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     label: Option<String>,
 }
@@ -230,15 +228,18 @@ struct BootstrapResponseWire {
     digest: String,
 }
 
-/// `pnm bootstrap connect --vta-url <URL> --token <TOKEN> [--expect-digest <HEX>]`
+/// `pnm bootstrap connect --vta-url <URL> [--expect-digest <HEX>]`
 ///
-/// One-command online bootstrap against a running VTA. Generates an ephemeral
-/// keypair, POSTs to `/bootstrap/request` with the supplied token, opens the
-/// returned sealed bundle, installs the minted credential via `pnm auth
-/// login`, and registers the VTA under a slug in `pnm` config.
+/// Online TEE first-boot bootstrap. Generates an ephemeral keypair, POSTs
+/// to `/bootstrap/request`, verifies the attestation quote, installs the
+/// minted admin credential, and registers the VTA under a slug in `pnm`
+/// config. Only the first successful call against a fresh TEE VTA
+/// succeeds — the carve-out closes on success.
+///
+/// For non-TEE VTAs use `pnm setup` (temp did:key + admin grant via
+/// `vta acl create` + auto-rotate on first authenticated connect).
 pub async fn run_connect(
     vta_url: String,
-    token: Option<String>,
     expect_digest: Option<String>,
     vta_slug: Option<String>,
     pnm_config: &mut crate::config::PnmConfig,
@@ -246,13 +247,11 @@ pub async fn run_connect(
     let (secret, public) = generate_keypair();
     let nonce: [u8; 16] = rand::random();
     let bundle_id_hex = hex_lower(&nonce);
-    let is_mode_b = token.is_none();
 
     let body = BootstrapRequestWire {
         version: 1,
         client_pubkey: B64URL.encode(public),
         nonce: B64URL.encode(nonce),
-        token,
         label: None,
     };
 
@@ -266,10 +265,9 @@ pub async fn run_connect(
     }
     let wire: BootstrapResponseWire = resp.json().await?;
 
-    // Optional client-side digest verification. The token + TLS give the
+    // Optional client-side digest verification. Attestation + TLS give the
     // primary integrity anchor; this is a belt-and-suspenders check the
-    // operator can opt into by communicating the digest out-of-band at
-    // token-issue time.
+    // operator can opt into by communicating the digest out-of-band.
     if let Some(expected) = &expect_digest {
         if expected.to_ascii_lowercase() != wire.digest.to_ascii_lowercase() {
             return Err(format!(
@@ -295,16 +293,14 @@ pub async fn run_connect(
 
     let opened = open_bundle(&secret, bundle, expect_digest.as_deref())?;
 
-    if is_mode_b {
-        let attest = verify_nitro_assertion(&opened.producer, &public, &nonce)?;
-        println!("Mode B attestation verified.");
-        println!("  Enclave module: {}", attest.module_id);
-        if !attest.pcr0_hex.is_empty() {
-            println!("  PCR0:           {}", attest.pcr0_hex);
-        }
-        if !attest.pcr8_hex.is_empty() {
-            println!("  PCR8:           {}", attest.pcr8_hex);
-        }
+    let attest = verify_nitro_assertion(&opened.producer, &public, &nonce)?;
+    println!("TEE attestation verified.");
+    println!("  Enclave module: {}", attest.module_id);
+    if !attest.pcr0_hex.is_empty() {
+        println!("  PCR0:           {}", attest.pcr0_hex);
+    }
+    if !attest.pcr8_hex.is_empty() {
+        println!("  PCR8:           {}", attest.pcr8_hex);
     }
 
     let credential = match opened.payload {

@@ -140,23 +140,20 @@ enum BootstrapCommands {
         no_verify_digest: bool,
     },
 
-    /// One-command online bootstrap against a running VTA.
+    /// One-command TEE first-boot bootstrap against a running VTA.
     ///
-    /// Generates an ephemeral keypair, POSTs to `/bootstrap/request`, opens
-    /// the returned sealed bundle, and installs the minted credential via
-    /// `pnm auth login`.
+    /// Generates an ephemeral keypair, POSTs to `/bootstrap/request`,
+    /// verifies the attestation quote, and installs the minted admin
+    /// credential. Only works against a fresh TEE VTA that has not yet
+    /// bootstrapped an admin — the carve-out closes permanently on first
+    /// success.
     ///
-    /// Mode depends on `--token`:
-    /// - With token: Mode A — consumes a one-time token issued by the operator.
-    /// - Without: Mode B — TEE first-boot attestation (only for brand-new
-    ///   unadministered TEE VTAs; the carve-out closes on first success).
+    /// For non-TEE VTAs use `pnm setup` (temp did:key + ACL grant +
+    /// auto-rotate on first connect).
     Connect {
         /// Base URL of the target VTA.
         #[arg(long)]
         vta_url: String,
-        /// One-time bootstrap token (Mode A). Omit for Mode B (TEE first-boot).
-        #[arg(long)]
-        token: Option<String>,
         /// Optional out-of-band digest anchor. Compared against the server's
         /// reported digest and the locally computed one.
         #[arg(long)]
@@ -833,13 +830,11 @@ async fn main() {
                 }
                 BootstrapCommands::Connect {
                     vta_url,
-                    token,
                     expect_digest,
                     slug,
                 } => {
                     bootstrap::run_connect(
                         vta_url.clone(),
-                        token.clone(),
                         expect_digest.clone(),
                         slug.clone(),
                         &mut pnm_config,
