@@ -42,6 +42,56 @@ use zeroize::Zeroize;
 
 use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 
+/// Resolve a DID template by name for use in a create-DID flow.
+///
+/// Resolution order:
+/// 1. Context scope (if `template_context` is provided)
+/// 2. Global scope
+/// 3. Built-in templates shipped with the SDK
+///
+/// Context-scoped templates therefore naturally shadow global ones with the
+/// same name; global templates shadow built-ins.
+async fn resolve_template_for_render(
+    did_templates_ks: &KeyspaceHandle,
+    name: &str,
+    template_context: Option<&str>,
+) -> Result<vta_sdk::did_templates::DidTemplateRecord, AppError> {
+    use vta_sdk::did_templates::{DidTemplateRecord, Scope, load_embedded};
+
+    if let Some(ctx) = template_context
+        && let Some(record) =
+            crate::did_templates::get_context_template(did_templates_ks, ctx, name).await?
+    {
+        return Ok(record);
+    }
+
+    if let Some(record) = crate::did_templates::get_global_template(did_templates_ks, name).await? {
+        return Ok(record);
+    }
+
+    if let Ok(tpl) = load_embedded(name) {
+        // Built-ins have no stored provenance — synthesize a record so
+        // downstream code treats it uniformly. `created_at`/`updated_at` are
+        // 0 because there's no meaningful moment of authorship beyond the
+        // crate's compile time; `created_by` is the well-known sentinel
+        // `"builtin"`.
+        return Ok(DidTemplateRecord {
+            template: tpl,
+            scope: Scope::Builtin,
+            created_at: 0,
+            updated_at: 0,
+            created_by: "builtin".into(),
+        });
+    }
+
+    Err(AppError::NotFound(format!(
+        "DID template '{name}' not found (searched{} global, builtin)",
+        template_context
+            .map(|c| format!(" context '{c}',"))
+            .unwrap_or_default()
+    )))
+}
+
 pub struct CreateDidWebvhParams {
     pub context_id: String,
     pub server_id: Option<String>,
@@ -52,9 +102,11 @@ pub struct CreateDidWebvhParams {
     pub add_mediator_service: bool,
     pub additional_services: Option<Vec<serde_json::Value>>,
     pub pre_rotation_count: u32,
-    /// Client-provided DID Document template. Mutually exclusive with `did_log`.
+    /// Client-provided DID Document template. Mutually exclusive with `did_log`
+    /// and `template`.
     pub did_document: Option<serde_json::Value>,
-    /// Complete, pre-signed did.jsonl log entry. Mutually exclusive with `did_document`.
+    /// Complete, pre-signed did.jsonl log entry. Mutually exclusive with
+    /// `did_document` and `template`.
     pub did_log: Option<String>,
     /// Whether to set this DID as the primary DID for the context.
     pub set_primary: bool,
@@ -62,6 +114,15 @@ pub struct CreateDidWebvhParams {
     pub signing_key_id: Option<String>,
     /// Use an existing key as the key-agreement verification method.
     pub ka_key_id: Option<String>,
+    /// Stored DID template to render into `did_document`. Resolution order:
+    /// `template_context` scope (if set) → global → no fallback.
+    pub template: Option<String>,
+    /// Scope to look `template` up in. `None` = global only.
+    pub template_context: Option<String>,
+    /// Caller-supplied template variables. Server injects `DID`,
+    /// `SIGNING_KEY_MB`, `KA_KEY_MB`, `VTA_DID`, `VTA_URL`, `CONTEXT_ID`,
+    /// `CONTEXT_DID`, `NOW` automatically.
+    pub template_vars: std::collections::HashMap<String, serde_json::Value>,
 }
 
 impl From<CreateDidWebvhBody> for CreateDidWebvhParams {
@@ -81,6 +142,9 @@ impl From<CreateDidWebvhBody> for CreateDidWebvhParams {
             set_primary: body.set_primary.unwrap_or(true),
             signing_key_id: body.signing_key_id,
             ka_key_id: body.ka_key_id,
+            template: body.template,
+            template_context: body.template_context,
+            template_vars: body.template_vars.unwrap_or_default(),
         }
     }
 }
@@ -192,21 +256,32 @@ fn document_has_didcomm_service(doc: &serde_json::Value) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub async fn create_did_webvh(
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
     webvh_ks: &KeyspaceHandle,
+    did_templates_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
     config: &AppConfig,
     auth: &AuthClaims,
-    params: CreateDidWebvhParams,
+    mut params: CreateDidWebvhParams,
     did_resolver: &DIDCacheClient,
     didcomm_bridge: &Arc<DIDCommBridge>,
     channel: &str,
 ) -> Result<CreateDidWebvhResultBody, AppError> {
     auth.require_admin()?;
     auth.require_context(&params.context_id)?;
+
+    // Template is mutually exclusive with raw did_document / did_log — it
+    // renders into did_document, so specifying both would ambiguously
+    // override.
+    if params.template.is_some() && (params.did_document.is_some() || params.did_log.is_some()) {
+        return Err(AppError::Validation(
+            "template is mutually exclusive with did_document and did_log".into(),
+        ));
+    }
 
     // Validate did_document and did_log are mutually exclusive
     if params.did_document.is_some() && params.did_log.is_some() {
@@ -451,8 +526,53 @@ pub async fn create_did_webvh(
         (uri_response.did_url, Some(uri_response.mnemonic))
     };
 
-    // Build DID document: use client-provided template or build internally
     let has_ka = params.ka_key_id.is_some() || !user_specified_keys;
+
+    // ── Template resolution + render ────────────────────────────────
+    //
+    // If the caller named a stored (or built-in) DID template, resolve it,
+    // inject ambient variables from the keys minted above plus config +
+    // context state, and render the result into `params.did_document`. The
+    // rest of the flow then treats it as a caller-supplied document.
+    //
+    // `{DID}` is passed through as a sentinel — `didwebvh-rs` substitutes
+    // it with the computed DID after SCID generation.
+    if let Some(ref template_name) = params.template {
+        let record = resolve_template_for_render(
+            did_templates_ks,
+            template_name,
+            params.template_context.as_deref(),
+        )
+        .await?;
+
+        let mut vars = vta_sdk::did_templates::TemplateVars::new();
+        vars.insert_string("DID", "{DID}");
+        vars.insert_string("SIGNING_KEY_MB", derived.signing_pub.clone());
+        if has_ka {
+            vars.insert_string("KA_KEY_MB", derived.ka_pub.clone());
+        }
+        if let Some(ref vta_did) = config.vta_did {
+            vars.insert_string("VTA_DID", vta_did.clone());
+        }
+        if let Some(ref vta_url) = config.public_url {
+            vars.insert_string("VTA_URL", vta_url.clone());
+        }
+        vars.insert_string("CONTEXT_ID", params.context_id.clone());
+        if let Some(ref did) = ctx.did {
+            vars.insert_string("CONTEXT_DID", did.clone());
+        }
+        vars.insert_string("NOW", Utc::now().to_rfc3339());
+        for (k, v) in &params.template_vars {
+            vars.insert(k.clone(), v.clone());
+        }
+
+        let rendered = record.template.render(&vars).map_err(|e| {
+            AppError::Validation(format!("template '{template_name}' render failed: {e}"))
+        })?;
+        params.did_document = Some(rendered);
+    }
+
+    // Build DID document: use client-provided template or build internally
     let did_document = match params.did_document {
         Some(doc) => doc,
         None if user_specified_keys => {

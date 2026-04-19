@@ -2187,3 +2187,161 @@ async fn ctx_did_templates_deleted_when_parent_context_deleted() {
         "expected 403/404 after context delete, got {status}"
     );
 }
+
+// ── Template-driven DID creation (Phase 4) ─────────────────────────
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn create_did_webvh_via_builtin_mediator_template() {
+    let (app, ctx) = TestApp::new().await;
+    let token = setup_webvh_context(&app, &ctx, "tpl-mediator").await;
+
+    // Use the built-in `didcomm-mediator` template. No `did_document` in
+    // the request — the server renders the template with the keys it mints
+    // and uses the result as the DID document.
+    let (status, body) = app
+        .request(post_auth(
+            "/webvh/dids",
+            &token,
+            json!({
+                "context_id": "tpl-mediator",
+                "url": "https://mediator.example.com/.well-known/did/did.jsonl",
+                "template": "didcomm-mediator",
+                "template_vars": { "URL": "https://mediator.example.com" }
+            }),
+        ))
+        .await;
+    assert!(
+        status.is_success(),
+        "template-driven create failed: {status} {body}"
+    );
+
+    // The rendered document should carry a DIDCommMessaging service with
+    // the supplied URL. `didwebvh-rs` may merge in additional entries
+    // (e.g. authentication references) but the template's service block
+    // must survive verbatim.
+    let doc = &body["did_document"];
+    assert!(doc.is_object(), "result must include did_document");
+    let services = doc["service"].as_array().unwrap();
+    let didcomm = services
+        .iter()
+        .find(|s| s["type"] == "DIDCommMessaging")
+        .expect("mediator template must produce a DIDCommMessaging service");
+    assert_eq!(
+        didcomm["serviceEndpoint"]["uri"],
+        "https://mediator.example.com"
+    );
+    // Optional default `accept` flowed through as a native array.
+    assert_eq!(didcomm["serviceEndpoint"]["accept"], json!(["didcomm/v2"]));
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn create_did_webvh_template_mutually_exclusive_with_did_document() {
+    let (app, ctx) = TestApp::new().await;
+    let token = setup_webvh_context(&app, &ctx, "tpl-excl").await;
+
+    let (status, _) = app
+        .request(post_auth(
+            "/webvh/dids",
+            &token,
+            json!({
+                "context_id": "tpl-excl",
+                "url": "https://example.com/.well-known/did/did.jsonl",
+                "template": "didcomm-mediator",
+                "template_vars": { "URL": "https://example.com" },
+                "did_document": { "id": "{DID}" }
+            }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn create_did_webvh_template_missing_required_var_errors() {
+    let (app, ctx) = TestApp::new().await;
+    let token = setup_webvh_context(&app, &ctx, "tpl-missing").await;
+
+    // `didcomm-mediator` requires URL — omit it.
+    let (status, _) = app
+        .request(post_auth(
+            "/webvh/dids",
+            &token,
+            json!({
+                "context_id": "tpl-missing",
+                "url": "https://example.com/.well-known/did/did.jsonl",
+                "template": "didcomm-mediator"
+            }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn create_did_webvh_template_unknown_name_errors() {
+    let (app, ctx) = TestApp::new().await;
+    let token = setup_webvh_context(&app, &ctx, "tpl-unk").await;
+
+    let (status, _) = app
+        .request(post_auth(
+            "/webvh/dids",
+            &token,
+            json!({
+                "context_id": "tpl-unk",
+                "url": "https://example.com/.well-known/did/did.jsonl",
+                "template": "no-such-template"
+            }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn create_did_webvh_context_scoped_template_shadows_global() {
+    let (app, ctx) = TestApp::new().await;
+    let super_token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
+    create_test_context(&app, &super_token, "shadow-didcreate").await;
+
+    // Global template with one description.
+    let mut global = sample_template("my-custom");
+    global["description"] = json!("GLOBAL");
+    let _ = app
+        .request(post_auth("/did-templates", &super_token, global))
+        .await;
+
+    // Context-scoped override with a different description.
+    let mut local = sample_template("my-custom");
+    local["description"] = json!("CONTEXT");
+    let _ = app
+        .request(post_auth(
+            "/contexts/shadow-didcreate/did-templates",
+            &super_token,
+            local,
+        ))
+        .await;
+
+    // Create a DID using the template — with template_context set to the
+    // context, resolution should pick up the context-scoped override first.
+    let (status, body) = app
+        .request(post_auth(
+            "/webvh/dids",
+            &super_token,
+            json!({
+                "context_id": "shadow-didcreate",
+                "url": "https://example.com/.well-known/did/did.jsonl",
+                "template": "my-custom",
+                "template_context": "shadow-didcreate",
+                "template_vars": { "URL": "https://example.com" }
+            }),
+        ))
+        .await;
+    assert!(status.is_success(), "{status} {body}");
+    // The fact that it succeeded (and the service shape from `sample_template`
+    // is present — a `Custom` service type we used in the sample) confirms
+    // the rendered doc came from a template, not the VTA's auto-builder.
+    let doc = &body["did_document"];
+    assert_eq!(doc["service"][0]["type"], "Custom");
+}

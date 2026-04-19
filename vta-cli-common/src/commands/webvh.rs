@@ -171,6 +171,9 @@ pub async fn cmd_webvh_did_create_with_files(
     no_primary: bool,
     signing_key_id: Option<String>,
     ka_key_id: Option<String>,
+    template: Option<String>,
+    template_context: Option<String>,
+    template_vars: Vec<(String, String)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let did_document = match did_document_path {
         Some(p) => {
@@ -183,6 +186,9 @@ pub async fn cmd_webvh_did_create_with_files(
         }
         None => None,
     };
+    if template.is_some() && (did_document.is_some() || did_log_path.is_some()) {
+        return Err("--template is mutually exclusive with --did-document and --did-log".into());
+    }
     let did_log = match did_log_path {
         Some(p) => {
             Some(std::fs::read_to_string(&p).map_err(|e| format!("failed to read {p}: {e}"))?)
@@ -193,6 +199,11 @@ pub async fn cmd_webvh_did_create_with_files(
         .map(|s| serde_json::from_str::<Vec<serde_json::Value>>(&s))
         .transpose()
         .map_err(|e| format!("invalid --services JSON: {e}"))?;
+
+    let template_vars: std::collections::HashMap<String, serde_json::Value> = template_vars
+        .into_iter()
+        .map(|(k, v)| (k, serde_json::Value::String(v)))
+        .collect();
 
     let req = CreateDidWebvhRequest {
         context_id,
@@ -209,6 +220,9 @@ pub async fn cmd_webvh_did_create_with_files(
         set_primary: !no_primary,
         signing_key_id,
         ka_key_id,
+        template,
+        template_context,
+        template_vars,
     };
     cmd_webvh_did_create(client, req).await
 }

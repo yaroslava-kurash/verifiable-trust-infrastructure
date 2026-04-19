@@ -381,6 +381,18 @@ enum WebvhCommands {
         /// Use an existing key ID as the key-agreement verification method
         #[arg(long)]
         ka_key: Option<String>,
+        /// Name of a stored DID template to render into the DID document.
+        /// Mutually exclusive with `--did-document` and `--did-log`.
+        #[arg(long)]
+        template: Option<String>,
+        /// Look up the template in this context's scope first. Defaults to
+        /// the DID's own `--context` so context-local templates shadow
+        /// global ones naturally.
+        #[arg(long)]
+        template_context: Option<String>,
+        /// `KEY=VALUE` — supply a template variable. Repeatable.
+        #[arg(long = "var", value_parser = parse_key_value)]
+        vars: Vec<(String, String)>,
     },
     /// List WebVH DIDs
     ListDids {
@@ -1410,12 +1422,20 @@ async fn main() {
                 no_primary,
                 signing_key,
                 ka_key,
+                template,
+                template_context,
+                vars,
             } => {
                 if server.is_none() && did_url.is_none() {
                     Err("either --server or --did-url is required".into())
                 } else if server.is_some() && did_url.is_some() {
                     Err("--server and --did-url are mutually exclusive".into())
                 } else {
+                    // Default template lookup to the DID's own context so
+                    // context-local overrides are found before the global
+                    // fallback.
+                    let template_context =
+                        template_context.or_else(|| template.as_ref().map(|_| context.clone()));
                     webvh::cmd_webvh_did_create_with_files(
                         &client,
                         context,
@@ -1432,6 +1452,9 @@ async fn main() {
                         no_primary,
                         signing_key,
                         ka_key,
+                        template,
+                        template_context,
+                        vars,
                     )
                     .await
                 }

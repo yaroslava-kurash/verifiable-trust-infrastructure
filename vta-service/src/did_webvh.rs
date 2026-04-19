@@ -31,6 +31,7 @@ pub async fn run_create_did_webvh(
     let imported_ks = store.keyspace("imported_secrets")?;
     let contexts_ks = store.keyspace("contexts")?;
     let webvh_ks = store.keyspace("webvh")?;
+    let did_templates_ks = store.keyspace("did_templates")?;
 
     // Resolve context
     let ctx = match crate::contexts::get_context(&contexts_ks, &args.context).await? {
@@ -158,6 +159,9 @@ pub async fn run_create_did_webvh(
         set_primary: true,
         signing_key_id: None,
         ka_key_id: None,
+        template: None,
+        template_context: None,
+        template_vars: std::collections::HashMap::new(),
     };
 
     let result = operations::did_webvh::create_did_webvh(
@@ -165,6 +169,7 @@ pub async fn run_create_did_webvh(
         &imported_ks,
         &contexts_ks,
         &webvh_ks,
+        &did_templates_ks,
         &*seed_store,
         &config,
         &auth,

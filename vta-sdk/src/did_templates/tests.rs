@@ -270,6 +270,34 @@ fn placeholders_in_nested_arrays_and_objects() {
 }
 
 #[test]
+fn provided_token_may_pass_through_as_sentinel() {
+    // A caller supplying `DID = "{DID}"` means "leave this literal alone for
+    // a downstream library to resolve" — render must not flag it.
+    let raw = base_template(json!({
+        "document": {
+            "id": "{DID}",
+            "verificationMethod": [{
+                "id": "{DID}#key-1",
+                "publicKeyMultibase": "{SIGNING_KEY_MB}"
+            }]
+        }
+    }));
+    let tpl = DidTemplate::from_json(raw).unwrap();
+
+    let mut vars = TemplateVars::new();
+    vars.insert_string("DID", "{DID}");
+    vars.insert_string("SIGNING_KEY_MB", "z6MkReal");
+
+    let out = tpl.render(&vars).unwrap();
+    assert_eq!(out["id"], "{DID}");
+    assert_eq!(out["verificationMethod"][0]["id"], "{DID}#key-1");
+    assert_eq!(
+        out["verificationMethod"][0]["publicKeyMultibase"],
+        "z6MkReal"
+    );
+}
+
+#[test]
 fn utf8_strings_survive_substitution() {
     let raw = base_template(json!({
         "requiredVars": ["LABEL"],

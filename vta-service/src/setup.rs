@@ -460,6 +460,7 @@ pub async fn run_setup_wizard(
     let imported_ks = store.keyspace("imported_secrets")?;
     let contexts_ks = store.keyspace("contexts")?;
     let webvh_ks = store.keyspace("webvh")?;
+    let did_templates_ks = store.keyspace("did_templates")?;
 
     // Create seed application contexts
     let mut vta_ctx = create_seed_context(&contexts_ks, "vta", "Verifiable Trust Agent").await?;
@@ -595,6 +596,7 @@ pub async fn run_setup_wizard(
             &imported_ks,
             &contexts_ks,
             &webvh_ks,
+            &did_templates_ks,
             &*wizard_seed_store,
             &wizard_config,
         )
@@ -611,6 +613,7 @@ pub async fn run_setup_wizard(
         &imported_ks,
         &contexts_ks,
         &webvh_ks,
+        &did_templates_ks,
         &*wizard_seed_store,
         &wizard_config,
     )
@@ -789,15 +792,19 @@ pub async fn run_setup_wizard(
 ///
 /// `additional_services` lets callers inject custom services (e.g. mediator endpoints).
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 async fn build_wizard_did(
     label: &str,
     context_id: &str,
     additional_services: Option<Vec<serde_json::Value>>,
     add_mediator_service: bool,
+    template: Option<String>,
+    template_vars: std::collections::HashMap<String, serde_json::Value>,
     keys_ks: &KeyspaceHandle,
     imported_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
     webvh_ks: &KeyspaceHandle,
+    did_templates_ks: &KeyspaceHandle,
     seed_store: &dyn crate::keys::seed_store::SeedStore,
     config: &AppConfig,
 ) -> Result<String, Box<dyn std::error::Error>> {
@@ -913,6 +920,9 @@ async fn build_wizard_did(
         set_primary: true,
         signing_key_id,
         ka_key_id,
+        template,
+        template_context: None,
+        template_vars,
     };
 
     let result = operations::did_webvh::create_did_webvh(
@@ -920,6 +930,7 @@ async fn build_wizard_did(
         imported_ks,
         contexts_ks,
         webvh_ks,
+        did_templates_ks,
         seed_store,
         config,
         &auth,
@@ -973,6 +984,7 @@ async fn create_vta_did(
     imported_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
     webvh_ks: &KeyspaceHandle,
+    did_templates_ks: &KeyspaceHandle,
     seed_store: &dyn crate::keys::seed_store::SeedStore,
     config: &AppConfig,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
@@ -1013,10 +1025,13 @@ async fn create_vta_did(
                 "vta",
                 services,
                 add_mediator,
+                None,
+                std::collections::HashMap::new(),
                 keys_ks,
                 imported_ks,
                 contexts_ks,
                 webvh_ks,
+                did_templates_ks,
                 seed_store,
                 config,
             )
@@ -1046,6 +1061,7 @@ async fn configure_messaging(
     imported_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
     webvh_ks: &KeyspaceHandle,
+    did_templates_ks: &KeyspaceHandle,
     seed_store: &dyn crate::keys::seed_store::SeedStore,
     config: &AppConfig,
 ) -> Result<Option<MessagingConfig>, Box<dyn std::error::Error>> {
@@ -1102,35 +1118,29 @@ async fn configure_messaging(
                 create_seed_context(contexts_ks, &mediator_context, "DIDComm Messaging Mediator")
                     .await?;
 
-            // Build mediator-specific services (DIDComm + Auth endpoints)
-            let wss_url = mediator_url
-                .replace("https://", "wss://")
-                .replace("http://", "ws://");
-            let mediator_services = vec![
-                json!({
-                    "id": "{DID}#didcomm",
-                    "type": "DIDCommMessaging",
-                    "serviceEndpoint": [
-                        { "accept": ["didcomm/v2"], "uri": &mediator_url },
-                        { "accept": ["didcomm/v2"], "uri": format!("{wss_url}/ws") }
-                    ]
-                }),
-                json!({
-                    "id": "{DID}#auth",
-                    "type": "Authentication",
-                    "serviceEndpoint": format!("{mediator_url}/authenticate")
-                }),
-            ];
+            // Use the built-in `didcomm-mediator` template — a single
+            // source of truth for the mediator DID document shape. Operators
+            // who need a different shape can fork it via
+            // `pnm did-templates init mediator > custom.json`, edit, and
+            // upload to global or context scope. Resolution order is
+            // context → global → builtin, so a stored `didcomm-mediator`
+            // override at either scope shadows this built-in automatically.
+            let mut template_vars: std::collections::HashMap<String, serde_json::Value> =
+                std::collections::HashMap::new();
+            template_vars.insert("URL".into(), json!(mediator_url));
 
             let mediator_did = build_wizard_did(
                 &mediator_context,
                 &mediator_context,
-                Some(mediator_services),
+                None,
                 false,
+                Some("didcomm-mediator".into()),
+                template_vars,
                 keys_ks,
                 imported_ks,
                 contexts_ks,
                 webvh_ks,
+                did_templates_ks,
                 seed_store,
                 config,
             )

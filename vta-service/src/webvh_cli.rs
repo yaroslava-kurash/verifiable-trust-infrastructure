@@ -148,6 +148,7 @@ pub async fn run_create_did(
     let imported_ks = store.keyspace("imported_secrets")?;
     let contexts_ks = store.keyspace("contexts")?;
     let webvh_ks = store.keyspace("webvh")?;
+    let did_templates_ks = store.keyspace("did_templates")?;
     let seed_store: Arc<dyn crate::keys::seed_store::SeedStore> =
         Arc::from(create_seed_store(&config)?);
 
@@ -172,6 +173,9 @@ pub async fn run_create_did(
         set_primary: true,
         signing_key_id: None,
         ka_key_id: None,
+        template: None,
+        template_context: None,
+        template_vars: std::collections::HashMap::new(),
     };
 
     let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
@@ -181,6 +185,7 @@ pub async fn run_create_did(
         &imported_ks,
         &contexts_ks,
         &webvh_ks,
+        &did_templates_ks,
         &*seed_store,
         &config,
         &auth,

@@ -59,13 +59,24 @@ pub(super) fn render(tpl: &DidTemplate, vars: &TemplateVars) -> Result<Value, Te
     // Substitute.
     let rendered = substitute_value(&tpl.document, &effective);
 
-    // Any leftover `{TOKEN}` in the rendered output is a bug (either an
+    // Any leftover `{TOKEN}` in the rendered output is a bug — either an
     // undeclared placeholder we didn't catch at validate, or an ambient var
-    // the caller forgot to supply).
+    // the caller forgot to supply.
+    //
+    // Tokens the caller *did* provide are never flagged, even if the
+    // substituted value happens to contain the token literal (e.g. a server
+    // using `DID = "{DID}"` as a sentinel so a downstream DID-method library
+    // can perform its own substitution). Providing a value is the caller's
+    // explicit declaration that the token is handled.
+    let provided: HashSet<&str> = effective.keys().map(String::as_str).collect();
     let mut unresolved = HashSet::new();
     walk_placeholders(&rendered, &mut unresolved);
-    if !unresolved.is_empty() {
-        let mut names: Vec<String> = unresolved.into_iter().collect();
+    let truly_unresolved: Vec<String> = unresolved
+        .into_iter()
+        .filter(|name| !provided.contains(name.as_str()))
+        .collect();
+    if !truly_unresolved.is_empty() {
+        let mut names = truly_unresolved;
         names.sort();
         return Err(TemplateError::Unresolved(names.join(", ")));
     }

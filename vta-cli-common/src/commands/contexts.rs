@@ -433,6 +433,9 @@ pub async fn cmd_context_provision(
             set_primary: true,
             signing_key_id: None,
             ka_key_id: None,
+            template: None,
+            template_context: None,
+            template_vars: std::collections::HashMap::new(),
         };
         let did_result = client.create_did_webvh(req).await?;
 

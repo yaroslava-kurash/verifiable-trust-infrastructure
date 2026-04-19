@@ -425,6 +425,24 @@ pub struct CreateDidWebvhRequest {
     pub signing_key_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ka_key_id: Option<String>,
+    /// Name of a stored DID template to use for the DID document shape.
+    /// Mutually exclusive with `did_document` — the template is rendered
+    /// server-side with ambient + caller-supplied variables, and the result
+    /// becomes the DID document. Resolution order: context scope (if
+    /// `template_context` is set) → global → builtin.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+    /// Scope to look the template up in. `None` means "global only"; `Some(ctx)`
+    /// means "this context first, then global, then builtin". Typically
+    /// matches the request's `context_id` but can differ (e.g. a VTA-wide
+    /// template used by a DID being provisioned inside a context).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template_context: Option<String>,
+    /// Caller-supplied template variables. Server-supplied ambient vars
+    /// (`DID`, `SIGNING_KEY_MB`, `KA_KEY_MB`, `VTA_DID`, `VTA_URL`,
+    /// `CONTEXT_ID`, `CONTEXT_DID`, `NOW`) are injected automatically.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub template_vars: std::collections::HashMap<String, serde_json::Value>,
 }
 
 // ── WebVH DID log types ──────────────────────────────────────────────

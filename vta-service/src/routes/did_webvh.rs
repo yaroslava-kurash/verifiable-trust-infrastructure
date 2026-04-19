@@ -109,6 +109,7 @@ pub async fn create_did_handler(
         &state.imported_ks,
         &state.contexts_ks,
         &state.webvh_ks,
+        &state.did_templates_ks,
         &*state.seed_store,
         &config,
         &auth.0,

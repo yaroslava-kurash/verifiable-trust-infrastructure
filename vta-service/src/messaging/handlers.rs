@@ -674,6 +674,7 @@ pub async fn handle_create_did_webvh(
         &state.imported_ks,
         &state.contexts_ks,
         &state.webvh_ks,
+        &state.did_templates_ks,
         &*state.seed_store,
         &config,
         &auth,
