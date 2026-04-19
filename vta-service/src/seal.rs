@@ -37,6 +37,13 @@ use crate::store::{KeyspaceHandle, Store};
 
 const SEAL_KEY: &str = "vta:sealed";
 
+/// Format a UTC `DateTime` as a readable local-timezone string with ISO offset.
+fn format_local_datetime(dt: chrono::DateTime<Utc>) -> String {
+    dt.with_timezone(&chrono::Local)
+        .format("%Y-%m-%d %H:%M:%S %:z")
+        .to_string()
+}
+
 /// Marker written to fjall when the VTA is sealed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SealRecord {
@@ -66,7 +73,7 @@ pub async fn require_unsealed(store: &Store) -> Result<(), AppError> {
              \n\
              To unseal (requires super admin key): vta unseal",
             seal.sealed_by,
-            seal.sealed_at.format("%Y-%m-%d %H:%M:%S UTC"),
+            format_local_datetime(seal.sealed_at),
         )));
     }
     Ok(())
@@ -79,7 +86,7 @@ pub async fn seal(acl_ks: &KeyspaceHandle, admin_did: &str) -> Result<SealRecord
         return Err(AppError::Conflict(format!(
             "VTA is already sealed (by {} on {})",
             existing.sealed_by,
-            existing.sealed_at.format("%Y-%m-%d %H:%M:%S UTC"),
+            format_local_datetime(existing.sealed_at),
         )));
     }
 
@@ -131,10 +138,7 @@ pub async fn run_unseal_challenge(store: &Store) -> Result<(), AppError> {
     eprintln!("=== VTA Unseal Challenge ===");
     eprintln!();
     eprintln!("  Sealed by: {}", seal.sealed_by);
-    eprintln!(
-        "  Sealed at: {}",
-        seal.sealed_at.format("%Y-%m-%d %H:%M:%S UTC")
-    );
+    eprintln!("  Sealed at: {}", format_local_datetime(seal.sealed_at));
     eprintln!();
     eprintln!("  Authorized super admin DIDs:");
     for admin in &super_admins {

@@ -646,7 +646,10 @@ async fn run_bootstrap_admin(
         eprintln!(
             "VTA is already sealed (by {} on {}).",
             existing.sealed_by,
-            existing.sealed_at.format("%Y-%m-%d %H:%M:%S UTC")
+            existing
+                .sealed_at
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M:%S %:z")
         );
         eprintln!("Cannot bootstrap again. Manage admins via the REST API or DIDComm.");
         std::process::exit(1);
@@ -704,7 +707,10 @@ async fn run_bootstrap_admin(
     eprintln!("  Admin DID: {}", did);
     eprintln!(
         "  Sealed at: {}",
-        seal_record.sealed_at.format("%Y-%m-%d %H:%M:%S UTC")
+        seal_record
+            .sealed_at
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M:%S %:z")
     );
     eprintln!();
     eprintln!("  The VTA is now sealed. Offline CLI commands that modify state are disabled.");

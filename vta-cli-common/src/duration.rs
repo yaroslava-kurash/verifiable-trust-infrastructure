@@ -11,7 +11,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, Utc};
 
 /// Parse a duration string into seconds.
 ///
@@ -65,12 +65,19 @@ pub fn now_unix() -> u64 {
 /// Example: `2026-04-20 15:32:17 +08:00`.
 pub fn format_local_time(unix_secs: u64) -> String {
     match DateTime::from_timestamp(unix_secs as i64, 0) {
-        Some(utc) => utc
-            .with_timezone(&Local)
-            .format("%Y-%m-%d %H:%M:%S %:z")
-            .to_string(),
+        Some(utc) => format_local_datetime(utc),
         None => unix_secs.to_string(),
     }
+}
+
+/// Format a `DateTime<Utc>` (the protocol-level wire format) as a readable
+/// local-timezone string with an ISO-style offset.
+///
+/// Example: `2026-04-20 15:32:17 +08:00`.
+pub fn format_local_datetime(dt: DateTime<Utc>) -> String {
+    dt.with_timezone(&Local)
+        .format("%Y-%m-%d %H:%M:%S %:z")
+        .to_string()
 }
 
 /// Format a relative-time string showing how long until `unix_secs` from

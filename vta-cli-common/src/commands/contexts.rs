@@ -92,7 +92,11 @@ pub async fn cmd_context_list(client: &VtaClient) -> Result<(), Box<dyn std::err
         .iter()
         .map(|ctx| {
             let did = ctx.did.clone().unwrap_or_else(|| "\u{2014}".into());
-            let created = ctx.created_at.format("%Y-%m-%d").to_string();
+            let created = ctx
+                .created_at
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d")
+                .to_string();
 
             Row::new(vec![
                 Cell::from(ctx.id.clone()),
@@ -146,8 +150,14 @@ pub async fn cmd_context_get(
         resp.description.as_deref().unwrap_or("(not set)")
     );
     println!("Base Path:   {}", resp.base_path);
-    println!("Created At:  {}", resp.created_at);
-    println!("Updated At:  {}", resp.updated_at);
+    println!(
+        "Created At:  {}",
+        crate::duration::format_local_datetime(resp.created_at)
+    );
+    println!(
+        "Updated At:  {}",
+        crate::duration::format_local_datetime(resp.updated_at)
+    );
     Ok(())
 }
 
@@ -265,7 +275,10 @@ pub async fn cmd_context_update(
         "  Description: {}",
         resp.description.as_deref().unwrap_or("(not set)")
     );
-    println!("  Updated At:  {}", resp.updated_at);
+    println!(
+        "  Updated At:  {}",
+        crate::duration::format_local_datetime(resp.updated_at)
+    );
     Ok(())
 }
 
@@ -281,7 +294,10 @@ pub async fn cmd_context_update_did(
         "  DID:        {}",
         resp.did.as_deref().unwrap_or("(not set)")
     );
-    println!("  Updated At: {}", resp.updated_at);
+    println!(
+        "  Updated At: {}",
+        crate::duration::format_local_datetime(resp.updated_at)
+    );
     Ok(())
 }
 

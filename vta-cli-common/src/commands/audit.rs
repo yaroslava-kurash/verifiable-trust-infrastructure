@@ -29,10 +29,8 @@ pub async fn cmd_list_audit_logs(
         .entries
         .iter()
         .map(|entry| {
-            // Format timestamp
-            let ts = chrono::DateTime::from_timestamp(entry.timestamp as i64, 0)
-                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-                .unwrap_or_else(|| entry.timestamp.to_string());
+            // Format timestamp in operator's local timezone.
+            let ts = crate::duration::format_local_time(entry.timestamp);
 
             // Color the outcome
             let outcome_style = if entry.outcome == "success" {
@@ -116,7 +114,7 @@ pub async fn cmd_list_audit_logs(
     let table = Table::new(
         rows,
         [
-            Constraint::Length(19), // Timestamp
+            Constraint::Length(25), // Timestamp (local tz with offset)
             Constraint::Length(22), // Action
             Constraint::Length(30), // Actor
             Constraint::Min(16),    // Resource

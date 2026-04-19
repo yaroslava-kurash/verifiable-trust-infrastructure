@@ -11,6 +11,16 @@ use crate::keys::seed_store::create_seed_store;
 use crate::operations;
 use crate::store::Store;
 
+/// Format a UTC `DateTime` as a readable local-timezone string with ISO offset.
+///
+/// The service stores timestamps in UTC internally (wire format, storage);
+/// operator-facing CLI output converts to the local timezone for readability.
+fn format_local_datetime(dt: chrono::DateTime<chrono::Utc>) -> String {
+    dt.with_timezone(&chrono::Local)
+        .format("%Y-%m-%d %H:%M:%S %:z")
+        .to_string()
+}
+
 /// Create a synthetic super-admin AuthClaims for CLI operations.
 pub(crate) fn cli_super_admin() -> AuthClaims {
     AuthClaims {
@@ -75,10 +85,7 @@ pub async fn run_list_servers(
         if let Some(label) = &server.label {
             eprintln!("  Label:   {label}");
         }
-        eprintln!(
-            "  Created: {}",
-            server.created_at.format("%Y-%m-%d %H:%M:%S UTC")
-        );
+        eprintln!("  Created: {}", format_local_datetime(server.created_at));
         eprintln!();
     }
     Ok(())
@@ -234,10 +241,7 @@ pub async fn run_list_dids(
         eprintln!("  Server:   {}", d.server_id);
         eprintln!("  SCID:     {}", d.scid);
         eprintln!("  Portable: {}", d.portable);
-        eprintln!(
-            "  Created:  {}",
-            d.created_at.format("%Y-%m-%d %H:%M:%S UTC")
-        );
+        eprintln!("  Created:  {}", format_local_datetime(d.created_at));
         eprintln!();
     }
     Ok(())

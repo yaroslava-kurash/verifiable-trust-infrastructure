@@ -46,7 +46,10 @@ pub async fn cmd_key_create(
     if let Some(label) = &resp.label {
         println!("  Label:           {label}");
     }
-    println!("  Created At:      {}", resp.created_at);
+    println!(
+        "  Created At:      {}",
+        crate::duration::format_local_datetime(resp.created_at)
+    );
     Ok(())
 }
 
@@ -116,7 +119,10 @@ pub async fn cmd_key_import(
     if let Some(label) = &resp.label {
         println!("  Label:      {label}");
     }
-    println!("  Created At: {}", resp.created_at);
+    println!(
+        "  Created At: {}",
+        crate::duration::format_local_datetime(resp.created_at)
+    );
     eprintln!();
     eprintln!(
         "\x1b[1;33mWarning: securely delete the source key material \u{2014} the VTA now holds this secret.\x1b[0m"
@@ -192,8 +198,14 @@ pub async fn cmd_key_get(
         if let Some(label) = &resp.label {
             println!("Label:           {label}");
         }
-        println!("Created At:      {}", resp.created_at);
-        println!("Updated At:      {}", resp.updated_at);
+        println!(
+            "Created At:      {}",
+            crate::duration::format_local_datetime(resp.created_at)
+        );
+        println!(
+            "Updated At:      {}",
+            crate::duration::format_local_datetime(resp.updated_at)
+        );
     }
     Ok(())
 }
@@ -206,7 +218,10 @@ pub async fn cmd_key_revoke(
     println!("Key revoked:");
     println!("  Key ID:     {}", resp.key_id);
     println!("  Status:     {}", resp.status);
-    println!("  Updated At: {}", resp.updated_at);
+    println!(
+        "  Updated At: {}",
+        crate::duration::format_local_datetime(resp.updated_at)
+    );
     Ok(())
 }
 
@@ -218,7 +233,10 @@ pub async fn cmd_key_rename(
     let resp = client.rename_key(key_id, new_key_id).await?;
     println!("Key renamed:");
     println!("  Key ID:     {}", resp.key_id);
-    println!("  Updated At: {}", resp.updated_at);
+    println!(
+        "  Updated At: {}",
+        crate::duration::format_local_datetime(resp.updated_at)
+    );
     Ok(())
 }
 
@@ -250,7 +268,11 @@ pub async fn cmd_key_list(
         .iter()
         .map(|key| {
             let label = key.label.clone().unwrap_or_else(|| "\u{2014}".into());
-            let created = key.created_at.format("%Y-%m-%d").to_string();
+            let created = key
+                .created_at
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d")
+                .to_string();
 
             let status_span = match key.status {
                 vta_sdk::keys::KeyStatus::Active => {
@@ -312,12 +334,12 @@ pub async fn cmd_seeds_list(client: &VtaClient) -> Result<(), Box<dyn std::error
         println!("  Status:      {}", seed.status);
         println!(
             "  Created:     {}",
-            seed.created_at.format("%Y-%m-%d %H:%M:%S UTC")
+            crate::duration::format_local_datetime(seed.created_at)
         );
         if let Some(retired_at) = seed.retired_at {
             println!(
                 "  Retired:     {}",
-                retired_at.format("%Y-%m-%d %H:%M:%S UTC")
+                crate::duration::format_local_datetime(retired_at)
             );
         }
         println!();

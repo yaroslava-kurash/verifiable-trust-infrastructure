@@ -45,7 +45,11 @@ pub async fn cmd_webvh_server_list(client: &VtaClient) -> Result<(), Box<dyn std
         .iter()
         .map(|s| {
             let label = s.label.clone().unwrap_or_else(|| "\u{2014}".into());
-            let created = s.created_at.format("%Y-%m-%d %H:%M").to_string();
+            let created = s
+                .created_at
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string();
 
             Row::new(vec![
                 Cell::from(s.id.clone()),
@@ -233,7 +237,11 @@ pub async fn cmd_webvh_did_list(
         .iter()
         .map(|d| {
             let portable = if d.portable { "yes" } else { "no" };
-            let created = d.created_at.format("%Y-%m-%d %H:%M").to_string();
+            let created = d
+                .created_at
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+                .to_string();
 
             Row::new(vec![
                 Cell::from(d.did.clone()),
@@ -286,11 +294,11 @@ pub async fn cmd_webvh_did_get(
     println!("  Log entries:     {}", record.log_entry_count);
     println!(
         "  Created:         {}",
-        record.created_at.format("%Y-%m-%d %H:%M:%S UTC")
+        crate::duration::format_local_datetime(record.created_at)
     );
     println!(
         "  Updated:         {}",
-        record.updated_at.format("%Y-%m-%d %H:%M:%S UTC")
+        crate::duration::format_local_datetime(record.updated_at)
     );
     Ok(())
 }
