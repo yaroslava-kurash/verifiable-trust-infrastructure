@@ -60,20 +60,41 @@ pub async fn run_setup(
 /// the DID.
 async fn connect_to_non_tee_vta(config: &mut PnmConfig) -> Result<(), Box<dyn std::error::Error>> {
     eprintln!();
-    let url: String = Input::new()
-        .with_prompt("VTA URL (e.g. https://vta.example.com)")
-        .interact_text()?;
-    let url = url.trim().trim_end_matches('/').to_string();
-    if url.is_empty() {
-        return Err("VTA URL is required".into());
-    }
-
     let vta_did: String = Input::new()
         .with_prompt("VTA DID (ask your admin, or see `vta config show`)")
         .interact_text()?;
     let vta_did = vta_did.trim().to_string();
     if !vta_did.starts_with("did:") {
         return Err("VTA DID must start with `did:` (e.g. did:webvh:... or did:key:...)".into());
+    }
+
+    // Resolve REST URL from the DID's `#vta-rest` service endpoint.
+    // Let the operator override or supply manually if resolution fails —
+    // e.g. in a new-deploy state where the DID document isn't published
+    // yet, or when testing against a local VTA.
+    eprintln!("Resolving {vta_did}...");
+    let discovered_url = match vta_sdk::session::resolve_vta_url(&vta_did).await {
+        Ok(u) => {
+            eprintln!("  VTA URL: {u}");
+            Some(u)
+        }
+        Err(e) => {
+            eprintln!("  Could not resolve a URL from the DID document: {e}");
+            None
+        }
+    };
+    let url: String = match discovered_url {
+        Some(u) => Input::new()
+            .with_prompt("VTA URL")
+            .default(u)
+            .interact_text()?,
+        None => Input::new()
+            .with_prompt("VTA URL (e.g. https://vta.example.com)")
+            .interact_text()?,
+    };
+    let url = url.trim().trim_end_matches('/').to_string();
+    if url.is_empty() {
+        return Err("VTA URL is required".into());
     }
 
     let default_name = vta_did
@@ -127,7 +148,7 @@ async fn connect_to_non_tee_vta(config: &mut PnmConfig) -> Result<(), Box<dyn st
     eprintln!("Ask your VTA admin to grant this identity admin access. On the VTA host,");
     eprintln!("they should run:");
     eprintln!();
-    eprintln!("  \x1b[1mvta acl create --did {did} --role admin\x1b[0m");
+    eprintln!("  \x1b[1mvta import-did --did {did} --role admin\x1b[0m");
     eprintln!();
     eprintln!("Once the grant is in place, run any PNM command (e.g. `pnm health`). PNM");
     eprintln!("will automatically rotate to a fresh long-lived did:key on first connect");

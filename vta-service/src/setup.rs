@@ -11,20 +11,12 @@ use didwebvh_rs::url::WebVHURL;
 use rand::Rng;
 use serde_json::json;
 use url::Url;
-use vta_sdk::credentials::CredentialBundle;
-use vta_sdk::sealed_transfer::{
-    AssertionProof, BootstrapRequest, InMemoryNonceStore, ProducerAssertion, SealedPayloadV1,
-    armor, bundle_digest, generate_keypair, seal_payload,
-};
-
-use crate::acl::{AclEntry, Role, store_acl_entry};
 
 use crate::config::{
     AppConfig, AuthConfig, LogConfig, LogFormat, MessagingConfig, SecretsConfig, ServerConfig,
     ServicesConfig, StoreConfig,
 };
 use crate::contexts::{self, ContextRecord, store_context};
-use crate::keys;
 use crate::keys::seed_store::create_seed_store;
 use crate::keys::seeds::{SeedRecord, save_seed_record, set_active_seed_id};
 use crate::operations;
@@ -39,21 +31,6 @@ async fn create_seed_context(
     name: &str,
 ) -> Result<ContextRecord, Box<dyn std::error::Error>> {
     contexts::create_context(contexts_ks, id, name).await
-}
-
-/// Derive an admin did:key Ed25519 key from the BIP-32 seed using a
-/// counter-allocated path under `base`, store it as a `KeyRecord`,
-/// and return `(did, private_key_multibase)`.
-///
-/// The key_id uses the standard did:key fragment format: `{did}#{multibase_pubkey}`.
-async fn derive_and_store_did_key(
-    seed: &[u8],
-    base: &str,
-    context_id: &str,
-    keys_ks: &KeyspaceHandle,
-    seed_id: Option<u32>,
-) -> Result<(String, String), Box<dyn std::error::Error>> {
-    keys::derive_and_store_did_key(seed, base, context_id, "Admin did:key", keys_ks, seed_id).await
 }
 
 /// Prompt the user to select which services to enable.
@@ -648,40 +625,11 @@ pub async fn run_setup_wizard(
             .map_err(|e| format!("{e}"))?;
     }
 
-    // 14. Bootstrap admin DID in ACL (optional)
-    let admin_did = if let Some(admin_did) = create_admin_did(
-        &seed,
-        &vta_did,
-        &public_url,
-        &vta_ctx.base_path,
-        &keys_ks,
-        &imported_ks,
-        &contexts_ks,
-        &webvh_ks,
-        &*wizard_seed_store,
-        &wizard_config,
-    )
-    .await?
-    {
-        let acl_ks = store.keyspace("acl")?;
-        let admin_entry = AclEntry {
-            did: admin_did.clone(),
-            role: Role::Admin,
-            label: Some("Initial admin".into()),
-            allowed_contexts: vec![],
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-            created_by: "setup".into(),
-            expires_at: None,
-        };
-        store_acl_entry(&acl_ks, &admin_entry).await?;
-        eprintln!("  Admin DID added to ACL: {admin_did}");
-        Some(admin_did)
-    } else {
-        None
-    };
+    // The VTA ACL starts empty. Admins add themselves via `pnm setup` (which
+    // mints a temp did:key, asks the operator to grant it via `vta import-did`,
+    // and auto-rotates on first connect). See the "What to do next" section
+    // printed at the end of this wizard.
+    let _ = &seed;
 
     // Flush all store writes to disk before exiting
     store.persist().await?;
@@ -788,11 +736,31 @@ pub async fn run_setup_wizard(
         }
     }
     eprintln!("  Contexts: vta ({})", vta_ctx.base_path);
-    if let Some(did) = &admin_did {
-        eprintln!("  Admin DID: {did}");
+    eprintln!();
+    eprintln!("\x1b[1;36m── What to do next ──\x1b[0m");
+    eprintln!();
+    eprintln!("  1. Start the VTA:");
+    eprintln!("       vta --config {}", config_path.display());
+    eprintln!();
+    eprintln!("  2. On your operator workstation, run `pnm setup` and choose");
+    eprintln!("     \"Connect to an existing non-TEE VTA\". Enter:");
+    if let Some(url) = &config.public_url {
+        eprintln!("       VTA URL: {url}");
     } else {
-        eprintln!("  Admin DID: (skipped — use `vta import-did` or the API to add one later)");
+        eprintln!("       VTA URL: (the URL this VTA will be reachable at)");
     }
+    if let Some(did) = &config.vta_did {
+        eprintln!("       VTA DID: {did}");
+    }
+    eprintln!();
+    eprintln!("     `pnm setup` mints a temp did:key and prints an");
+    eprintln!("     `vta import-did` command that you run here on the VTA host to");
+    eprintln!("     grant admin access. PNM will rotate to a fresh long-lived");
+    eprintln!("     did:key on first successful authentication.");
+    eprintln!();
+    eprintln!("  3. (Optional) To bootstrap multiple admins, repeat step 2 on");
+    eprintln!("     each operator's workstation.");
+    eprintln!();
 
     Ok(())
 }
@@ -980,150 +948,6 @@ async fn build_wizard_did(
 // ---------------------------------------------------------------------------
 // DID creation steps
 // ---------------------------------------------------------------------------
-
-/// Guide the user through creating or entering an admin DID.
-///
-/// Returns `Some(did)` on success, or `None` when the operator chooses to
-/// skip the admin step entirely.
-///
-/// The `did:key` branch uses the sealed-transfer offline (Mode C) flow:
-/// the operator provides the admin's `BootstrapRequest` JSON (produced by
-/// `pnm bootstrap request --out`), the wizard mints the did:key locally,
-/// and writes an armored `SealedPayloadV1::AdminCredential` bundle to disk
-/// for the operator to hand off out-of-band. No plaintext credential is
-/// ever printed or written.
-#[allow(clippy::too_many_arguments)]
-async fn create_admin_did(
-    seed: &[u8],
-    vta_did: &Option<String>,
-    public_url: &Option<String>,
-    vta_base_path: &str,
-    keys_ks: &KeyspaceHandle,
-    imported_ks: &KeyspaceHandle,
-    contexts_ks: &KeyspaceHandle,
-    webvh_ks: &KeyspaceHandle,
-    seed_store: &dyn crate::keys::seed_store::SeedStore,
-    config: &AppConfig,
-) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let admin_options = &[
-        "Generate a new did:key (Ed25519), sealed to the admin's bootstrap request",
-        "Create a new did:webvh DID",
-        "Enter an existing DID",
-        "Skip (no admin credential for now)",
-    ];
-    let choice = Select::new()
-        .with_prompt("Admin DID")
-        .items(admin_options)
-        .default(0)
-        .interact()?;
-
-    match choice {
-        0 => {
-            eprintln!();
-            eprintln!("The admin runs `pnm bootstrap request --out request.json` on their");
-            eprintln!("machine to produce a BootstrapRequest file. Provide the path to that");
-            eprintln!("file below; the wizard seals the minted credential to their ephemeral");
-            eprintln!("X25519 pubkey.");
-            eprintln!();
-            let request_path: String = Input::new()
-                .with_prompt("Path to admin's BootstrapRequest JSON")
-                .interact_text()?;
-            let request_path = PathBuf::from(request_path.trim());
-            let request_json = std::fs::read_to_string(&request_path)
-                .map_err(|e| format!("read {}: {e}", request_path.display()))?;
-            let request: BootstrapRequest = serde_json::from_str(&request_json)
-                .map_err(|e| format!("parse BootstrapRequest: {e}"))?;
-            if request.version != 1 {
-                return Err(
-                    format!("unsupported BootstrapRequest version: {}", request.version).into(),
-                );
-            }
-            let recipient_pk = request.decode_client_pubkey()?;
-            let bundle_id = request.decode_nonce()?;
-
-            let (did, private_key_multibase) =
-                derive_and_store_did_key(seed, vta_base_path, "vta", keys_ks, Some(0)).await?;
-
-            let mut credential = CredentialBundle::new(
-                did.clone(),
-                private_key_multibase,
-                vta_did.clone().unwrap_or_default(),
-            );
-            if let Some(url) = public_url {
-                credential = credential.vta_url(url);
-            }
-
-            // Fresh ephemeral producer keypair per seal — the operator
-            // communicates this pubkey + the SHA-256 digest OOB to the
-            // admin, who pins them at `pnm auth login`.
-            let (_producer_sk, producer_pk) = generate_keypair();
-            let producer_pubkey_b64 = BASE64.encode(producer_pk);
-            let producer = ProducerAssertion {
-                producer_pubkey_b64: producer_pubkey_b64.clone(),
-                proof: AssertionProof::PinnedOnly,
-            };
-            let nonce_store = InMemoryNonceStore::new();
-            let sealed = seal_payload(
-                &recipient_pk,
-                bundle_id,
-                producer,
-                &SealedPayloadV1::AdminCredential(credential),
-                &nonce_store,
-            )
-            .await
-            .map_err(|e| format!("seal admin credential: {e}"))?;
-            let armored = armor::encode(&sealed);
-            let digest = bundle_digest(&sealed);
-
-            let default_out = "admin-credential.armor".to_string();
-            let out_path: String = Input::new()
-                .with_prompt("Write sealed admin credential to file")
-                .default(default_out)
-                .interact_text()?;
-            std::fs::write(&out_path, armored.as_bytes())
-                .map_err(|e| format!("write {out_path}: {e}"))?;
-
-            eprintln!();
-            eprintln!("\x1b[1;32mGenerated admin DID:\x1b[0m {did}");
-            eprintln!();
-            eprintln!("\x1b[1;33m╔══════════════════════════════════════════════════════════╗");
-            eprintln!("║  Sealed admin credential written. Hand the file plus     ║");
-            eprintln!("║  the SHA-256 digest (out-of-band) to the admin, who      ║");
-            eprintln!("║  runs `pnm auth login --credential-bundle <file>         ║");
-            eprintln!("║            --expect-digest <hex>` to install it.         ║");
-            eprintln!("╚══════════════════════════════════════════════════════════╝\x1b[0m");
-            eprintln!();
-            eprintln!("  Output file:      {out_path}");
-            eprintln!("  Producer pubkey:  {producer_pubkey_b64}");
-            eprintln!("  SHA-256 digest:   {digest}");
-            eprintln!();
-
-            Ok(Some(did))
-        }
-        1 => {
-            let did = build_wizard_did(
-                "admin",
-                "vta",
-                None,
-                false,
-                keys_ks,
-                imported_ks,
-                contexts_ks,
-                webvh_ks,
-                seed_store,
-                config,
-            )
-            .await?;
-            Ok(Some(did))
-        }
-        2 => {
-            // Enter existing DID — just record it, no local key derivation
-            let did: String = Input::new().with_prompt("Admin DID").interact_text()?;
-            Ok(Some(did))
-        }
-        _ => Ok(None),
-    }
-}
 
 /// Guide the user through creating (or entering) a did:webvh DID for the VTA.
 ///
