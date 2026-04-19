@@ -2,15 +2,24 @@
 //!
 //! Offline: validate a file, init a starter from an embedded builtin, list
 //! builtins. Online: list/show/create/update/delete/render against the VTA.
+//!
+//! # Output style
+//!
+//! Follows the workspace CLI style guide: **list operations emit a ratatui
+//! table**, **detail views emit aligned key-value lines**, **actions emit a
+//! short `✓`-prefixed confirmation**. See `docs/cli-style.md`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use ratatui::layout::Constraint;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::widgets::{Block, Cell, Row, Table};
 use vta_sdk::did_templates::{BUILTIN_NAMES, DidTemplate, load_embedded};
 use vta_sdk::prelude::*;
 
 use crate::duration::format_local_time;
-use crate::render::{CYAN, DIM, GREEN, RED, RESET, YELLOW};
+use crate::render::{CYAN, DIM, GREEN, RED, RESET, YELLOW, print_widget};
 
 /// `pnm did-templates validate <file>` / `cnm did-templates validate <file>`.
 ///
@@ -120,31 +129,51 @@ pub async fn cmd_list(
         return Ok(());
     }
 
-    let header = match context {
-        Some(ctx) => format!("DID templates in context '{ctx}'"),
-        None => "Stored DID templates (global)".into(),
-    };
-    println!("{CYAN}{header}{RESET} ({} total):\n", records.len());
-    for r in &records {
-        println!(
-            "  {GREEN}\u{25b8}{RESET} {CYAN}{}{RESET} ({DIM}{}{RESET})",
-            r.template.name, r.template.kind
-        );
-        if let Some(desc) = &r.template.description {
-            println!("    {desc}");
-        }
-        if !r.template.required_vars.is_empty() {
-            println!(
-                "    {DIM}requiredVars: {}{RESET}",
+    let dim = Style::default().fg(Color::DarkGray);
+    let header_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    let header = Row::new(vec!["Name", "Kind", "Required vars", "Created"])
+        .style(header_style)
+        .bottom_margin(1);
+
+    let rows: Vec<Row> = records
+        .iter()
+        .map(|r| {
+            let required = if r.template.required_vars.is_empty() {
+                "\u{2014}".to_string()
+            } else {
                 r.template.required_vars.join(", ")
-            );
-        }
-        println!(
-            "    {DIM}created: {} by {}{RESET}",
-            format_local_time(r.created_at),
-            r.created_by
-        );
-    }
+            };
+            let created = format_local_time(r.created_at);
+            Row::new(vec![
+                Cell::from(r.template.name.clone()).style(Style::default().fg(Color::Cyan)),
+                Cell::from(r.template.kind.clone()),
+                Cell::from(required).style(dim),
+                Cell::from(created).style(dim),
+            ])
+        })
+        .collect();
+
+    let title = match context {
+        Some(ctx) => format!(" DID templates in context '{ctx}' ({}) ", records.len()),
+        None => format!(" Stored DID templates (global) ({}) ", records.len()),
+    };
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(24),    // Name
+            Constraint::Length(16), // Kind
+            Constraint::Min(24),    // Required vars
+            Constraint::Length(26), // Created (local tz with offset)
+        ],
+    )
+    .header(header)
+    .column_spacing(2)
+    .block(Block::bordered().title(title).border_style(dim));
+
+    let height = records.len() as u16 + 4;
+    print_widget(table, height);
     Ok(())
 }
 
@@ -385,25 +414,46 @@ pub async fn cmd_delete(
 ///
 /// Show the names of every built-in template shipped with this SDK.
 pub fn cmd_list_builtins() -> Result<(), Box<dyn std::error::Error>> {
-    println!(
-        "{CYAN}Built-in templates{RESET} ({} total):\n",
-        BUILTIN_NAMES.len()
-    );
+    let dim = Style::default().fg(Color::DarkGray);
+    let header_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    let header = Row::new(vec!["Name", "Kind", "Required vars", "Description"])
+        .style(header_style)
+        .bottom_margin(1);
+
+    let mut rows: Vec<Row> = Vec::with_capacity(BUILTIN_NAMES.len());
     for name in BUILTIN_NAMES {
         let tpl = load_embedded(name)?;
-        println!(
-            "  {GREEN}\u{25b8}{RESET} {CYAN}{name}{RESET} ({DIM}{}{RESET})",
-            tpl.kind
-        );
-        if let Some(desc) = &tpl.description {
-            println!("    {desc}");
-        }
-        if !tpl.required_vars.is_empty() {
-            println!(
-                "    {DIM}requiredVars: {}{RESET}",
-                tpl.required_vars.join(", ")
-            );
-        }
+        let required = if tpl.required_vars.is_empty() {
+            "\u{2014}".to_string()
+        } else {
+            tpl.required_vars.join(", ")
+        };
+        let description = tpl.description.clone().unwrap_or_else(|| "\u{2014}".into());
+        rows.push(Row::new(vec![
+            Cell::from(name.to_string()).style(Style::default().fg(Color::Cyan)),
+            Cell::from(tpl.kind),
+            Cell::from(required).style(dim),
+            Cell::from(description),
+        ]));
     }
+
+    let title = format!(" Built-in DID templates ({}) ", BUILTIN_NAMES.len());
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(24), // Name
+            Constraint::Length(16), // Kind
+            Constraint::Length(24), // Required vars
+            Constraint::Min(40),    // Description
+        ],
+    )
+    .header(header)
+    .column_spacing(2)
+    .block(Block::bordered().title(title).border_style(dim));
+
+    let height = BUILTIN_NAMES.len() as u16 + 4;
+    print_widget(table, height);
     Ok(())
 }

@@ -130,7 +130,7 @@ enum DidTemplateCommands {
 
     /// List DID templates stored on the VTA.
     List {
-        /// Scope the listing to one context. Omit for global scope.
+        /// FILTER: scope the listing to one context. Omit for global scope.
         #[arg(long)]
         context: Option<String>,
     },
@@ -139,7 +139,8 @@ enum DidTemplateCommands {
     Show {
         /// Template name.
         name: String,
-        /// Look up in this context's scope instead of global.
+        /// LOOKUP SCOPE: which scope to search for the named template.
+        /// Omit for global scope.
         #[arg(long)]
         context: Option<String>,
         /// Render the template rather than showing its raw record.
@@ -156,7 +157,7 @@ enum DidTemplateCommands {
         /// Path to a template JSON file.
         #[arg(long)]
         file: std::path::PathBuf,
-        /// Create in this context's scope instead of global.
+        /// TARGET SCOPE: create in this context's scope instead of global.
         #[arg(long)]
         context: Option<String>,
     },
@@ -168,7 +169,7 @@ enum DidTemplateCommands {
         /// Path to the replacement JSON file.
         #[arg(long)]
         file: std::path::PathBuf,
-        /// Operate on this context's scope instead of global.
+        /// TARGET SCOPE: operate on this context's stored template.
         #[arg(long)]
         context: Option<String>,
     },
@@ -177,7 +178,7 @@ enum DidTemplateCommands {
     Delete {
         /// Template name.
         name: String,
-        /// Operate on this context's scope instead of global.
+        /// TARGET SCOPE: operate on this context's stored template.
         #[arg(long)]
         context: Option<String>,
     },
@@ -186,7 +187,7 @@ enum DidTemplateCommands {
     Export {
         /// Template name.
         name: String,
-        /// Export from this context's scope instead of global.
+        /// LOOKUP SCOPE: export from this context's scope instead of global.
         #[arg(long)]
         context: Option<String>,
     },
@@ -198,7 +199,7 @@ enum DidTemplateCommands {
         /// Path to the local template JSON file.
         #[arg(long)]
         file: std::path::PathBuf,
-        /// Look up the stored template in this context's scope.
+        /// LOOKUP SCOPE: fetch stored from this context's scope.
         #[arg(long)]
         context: Option<String>,
     },
@@ -413,7 +414,8 @@ enum ContextCommands {
 enum AclCommands {
     /// List ACL entries
     List {
-        /// Filter by context ID
+        /// FILTER: only show entries whose `allowed_contexts` include this
+        /// context. Omit to see every entry visible to you.
         #[arg(long)]
         context: Option<String>,
     },
@@ -532,10 +534,10 @@ enum KeyCommands {
         /// Number of keys to skip
         #[arg(long, default_value = "0")]
         offset: u64,
-        /// Filter by status (active or revoked)
+        /// FILTER: only keys with this status (`active` or `revoked`).
         #[arg(long)]
         status: Option<String>,
-        /// Filter by application context ID
+        /// FILTER: only keys belonging to this context.
         #[arg(long)]
         context: Option<String>,
     },
@@ -543,7 +545,8 @@ enum KeyCommands {
     Secrets {
         /// Key IDs to export (omit to export all active keys in --context)
         key_ids: Vec<String>,
-        /// Export all active keys in this context
+        /// REFERENCE: export every active key in this context when no
+        /// `key_ids` are supplied.
         #[arg(long)]
         context: Option<String>,
     },
