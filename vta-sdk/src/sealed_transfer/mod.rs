@@ -17,6 +17,7 @@ pub mod error;
 pub mod hpke;
 pub mod nonce;
 pub mod request;
+pub mod template_bootstrap;
 
 pub use bundle::{
     ArmoredChunk, AssertionProof, AttestationQuoteAssertion, DidSignedAssertion, LabeledKey,
@@ -27,6 +28,10 @@ pub use error::SealedTransferError;
 pub use hpke::{HpkeSealed, generate_keypair, open as hpke_open, seal as hpke_seal};
 pub use nonce::{InMemoryNonceStore, NonceStore};
 pub use request::BootstrapRequest;
+pub use template_bootstrap::{
+    DidKeyMaterial, KeyPair, TemplateBootstrapConfig, TemplateBootstrapPayload, TemplateOutput,
+    VtaTrustBundle,
+};
 
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;

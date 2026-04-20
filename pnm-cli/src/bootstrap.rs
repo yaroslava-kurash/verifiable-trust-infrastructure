@@ -193,6 +193,18 @@ pub async fn run_open(
         SealedPayloadV1::RawPrivateKey(k) => {
             println!("Payload: RawPrivateKey ({})", k.key_type);
         }
+        SealedPayloadV1::TemplateBootstrap(p) => {
+            println!("Payload: TemplateBootstrap");
+            println!("  Template:     {}", p.config.template_name);
+            println!("  Kind:         {}", p.config.template_kind);
+            println!("  Secrets for:  {} DID(s)", p.secrets.len());
+            println!("  Outputs:      {}", p.config.outputs.len());
+            if let Some(ref u) = p.config.vta_url {
+                println!("  VTA URL:      {u}");
+            }
+            println!();
+            println!("Install via the provision-integration flow on the integration host.");
+        }
     }
 
     // Best-effort cleanup of the now-used secret. The bundle_id is single-use
@@ -347,6 +359,7 @@ fn variant_name(p: &SealedPayloadV1) -> &'static str {
         SealedPayloadV1::DidSecrets(_) => "DidSecrets",
         SealedPayloadV1::AdminKeySet(_) => "AdminKeySet",
         SealedPayloadV1::RawPrivateKey(_) => "RawPrivateKey",
+        SealedPayloadV1::TemplateBootstrap(_) => "TemplateBootstrap",
     }
 }
 

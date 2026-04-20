@@ -57,7 +57,7 @@ are services with long-lived service identity.
 |---|---|---|
 | 1 | DID ownership / caller-vs-VTA key custody | **DID templates always; VTA always mints keys** |
 | 2 | Payload variant shape | **Generic `SealedPayloadV1::TemplateBootstrap` with typed `TemplateOutput` enum** |
-| 3 | Request format | **VP (VC Data Model 2.0, `eddsa-rdfc-2022`)** |
+| 3 | Request format | **VP (VC Data Model 2.0, `eddsa-jcs-2022`)** |
 | 4 | VC subject (admin authorization) | **`client_did` (ephemeral); no VC-v2 on rotation** |
 | 5 | VC revocation | **Short-lived VC only (1h default); no StatusList; revocation = ACL removal** |
 | 6 | VTA issuer DID | **Reuse `vta_did`; template marks an `assertionMethod` key** |
@@ -68,6 +68,7 @@ are services with long-lived service identity.
 | 11 | Sealed-transfer producer assertion | **`DidSigned` by `vta_did`; `--expect-digest` mandatory; `--assertion pinned-only` escape hatch** |
 | 12 | JSON-LD context hosting | **Bake locally; publishing at canonical URL is operational follow-up** |
 | 13 | VP `proofPurpose` | **`authentication`** (VC `proofPurpose` stays `assertionMethod`) |
+| 3a | Cryptosuite | **`eddsa-jcs-2022`** (library default for Ed25519; JCS avoids JSON-LD context resolution so offline verification needs no context loader — revised from `eddsa-rdfc-2022` during implementation; `@context` arrays still present but not processed during sign/verify) |
 
 Full rationale for each is in the transcript of the design conversation.
 Short reminders live next to the decisions they shape below.
@@ -99,7 +100,7 @@ via PNM). Signed by the ephemeral key behind `client_did`.
   },
   "proof": {
     "type": "DataIntegrityProof",
-    "cryptosuite": "eddsa-rdfc-2022",
+    "cryptosuite": "eddsa-jcs-2022",
     "verificationMethod": "did:key:z6Mk.../#...",
     "proofPurpose": "authentication",
     "created": "2026-04-20T11:00:00Z",
@@ -110,12 +111,16 @@ via PNM). Signed by the ephemeral key behind `client_did`.
 
 Enforcements at `.verify()` time:
 - Proof verifies against `holder`'s DID doc (resolve `did:key`, extract
-  key, verify signature over URDNA2015-canonicalized bytes).
+  key, verify signature over JCS-canonicalized bytes). `verificationMethod`
+  must reference the same DID as `holder` — forged holder substitution
+  rejected.
 - `validUntil` is in the future (with ±5 minutes clock-skew tolerance —
   W3C-typical verifier default, applied symmetrically to `validFrom`
   when present).
-- `@context` resolves against the baked-in loader (offline-only; no
-  network fetch).
+- Cryptosuite must be `eddsa-jcs-2022` — widens when we intentionally
+  accept new suites, not as a side effect.
+- `@context` is present but not processed (JCS canonicalizes the JSON
+  structure directly, no JSON-LD expansion).
 - `proofPurpose == "authentication"`.
 
 ### Payload: `SealedPayloadV1::TemplateBootstrap`
@@ -213,7 +218,7 @@ pub struct VtaTrustBundle {
   },
   "proof": {
     "type": "DataIntegrityProof",
-    "cryptosuite": "eddsa-rdfc-2022",
+    "cryptosuite": "eddsa-jcs-2022",
     "verificationMethod": "did:webvh:vta.example.com#assertion-key",
     "proofPurpose": "assertionMethod",
     "created": "2026-04-20T11:00:00Z",

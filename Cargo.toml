@@ -32,6 +32,12 @@ affinidi-tdk = "0.6"
 # directly so sealed-transfer can use `affinidi_crypto::did_key::*` without
 # going through the higher-level Secret wrapper in secrets-resolver.
 affinidi-crypto = "0.1"
+# W3C VC Data Model 2.0 + Data Integrity proofs. Used by the
+# provision-integration flow (VP-framed bootstrap request, VC-issued
+# admin authorization). See CLAUDE.md "Authorization claims" principle.
+affinidi-vc = "0.1"
+affinidi-data-integrity = "0.6"
+affinidi-secrets-resolver = "0.5"
 affinidi-messaging-didcomm-service = "0.2"
 
 # Decentralized Trust Graph Credentials

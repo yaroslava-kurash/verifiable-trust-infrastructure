@@ -55,6 +55,18 @@ sealed-transfer = [
   # `affinidi-crypto::ed25519`) that fit the HPKE key shapes directly.
   "dep:affinidi-crypto",
 ]
+# Provision-integration: VP-framed bootstrap requests + VC-issued admin
+# authorization + TemplateBootstrap payload. Pulls in `sealed-transfer` so
+# everything the flow needs (HPKE, did:key helpers, ed25519↔x25519) is
+# available to a single feature.
+provision-integration = [
+  "sealed-transfer",
+  "dep:affinidi-vc",
+  "dep:affinidi-data-integrity",
+  "dep:affinidi-secrets-resolver",
+  "dep:uuid",
+  "dep:tokio",
+]
 # Full AWS Nitro attestation verification (COSE_Sign1 + certificate chain
 # against the AWS Nitro root). Consumers of sealed-bootstrap Mode B enable
 # this to validate the `Attested` producer assertion end-to-end.
@@ -84,6 +96,9 @@ aes = { version = "0.8", optional = true }
 sha2 = { workspace = true, optional = true }
 hpke = { version = "0.13", optional = true }
 affinidi-crypto = { workspace = true, optional = true }
+affinidi-vc = { workspace = true, optional = true }
+affinidi-data-integrity = { workspace = true, optional = true }
+affinidi-secrets-resolver = { workspace = true, optional = true }
 ciborium = { version = "0.2", optional = true }
 # Used only by sealed-transfer to feed an OS-backed CSPRNG into hpke's
 # rand_core 0.9 trait surface (rand 0.10 + rand_core 0.10 are incompatible).

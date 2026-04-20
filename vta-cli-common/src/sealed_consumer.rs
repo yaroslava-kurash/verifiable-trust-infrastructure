@@ -195,6 +195,12 @@ pub fn extract_admin_credential(
         SealedPayloadV1::RawPrivateKey(_) => Err(
             "cannot install a RawPrivateKey bundle as an admin credential".into(),
         ),
+        SealedPayloadV1::TemplateBootstrap(_) => Err(
+            "TemplateBootstrap payloads carry a VC-issued admin authorization, not a \
+             CredentialBundle — open via `pnm bootstrap open` and use the provision-integration \
+             flow to install"
+                .into(),
+        ),
     }
 }
 

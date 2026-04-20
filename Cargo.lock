@@ -430,6 +430,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "affinidi-vc"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9467f0763aa46e930957df9eeab8bf5d3b2956b0932a30dd7883c5de6829e631"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "ahash"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2166,7 +2180,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ab67060fc6b8ef687992d439ca0fa36e7ed17e9a0b16b25b601e8757df720de"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.117",
 ]
 
 [[package]]
@@ -8082,8 +8096,11 @@ dependencies = [
  "aes",
  "aes-gcm",
  "affinidi-crypto",
+ "affinidi-data-integrity 0.6.0",
  "affinidi-did-resolver-cache-sdk",
+ "affinidi-secrets-resolver",
  "affinidi-tdk",
+ "affinidi-vc",
  "azure_identity",
  "azure_security_keyvault_secrets",
  "base64 0.22.1",

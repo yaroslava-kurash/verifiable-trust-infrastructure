@@ -38,6 +38,13 @@ pub enum SealedPayloadV1 {
     /// server's ephemeral wrapping pubkey via sealed-transfer; the server
     /// opens it and imports.
     RawPrivateKey(RawPrivateKey),
+    /// Generic template-driven integration bootstrap. Carries a VC-issued
+    /// admin authorization + minted integration key material + first-boot
+    /// config. Produced by `vta bootstrap provision-integration` and
+    /// its `pnm` bridge equivalent.
+    ///
+    /// See `docs/bootstrap-provision-integration.md` for the full design.
+    TemplateBootstrap(Box<super::template_bootstrap::TemplateBootstrapPayload>),
 }
 
 /// A single raw private key transferred inside a sealed bundle. The
