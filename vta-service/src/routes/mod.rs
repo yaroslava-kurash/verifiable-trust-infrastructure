@@ -67,11 +67,30 @@ pub fn router() -> Router<AppState> {
         // Auth flow entry points
         .route("/auth/challenge", post(auth::challenge))
         .route("/auth/", post(auth::authenticate))
-        .route("/auth/refresh", post(auth::refresh))
-        .layer(unauth_layer);
+        .route("/auth/refresh", post(auth::refresh));
+    #[cfg(feature = "webvh")]
+    let unauth = unauth
+        // Public did.jsonl retrieval — matches webvh's world-readable
+        // log model, security is cryptographic not access-gated. Rate-
+        // limited via the same governor layer as the other unauth
+        // endpoints.
+        .route("/did/{did}/log", get(did_webvh::get_did_log_public_handler));
+    let unauth = unauth.layer(unauth_layer);
 
-    let router = Router::new()
-        .merge(unauth)
+    // Authenticated provision-integration (context-admin gated). Kept
+    // separate from `unauth` so the rate-limiter doesn't apply — the
+    // endpoint already hard-gates on `AdminAuth`.
+    #[cfg(feature = "webvh")]
+    let auth_provision = Router::new().route(
+        "/bootstrap/provision-integration",
+        post(bootstrap::provision_integration),
+    );
+
+    let router = Router::new().merge(unauth);
+    #[cfg(feature = "webvh")]
+    let router = router.merge(auth_provision);
+
+    let router = router
         .route(
             "/auth/sessions",
             get(auth::session_list).delete(auth::revoke_sessions_by_did),

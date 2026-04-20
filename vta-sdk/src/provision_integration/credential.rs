@@ -447,5 +447,4 @@ mod tests {
         let decoded = did_key_helpers::did_key_to_ed25519_pub(&did).unwrap();
         assert_eq!(decoded.as_slice(), pk.as_slice());
     }
-
 }

@@ -1954,6 +1954,38 @@ impl VtaClient {
             }
         }
     }
+
+    /// `POST /bootstrap/provision-integration` — bridge a VP-framed
+    /// bootstrap request to the VTA and receive the sealed bundle.
+    ///
+    /// Requires REST transport — the endpoint has no DIDComm
+    /// equivalent in phase 1. Callers on the DIDComm transport get
+    /// [`VtaError::Protocol`].
+    #[cfg(feature = "provision-integration")]
+    pub async fn provision_integration(
+        &self,
+        req: crate::provision_integration::http::ProvisionIntegrationRequest,
+    ) -> Result<crate::provision_integration::http::ProvisionIntegrationResponse, VtaError> {
+        match &self.transport {
+            Transport::Rest {
+                client,
+                base_url,
+                auth,
+            } => {
+                Self::ensure_token_valid(client, base_url, auth).await?;
+                let token = auth.lock().await.token.clone();
+                let http_req = client
+                    .post(format!("{base_url}/bootstrap/provision-integration"))
+                    .json(&req);
+                let resp = Self::with_auth_token(http_req, &token).send().await?;
+                Self::handle_response(resp).await
+            }
+            #[cfg(feature = "session")]
+            Transport::DIDComm { .. } => Err(VtaError::Protocol(
+                "provision-integration is REST-only in phase 1".into(),
+            )),
+        }
+    }
 }
 
 #[cfg(test)]

@@ -159,6 +159,41 @@ enum BootstrapCommands {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Provision a template-driven integration (mediator, webvh-host,
+    /// future kinds) for a consumer's VP-framed BootstrapRequest.
+    ///
+    /// Mints integration key material, renders the named DID template,
+    /// creates an admin ACL entry for the consumer's `client_did`,
+    /// issues a VTA-signed authorization VC, and seals everything to
+    /// the consumer's X25519 pubkey (derived from `client_did`).
+    ///
+    /// See `docs/bootstrap-provision-integration.md` for the full flow.
+    #[cfg(feature = "webvh")]
+    ProvisionIntegration {
+        /// Path to the consumer's VP-framed BootstrapRequest JSON
+        /// (`pnm bootstrap request --out …`).
+        #[arg(long)]
+        request: PathBuf,
+        /// VTA context the integration will live in. Must be an
+        /// existing context the operator is admin of. If the request
+        /// carries a `contextHint`, this flag must either match it or
+        /// be omitted.
+        #[arg(long)]
+        context: Option<String>,
+        /// Producer assertion mode on the returned sealed bundle.
+        /// `did-signed` (default) signs with the VTA's `{vta_did}#key-0`.
+        /// `pinned-only` is a dev/test escape hatch — no in-band
+        /// signature, digest-pinning only.
+        #[arg(long, default_value = "did-signed")]
+        assertion: crate::bootstrap_cli::AssertionModeFlag,
+        /// Override for the VC's `validUntil` window, in hours. Default
+        /// is 1h. Fractional hours accepted (e.g. `0.25` for 15min).
+        #[arg(long, value_name = "HOURS")]
+        vc_validity_hours: Option<f64>,
+        /// Output path for the armored bundle.
+        #[arg(long)]
+        out: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -260,6 +295,18 @@ enum WebvhCommands {
     DeleteDid {
         /// The DID to delete
         did: String,
+    },
+    /// Print the raw `did.jsonl` log for a webvh DID the VTA knows.
+    ///
+    /// Snapshot from provisioning time — use this for audit or
+    /// republication fallback, not as a live resolver (the integration
+    /// itself becomes the live source once it publishes).
+    DidLog {
+        /// The DID to retrieve the log for.
+        did: String,
+        /// Optional output file. Stdout if omitted.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 }
 
@@ -497,7 +544,9 @@ async fn main() {
         Some(Commands::Webvh { command }) => {
             // SEALED CHECK: webvh commands modify servers and DIDs
             match &command {
-                WebvhCommands::ListServers | WebvhCommands::ListDids { .. } => {}
+                WebvhCommands::ListServers
+                | WebvhCommands::ListDids { .. }
+                | WebvhCommands::DidLog { .. } => {}
                 _ => check_seal(&cli.config).await,
             }
             let result = match command {
@@ -540,6 +589,9 @@ async fn main() {
                 WebvhCommands::DeleteDid { did } => {
                     webvh_cli::run_delete_did(cli.config, did).await
                 }
+                WebvhCommands::DidLog { did, out } => {
+                    webvh_cli::run_did_log(cli.config, did, out).await
+                }
             };
             if let Err(e) = result {
                 eprintln!("Error: {e}");
@@ -553,6 +605,24 @@ async fn main() {
                     payload,
                     out,
                 } => bootstrap_cli::run_seal(cli.config.clone(), request, payload, out).await,
+                #[cfg(feature = "webvh")]
+                BootstrapCommands::ProvisionIntegration {
+                    request,
+                    context,
+                    assertion,
+                    vc_validity_hours,
+                    out,
+                } => {
+                    bootstrap_cli::run_provision_integration(
+                        cli.config.clone(),
+                        request,
+                        context,
+                        assertion,
+                        vc_validity_hours,
+                        out,
+                    )
+                    .await
+                }
             };
             if let Err(e) = result {
                 eprintln!("Error: {e}");

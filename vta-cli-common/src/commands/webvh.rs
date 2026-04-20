@@ -325,3 +325,51 @@ pub async fn cmd_webvh_did_delete(
     println!("WebVH DID deleted: {did}");
     Ok(())
 }
+
+/// `pnm webvh did-log <did> [--out <path>]` — fetch the raw `did.jsonl`
+/// log from the VTA's public `GET /did/{did}/log` endpoint.
+///
+/// Unauthenticated — matches webvh's world-readable log model. Reads
+/// the VTA base URL off the caller's current session (no token needed
+/// for this endpoint specifically).
+pub async fn cmd_webvh_did_log(
+    vta_base_url: &str,
+    did: &str,
+    out: Option<std::path::PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Cheap URL-path-segment escaping for DIDs. DIDs use `:` (reserved
+    // but safe in a path segment) and possibly `#` / `?` — we only need
+    // to handle `#` and `?` (both would terminate the path) and `%`
+    // (escape char). Keep `:` as-is.
+    let escaped_did = did
+        .replace('%', "%25")
+        .replace('#', "%23")
+        .replace('?', "%3F");
+    let url = format!("{vta_base_url}/did/{escaped_did}/log");
+    let http = reqwest::Client::new();
+    let resp = http.get(&url).send().await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("GET {url} failed ({status}): {body}").into());
+    }
+    let log = resp.text().await?;
+
+    match out {
+        Some(path) => {
+            std::fs::write(&path, log.as_bytes())
+                .map_err(|e| format!("write {}: {e}", path.display()))?;
+            eprintln!(
+                "DID log written to {} ({} bytes)",
+                path.display(),
+                log.len()
+            );
+        }
+        None => {
+            // Raw to stdout — pipe to a file, to `curl --data-binary`,
+            // or to `.well-known/did.jsonl` directly.
+            print!("{log}");
+        }
+    }
+    Ok(())
+}

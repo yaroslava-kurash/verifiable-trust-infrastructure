@@ -174,6 +174,34 @@ enum BootstrapCommands {
         #[arg(long)]
         slug: Option<String>,
     },
+
+    /// Bridge a VP-framed BootstrapRequest to `POST /bootstrap/provision-integration`
+    /// on the configured VTA, writing the returned armored sealed bundle to disk.
+    ///
+    /// Mirrors the offline `vta bootstrap provision-integration` command;
+    /// the difference is purely the transport — the VTA runs the same
+    /// shared library function regardless of how the request arrived.
+    ProvisionIntegration {
+        /// Path to the VP-framed BootstrapRequest JSON (emitted by the
+        /// integration's operator via `pnm bootstrap request`).
+        #[arg(long)]
+        request: std::path::PathBuf,
+        /// VTA context to provision into. If the request carries a
+        /// `contextHint`, this flag must either match it or be omitted.
+        #[arg(long)]
+        context: Option<String>,
+        /// Producer assertion mode. `did-signed` (default) signs with
+        /// the VTA's assertion key; `pinned-only` is a dev/test
+        /// escape hatch.
+        #[arg(long, default_value = "did-signed")]
+        assertion: String,
+        /// Override for the VC's `validUntil` window, in seconds.
+        #[arg(long, value_name = "SECONDS")]
+        vc_validity_seconds: Option<i64>,
+        /// Output path for the armored bundle.
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -446,6 +474,20 @@ enum WebvhCommands {
     DeleteDid {
         /// The DID to delete
         did: String,
+    },
+    /// Print the raw `did.jsonl` log for a webvh DID the VTA knows.
+    ///
+    /// Snapshot from provisioning time — not a live resolver. Use for
+    /// audit, debugging, or republication fallback.
+    ///
+    /// The VTA's endpoint is public (webvh logs are world-readable by
+    /// design), so this runs without a session token.
+    DidLog {
+        /// The DID to retrieve the log for.
+        did: String,
+        /// Optional output file; stdout if omitted.
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
     },
 }
 
@@ -1004,6 +1046,11 @@ fn requires_auth(cmd: &Commands) -> bool {
     if let Commands::DidTemplates { command } = cmd {
         return is_online_template_cmd(command);
     }
+    // Bootstrap has mostly offline subcommands, but
+    // ProvisionIntegration bridges to the authenticated endpoint.
+    if let Commands::Bootstrap { command } = cmd {
+        return matches!(command, BootstrapCommands::ProvisionIntegration { .. });
+    }
     !matches!(
         cmd,
         Commands::Health
@@ -1066,37 +1113,44 @@ async fn main() {
             return;
         }
         Commands::Bootstrap { command } => {
+            // Offline / no-auth subcommands handle themselves here and
+            // return. `ProvisionIntegration` needs an authed VtaClient
+            // so it falls through to the main dispatch below.
             let result = match command {
                 BootstrapCommands::Request { out, label } => {
-                    bootstrap::run_request(out.clone(), label.clone()).await
+                    Some(bootstrap::run_request(out.clone(), label.clone()).await)
                 }
                 BootstrapCommands::Open {
                     bundle,
                     expect_digest,
                     no_verify_digest,
-                } => {
+                } => Some(
                     bootstrap::run_open(bundle.clone(), expect_digest.clone(), *no_verify_digest)
-                        .await
-                }
+                        .await,
+                ),
                 BootstrapCommands::Connect {
                     vta_url,
                     expect_digest,
                     slug,
-                } => {
+                } => Some(
                     bootstrap::run_connect(
                         vta_url.clone(),
                         expect_digest.clone(),
                         slug.clone(),
                         &mut pnm_config,
                     )
-                    .await
-                }
+                    .await,
+                ),
+                // Authed — handled in the main dispatch below.
+                BootstrapCommands::ProvisionIntegration { .. } => None,
             };
-            if let Err(e) = result {
-                vta_cli_common::render::print_cli_error(e.as_ref());
-                std::process::exit(1);
+            if let Some(r) = result {
+                if let Err(e) = r {
+                    vta_cli_common::render::print_cli_error(e.as_ref());
+                    std::process::exit(1);
+                }
+                return;
             }
-            return;
         }
         Commands::DidTemplates { command } if !is_online_template_cmd(command) => {
             let result = match command {
@@ -1244,7 +1298,30 @@ async fn main() {
 
     let result = match cli.command {
         Commands::Setup => unreachable!(),
-        Commands::Bootstrap { .. } => unreachable!(),
+        Commands::Bootstrap { command } => match command {
+            BootstrapCommands::ProvisionIntegration {
+                request,
+                context,
+                assertion,
+                vc_validity_seconds,
+                out,
+            } => {
+                bootstrap::run_provision_integration(
+                    &client,
+                    request,
+                    context,
+                    assertion,
+                    vc_validity_seconds,
+                    out,
+                )
+                .await
+            }
+            // Request / Open / Connect are handled in the early dispatch
+            // above (they don't need an authed VtaClient).
+            BootstrapCommands::Request { .. }
+            | BootstrapCommands::Open { .. }
+            | BootstrapCommands::Connect { .. } => unreachable!(),
+        },
         Commands::DidTemplates { command } => match command {
             DidTemplateCommands::Validate { .. }
             | DidTemplateCommands::Init { .. }
@@ -1547,6 +1624,9 @@ async fn main() {
             }
             WebvhCommands::GetDid { did } => webvh::cmd_webvh_did_get(&client, &did).await,
             WebvhCommands::DeleteDid { did } => webvh::cmd_webvh_did_delete(&client, &did).await,
+            WebvhCommands::DidLog { did, out } => {
+                webvh::cmd_webvh_did_log(client.base_url(), &did, out).await
+            }
         },
         Commands::Audit { command } => match command {
             AuditCommands::List {

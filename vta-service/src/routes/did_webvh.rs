@@ -157,6 +157,36 @@ pub async fn get_did_log_handler(
     Ok(Json(result))
 }
 
+/// `GET /did/{did}/log` — public, unauthenticated.
+///
+/// Returns the raw `did.jsonl` bytes for a DID the VTA knows. 404 if
+/// unknown. Matches webvh's native design: DID logs are world-readable
+/// (security is cryptographic via signatures + SCID anchoring, not
+/// access-gated). Rate-limited via the `unauth_layer` at the router.
+///
+/// This is a snapshot of the log at provisioning time — once the
+/// integration boots and publishes on its own webvh host, that copy
+/// becomes the live source of truth. Use this endpoint for audit,
+/// debugging, or republication fallback; not as a general DID
+/// resolver. See `docs/bootstrap-provision-integration.md` §"did.jsonl
+/// retrieval" for the full semantics.
+pub async fn get_did_log_public_handler(
+    State(state): State<AppState>,
+    Path(did): Path<String>,
+) -> Result<
+    (
+        axum::http::StatusCode,
+        [(&'static str, &'static str); 1],
+        String,
+    ),
+    AppError,
+> {
+    use axum::http::StatusCode;
+    let log = crate::webvh_store::get_did_log(&state.webvh_ks, &did).await?;
+    let log = log.ok_or_else(|| AppError::NotFound(format!("webvh DID log not found: {did}")))?;
+    Ok((StatusCode::OK, [("content-type", "application/jsonl")], log))
+}
+
 pub async fn delete_did_handler(
     auth: AdminAuth,
     State(state): State<AppState>,

@@ -24,6 +24,11 @@ hkdf = "0.12"
 aes-gcm = "0.10"
 base64 = { workspace = true }
 rand = { workspace = true }
+# Thin HTTP client used by the `webvh did-log` CLI command to hit the
+# public `GET /did/{did}/log` endpoint. VtaClient handles authenticated
+# endpoints; this one is public so a bare reqwest call is simpler than
+# threading it through VtaClient.
+reqwest = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

@@ -24,6 +24,7 @@
 //! verification under this cryptosuite.
 
 pub mod credential;
+pub mod http;
 pub mod payload;
 pub mod request;
 

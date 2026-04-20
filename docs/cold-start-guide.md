@@ -273,54 +273,97 @@ complex clients" section below.
 
 ---
 
-## Adding DIDComm messaging (mediator)
+## Adding an integration (mediator, WebVH hosting, future kinds)
 
 DIDComm is optional. Without a mediator, PNM authenticates via HTTP
-challenge-response. To add mediator-routed DIDComm you need:
+challenge-response. To add a mediator — or any other VTA-managed
+integration (WebVH hosting server, credential issuer, …) — use the
+`provision-integration` flow.
 
-- A running DIDComm mediator (e.g. `affinidi-messaging-mediator`).
-- A mediator DID published somewhere PNM can resolve (WebVH, did:web).
-- Mediator setup knows about the VTA (it fetches its keys from the VTA
-  at startup).
+Provisioning an integration is a single operator action that:
+- Mints the integration's DID + key material (VTA-side, via a DID
+  template).
+- Issues a short-lived W3C Verifiable Credential attesting the
+  integration's authorization.
+- Seals everything (VC, keys, rendered DID doc, `did.jsonl` log, VTA
+  trust bundle) into an armored bundle the integration opens at first
+  boot.
 
-When bootstrapping a mediator against this VTA the same temp-did:key
-flow applies:
+Two transports, same operation:
 
-1. On the mediator host, run the mediator's setup to mint the mediator's
-   identity DID + produce a `BootstrapRequest` for its admin credential.
-2. On a workstation with `pnm-cli`, run:
+- **Offline** — run on the VTA host itself when the operator is
+  physically there. Uses `vta bootstrap provision-integration`.
+- **Online via PNM** — when the operator is on a workstation with an
+  authenticated PNM session, `pnm bootstrap provision-integration`
+  bridges to the VTA's `POST /bootstrap/provision-integration` endpoint.
+  Same shared library function runs on the VTA regardless of transport.
+
+Full design: [`bootstrap-provision-integration.md`].
+
+### Example: provision a DIDComm mediator
+
+1. On the **mediator host**, run the mediator's setup to mint an
+   ephemeral `client_did` (Ed25519) and emit a VP-framed bootstrap
+   request:
    ```
-   pnm bootstrap request --out mediator-request.json
+   pnm bootstrap request --out mediator-request.vp.json
    ```
-   and ship `mediator-request.json` to the VTA host.
-3. On the VTA host (VTA **stopped**):
+   Ship `mediator-request.vp.json` to whoever will drive provisioning
+   on the VTA side. The JSON is signed by `client_did`; any tamper
+   rejects at verification.
+
+2. On the **VTA host** (offline / air-gapped):
    ```
-   vta bootstrap seal \
-       --request mediator-request.json \
-       --payload mediator-payload.json \
-       --out     mediator.armor
+   vta bootstrap provision-integration \
+       --request  mediator-request.vp.json \
+       --context  prod-mediator \
+       --out      mediator.armor
    ```
-   The payload is a `SealedPayloadV1::ContextProvision` produced by
-   `vta context provision --recipient mediator-request.json` on a PNM-
-   authenticated operator workstation (see [`sealed-bootstrap.md`] for
-   the wire format).
-4. Ship `mediator.armor` (and the printed SHA-256 digest) back to the
-   mediator host; it opens the bundle, reads its VTA-admin credential,
-   and rotates on first connect.
+   Or **via PNM** from an authenticated operator workstation:
+   ```
+   pnm bootstrap provision-integration \
+       --request  mediator-request.vp.json \
+       --context  prod-mediator \
+       --vta      <vta-slug> \
+       --out      mediator.armor
+   ```
+   Either way the VTA:
+   - Mints the mediator's signing + key-agreement keys and renders the
+     `didcomm-mediator` DID template.
+   - Creates an admin ACL entry for the mediator's `client_did` in
+     `prod-mediator`.
+   - Issues a `VtaAuthorizationCredential` (1h validity by default).
+   - Seals it all to `client_did`'s X25519 derivation and prints the
+     SHA-256 digest.
 
-The full mediator + WebVH cold-start is out of scope for this guide —
-those services live in separate repositories with their own setup docs.
+3. Ship `mediator.armor` (and the printed digest) back to the mediator
+   host. The mediator opens the bundle, verifies the VTA signature
+   offline against the shipped `VtaTrustBundle`, writes its webvh log
+   to `/.well-known/did.jsonl`, and rotates on first connect.
 
----
+The `didcomm-mediator` template is a built-in. Custom integration
+shapes register their own template via `pnm did-templates upload` and
+pass the name in the request's `ask.template.name`.
 
-## Adding WebVH DID hosting
+Revocation is the ACL — `pnm acl delete <mediator-did>` cuts access
+regardless of VC expiry. VCs are bootstrap-transport only.
 
-Same shape as the mediator: provision the WebVH server's VTA-admin
-credential via `pnm bootstrap request` + `vta context provision
---recipient`, and run the WebVH server's own bootstrap to import its
-signing / KA keys.
+### did.jsonl retrieval (audit, republication, debugging)
 
-See the `affinidi-webvh-service` repository's cold-start docs.
+The VTA exposes the provisioning-time `did.jsonl` log publicly (webvh
+logs are world-readable by design):
+
+```
+pnm webvh did-log <did:webvh:...>
+vta webvh did-log <did:webvh:...>              # offline from the VTA host
+GET /did/{did}/log                             # HTTP, unauthenticated
+```
+
+Snapshot-only — once the integration publishes on its own webvh host,
+that copy is the live source. Use this for audit, republication
+fallback, or debugging resolution issues.
+
+[`bootstrap-provision-integration.md`]: ./bootstrap-provision-integration.md
 
 ---
 

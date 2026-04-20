@@ -283,3 +283,37 @@ pub async fn run_delete_did(
     eprintln!("WebVH DID deleted: {did}");
     Ok(())
 }
+
+/// `vta webvh did-log` — print the raw `did.jsonl` log for a DID the
+/// VTA knows (provisioning-time snapshot).
+pub async fn run_did_log(
+    config_path: Option<PathBuf>,
+    did: String,
+    out: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config = AppConfig::load(config_path)?;
+    let store = Store::open(&config.store)?;
+    let webvh_ks = store.keyspace("webvh")?;
+
+    let log = crate::webvh_store::get_did_log(&webvh_ks, &did)
+        .await?
+        .ok_or_else(|| format!("webvh DID log not found: {did}"))?;
+
+    match out {
+        Some(path) => {
+            std::fs::write(&path, log.as_bytes())
+                .map_err(|e| format!("write {}: {e}", path.display()))?;
+            eprintln!(
+                "DID log written to {} ({} bytes)",
+                path.display(),
+                log.len()
+            );
+        }
+        None => {
+            // Raw to stdout so it can be piped to a webvh server or
+            // saved to `.well-known/did.jsonl` directly.
+            print!("{log}");
+        }
+    }
+    Ok(())
+}

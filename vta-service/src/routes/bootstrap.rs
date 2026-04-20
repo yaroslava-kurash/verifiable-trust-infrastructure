@@ -295,3 +295,135 @@ impl IntoResponse for BootstrapResponseBody {
         Json(self).into_response()
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// POST /bootstrap/provision-integration
+// ─────────────────────────────────────────────────────────────────────
+//
+// Authenticated counterpart to the offline `vta bootstrap
+// provision-integration` CLI. The same shared library fn under
+// `operations::provision_integration` backs both; only the I/O differs.
+
+#[cfg(feature = "webvh")]
+pub use provision::provision_integration;
+
+#[cfg(feature = "webvh")]
+mod provision {
+    use axum::Json;
+    use axum::extract::State;
+    use serde::{Deserialize, Serialize};
+
+    use crate::auth::AdminAuth;
+    use crate::error::AppError;
+    use crate::operations::provision_integration::{
+        AssertionMode, ProvisionIntegrationParams,
+        provision_integration as provision_integration_lib,
+    };
+    use crate::server::AppState;
+    use vta_sdk::provision_integration::BootstrapRequest;
+
+    /// Request body for `POST /bootstrap/provision-integration`.
+    #[derive(Debug, Deserialize)]
+    pub struct ProvisionIntegrationRequestBody {
+        /// The integration's VP-framed bootstrap request (signed by its
+        /// ephemeral `client_did`).
+        pub request: BootstrapRequest,
+        /// VTA context to provision into. See library-fn docs for
+        /// context-hint reconciliation rules.
+        pub context: String,
+        /// Optional — default `DidSigned`. Rejected unless the assertion
+        /// mode is one the server is happy to sign (pinned-only is
+        /// accepted on the HTTP surface because dev/test HTTP use is
+        /// legitimate).
+        #[serde(default)]
+        pub assertion: Option<AssertionModeWire>,
+        /// Optional override for the VC's validity window, in seconds.
+        /// Omit for the 1-hour default.
+        #[serde(default)]
+        pub vc_validity_seconds: Option<i64>,
+    }
+
+    /// Wire-form enum for `assertion` (camelCase-serialised via
+    /// `#[serde(rename_all = ...)]`).
+    #[derive(Debug, Clone, Copy, Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub enum AssertionModeWire {
+        DidSigned,
+        PinnedOnly,
+    }
+
+    impl From<AssertionModeWire> for AssertionMode {
+        fn from(m: AssertionModeWire) -> Self {
+            match m {
+                AssertionModeWire::DidSigned => AssertionMode::DidSigned,
+                AssertionModeWire::PinnedOnly => AssertionMode::PinnedOnly,
+            }
+        }
+    }
+
+    /// Response body.
+    #[derive(Debug, Serialize)]
+    pub struct ProvisionIntegrationResponseBody {
+        /// Armored sealed bundle (PGP-style BEGIN/END blocks).
+        pub bundle: String,
+        /// SHA-256 digest of the sealed ciphertext (lowercase hex).
+        pub digest: String,
+        /// Operator-readable summary.
+        pub summary: ProvisionSummaryWire,
+    }
+
+    #[derive(Debug, Serialize)]
+    pub struct ProvisionSummaryWire {
+        pub client_did: String,
+        pub integration_did: String,
+        pub template_name: String,
+        pub template_kind: String,
+        pub bundle_id_hex: String,
+        pub secret_count: usize,
+        pub output_count: usize,
+    }
+
+    /// Handler. Gated by `AdminAuth` — the caller must have admin role
+    /// and the target context in `allowed_contexts` (enforced inside
+    /// the library fn's preconditions). Super-admin passes through.
+    pub async fn provision_integration(
+        auth: AdminAuth,
+        State(state): State<AppState>,
+        Json(req): Json<ProvisionIntegrationRequestBody>,
+    ) -> Result<Json<ProvisionIntegrationResponseBody>, AppError> {
+        let verified = req
+            .request
+            .verify()
+            .map_err(|e| AppError::Validation(format!("verify BootstrapRequest: {e}")))?;
+
+        let assertion_mode = req.assertion.map(AssertionMode::from).unwrap_or_default();
+
+        let vc_validity = req.vc_validity_seconds.map(chrono::Duration::seconds);
+
+        let output = provision_integration_lib(
+            &state,
+            &auth.0,
+            ProvisionIntegrationParams {
+                request: verified,
+                context: req.context,
+                assertion_mode,
+                vc_validity,
+            },
+        )
+        .await?;
+
+        Ok(Json(ProvisionIntegrationResponseBody {
+            bundle: output.armored,
+            digest: output.digest,
+            summary: ProvisionSummaryWire {
+                client_did: output.summary.client_did,
+                integration_did: output.summary.integration_did,
+                template_name: output.summary.template_name,
+                template_kind: output.summary.template_kind,
+                bundle_id_hex: output.summary.bundle_id_hex,
+                secret_count: output.summary.secret_count,
+                output_count: output.summary.output_count,
+            },
+        }))
+    }
+}

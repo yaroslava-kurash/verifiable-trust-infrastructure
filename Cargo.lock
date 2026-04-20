@@ -8067,6 +8067,7 @@ dependencies = [
  "multibase",
  "rand 0.10.1",
  "ratatui",
+ "reqwest 0.13.2",
  "serde_json",
  "sha2 0.10.9",
  "tokio",

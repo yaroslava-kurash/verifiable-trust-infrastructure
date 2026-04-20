@@ -352,6 +352,113 @@ pub async fn run_connect(
     Ok(())
 }
 
+/// `pnm bootstrap provision-integration` — bridge a VP-framed
+/// BootstrapRequest to the VTA's `POST /bootstrap/provision-integration`
+/// endpoint over the authenticated session, writing the returned
+/// armored bundle to disk.
+///
+/// The VTA runs the same shared library fn as the offline
+/// `vta bootstrap provision-integration` CLI; the difference is
+/// transport only.
+pub async fn run_provision_integration(
+    client: &vta_sdk::client::VtaClient,
+    request: PathBuf,
+    context: Option<String>,
+    assertion: String,
+    vc_validity_seconds: Option<i64>,
+    out: PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use vta_sdk::provision_integration::http::{
+        AssertionMode as WireAssertionMode, ProvisionIntegrationRequest,
+    };
+
+    // 1. Parse the integration's VP (but don't verify locally — the
+    //    server does the authoritative verification).
+    let request_json =
+        fs::read_to_string(&request).map_err(|e| format!("read {}: {e}", request.display()))?;
+    let vp: vta_sdk::provision_integration::BootstrapRequest = serde_json::from_str(&request_json)
+        .map_err(|e| format!("parse BootstrapRequest (VP): {e}"))?;
+
+    // 2. Resolve context: explicit > hint > fail. If both present they
+    //    must agree.
+    let target_context = resolve_target_context_wire(&vp, context)?;
+
+    // 3. Map assertion flag.
+    let assertion_mode = match assertion.as_str() {
+        "did-signed" | "didsigned" | "did_signed" => WireAssertionMode::DidSigned,
+        "pinned-only" | "pinnedonly" | "pinned_only" | "pinned" => WireAssertionMode::PinnedOnly,
+        other => {
+            return Err(format!(
+                "invalid --assertion value '{other}' — use 'did-signed' or 'pinned-only'"
+            )
+            .into());
+        }
+    };
+
+    // 4. Submit.
+    let resp = client
+        .provision_integration(ProvisionIntegrationRequest {
+            request: vp,
+            context: target_context.clone(),
+            assertion: Some(assertion_mode),
+            vc_validity_seconds,
+        })
+        .await?;
+
+    // 5. Write bundle + print summary.
+    fs::write(&out, resp.bundle.as_bytes()).map_err(|e| format!("write {}: {e}", out.display()))?;
+
+    eprintln!(
+        "Integration provisioned via {} — sealed bundle written to {}",
+        client.base_url(),
+        out.display()
+    );
+    eprintln!();
+    eprintln!("  Bundle-Id:       {}", resp.summary.bundle_id_hex);
+    eprintln!("  Context:         {target_context}");
+    eprintln!("  Client DID:      {}", resp.summary.client_did);
+    eprintln!("  Integration DID: {}", resp.summary.integration_did);
+    eprintln!(
+        "  Template:        {} ({})",
+        resp.summary.template_name, resp.summary.template_kind
+    );
+    eprintln!("  Secrets:         {}", resp.summary.secret_count);
+    eprintln!("  Outputs:         {}", resp.summary.output_count);
+    eprintln!("  SHA-256 digest:  {}", resp.digest);
+    eprintln!();
+    eprintln!(
+        "Communicate the digest to the integration's operator out-of-band so they can\n  \
+         verify the bundle on first boot:\n  \
+         pnm bootstrap open --bundle <file> --expect-digest {}",
+        resp.digest
+    );
+    Ok(())
+}
+
+fn resolve_target_context_wire(
+    request: &vta_sdk::provision_integration::BootstrapRequest,
+    explicit: Option<String>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use vta_sdk::provision_integration::BootstrapAsk;
+    let hint = match &request.ask {
+        BootstrapAsk::TemplateBootstrap(ask) => ask.context_hint.clone(),
+    };
+    match (explicit, hint) {
+        (Some(explicit), Some(hint)) if explicit != hint => Err(format!(
+            "--context '{explicit}' does not match request contextHint '{hint}' — \
+             operator and integration must agree on the context before provisioning"
+        )
+        .into()),
+        (Some(explicit), _) => Ok(explicit),
+        (None, Some(hint)) => Ok(hint),
+        (None, None) => Err(
+            "no context specified — pass --context <id> or have the integration's \
+             BootstrapRequest include a contextHint"
+                .into(),
+        ),
+    }
+}
+
 fn variant_name(p: &SealedPayloadV1) -> &'static str {
     match p {
         SealedPayloadV1::AdminCredential(_) => "AdminCredential",

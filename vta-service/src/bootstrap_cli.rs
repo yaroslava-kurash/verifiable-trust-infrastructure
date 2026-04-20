@@ -91,3 +91,193 @@ fn hex_lower(bytes: &[u8]) -> String {
     }
     s
 }
+
+/// `vta bootstrap provision-integration` — offline provisioning from
+/// the VTA host.
+///
+/// Reads the consumer's VP-framed `BootstrapRequest` JSON, verifies the
+/// proof + freshness, calls the shared
+/// [`crate::operations::provision_integration`] library fn, and writes
+/// the resulting armored sealed bundle.
+///
+/// Produces all persistent state atomically (integration DID + log,
+/// minted keys, admin ACL row) as part of the library-fn execution; the
+/// returned bundle is derived from that state.
+#[cfg(feature = "webvh")]
+pub async fn run_provision_integration(
+    config_path: Option<PathBuf>,
+    request_path: PathBuf,
+    context: Option<String>,
+    assertion: AssertionModeFlag,
+    vc_validity_hours: Option<f64>,
+    out_path: PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::acl::Role;
+    use crate::auth::AuthClaims;
+    use crate::operations::provision_integration::{
+        AssertionMode, ProvisionIntegrationParams, provision_integration,
+    };
+    use crate::server::build_app_state;
+    use tokio::sync::watch;
+    use vta_sdk::provision_integration::BootstrapRequest;
+
+    // 1. Parse + verify the request file (VP shape).
+    let request_json = std::fs::read_to_string(&request_path)
+        .map_err(|e| format!("read {}: {e}", request_path.display()))?;
+    let request: BootstrapRequest = serde_json::from_str(&request_json)
+        .map_err(|e| format!("parse BootstrapRequest (VP): {e}"))?;
+    let verified = request
+        .verify()
+        .map_err(|e| format!("verify BootstrapRequest: {e}"))?;
+
+    // 2. Resolve target context: explicit --context overrides the
+    //    request's contextHint; otherwise take the hint; otherwise fail.
+    let target_context = resolve_target_context(&verified, context)?;
+
+    // 3. Build AppState from the VTA config the same way `vta` itself
+    //    does. Storage-encryption key + TEE context are None here —
+    //    offline CLI use, no enclave involvement — and the restart
+    //    channel is a fresh local pair the CLI never signals on.
+    let app_config = AppConfig::load(config_path)?;
+    let store = Store::open(&app_config.store)?;
+    let seed_store = crate::keys::seed_store::create_seed_store(&app_config)
+        .map_err(|e| format!("create seed store: {e}"))?;
+    let (restart_tx, _restart_rx) = watch::channel(false);
+    let state = build_app_state(
+        app_config,
+        &store,
+        seed_store.into(),
+        None,
+        None,
+        restart_tx,
+    )
+    .await
+    .map_err(|e| format!("build app state: {e}"))?;
+
+    // 4. Synthesize a super-admin AuthClaims. The operator running
+    //    `vta bootstrap provision-integration` on the VTA host has root
+    //    access to the keyspace; there is no over-the-wire authn to
+    //    delegate through. Production-grade gating happens on the HTTP
+    //    endpoint (step 4) which extracts a real session-backed claim.
+    let auth = AuthClaims {
+        did: "vta:cli:provision-integration".into(),
+        role: Role::Admin,
+        allowed_contexts: Vec::new(),
+    };
+
+    // 5. Call the shared library fn.
+    let vc_validity = vc_validity_hours.map(|hrs| {
+        // chrono::Duration::seconds takes i64; hours * 3600 fits for any
+        // reasonable operator input.
+        chrono::Duration::seconds((hrs * 3600.0) as i64)
+    });
+    let assertion_mode = match assertion {
+        AssertionModeFlag::DidSigned => AssertionMode::DidSigned,
+        AssertionModeFlag::PinnedOnly => AssertionMode::PinnedOnly,
+    };
+
+    let output = provision_integration(
+        &state,
+        &auth,
+        ProvisionIntegrationParams {
+            request: verified,
+            context: target_context,
+            assertion_mode,
+            vc_validity,
+        },
+    )
+    .await
+    .map_err(|e| format!("provision-integration: {e}"))?;
+
+    // 6. Persist nonce-store writes + any other fjall flushes. The
+    //    shared fn already committed its rows via the keyspaces; this
+    //    call just forces any buffered-writes to disk before the CLI
+    //    exits.
+    store.persist().await?;
+
+    // 7. Write the armored bundle.
+    std::fs::write(&out_path, output.armored.as_bytes())
+        .map_err(|e| format!("write {}: {e}", out_path.display()))?;
+
+    // 8. Print the operator summary.
+    eprintln!(
+        "Integration provisioned — sealed bundle written to {}",
+        out_path.display()
+    );
+    eprintln!();
+    eprintln!("  Bundle-Id:       {}", output.summary.bundle_id_hex);
+    eprintln!("  Client DID:      {}", output.summary.client_did);
+    eprintln!("  Integration DID: {}", output.summary.integration_did);
+    eprintln!(
+        "  Template:        {} ({})",
+        output.summary.template_name, output.summary.template_kind
+    );
+    eprintln!("  Secrets:         {}", output.summary.secret_count);
+    eprintln!("  Outputs:         {}", output.summary.output_count);
+    eprintln!("  SHA-256 digest:  {}", output.digest);
+    eprintln!();
+    eprintln!(
+        "Communicate the digest to the integration's operator out-of-band so they can\n  \
+         verify the bundle on first boot:\n  \
+         pnm bootstrap open --bundle <file> --expect-digest {}",
+        output.digest
+    );
+
+    Ok(())
+}
+
+/// Resolve which context the operator wants to provision into.
+///
+/// Rules:
+/// - If `--context` was passed, it must either match the request's
+///   `contextHint` or the request must have no hint.
+/// - If `--context` was omitted, the request's hint is authoritative.
+/// - If neither is present, fail with a clear error.
+///
+/// Silent normalization hides operator bugs — the brief is explicit on
+/// this. Mismatches are rejected, not reconciled.
+#[cfg(feature = "webvh")]
+fn resolve_target_context(
+    request: &vta_sdk::provision_integration::VerifiedBootstrapRequest,
+    explicit: Option<String>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use vta_sdk::provision_integration::BootstrapAsk;
+    let hint = match request.ask() {
+        BootstrapAsk::TemplateBootstrap(ask) => ask.context_hint.clone(),
+    };
+    match (explicit, hint) {
+        (Some(explicit), Some(hint)) if explicit != hint => Err(format!(
+            "--context '{explicit}' does not match request contextHint '{hint}' — \
+             operator and integration must agree on the context before provisioning"
+        )
+        .into()),
+        (Some(explicit), _) => Ok(explicit),
+        (None, Some(hint)) => Ok(hint),
+        (None, None) => Err(
+            "no context specified — pass --context <id> or have the integration's \
+             BootstrapRequest include a contextHint"
+                .into(),
+        ),
+    }
+}
+
+/// CLI-friendly enum for `--assertion` flag values.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AssertionModeFlag {
+    #[default]
+    DidSigned,
+    PinnedOnly,
+}
+
+impl std::str::FromStr for AssertionModeFlag {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "did-signed" | "didsigned" | "did_signed" => Ok(Self::DidSigned),
+            "pinned-only" | "pinnedonly" | "pinned_only" | "pinned" => Ok(Self::PinnedOnly),
+            other => Err(format!(
+                "invalid --assertion value '{other}' — use 'did-signed' or 'pinned-only'"
+            )),
+        }
+    }
+}
