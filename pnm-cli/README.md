@@ -213,7 +213,7 @@ The `keys import` command accepts `--private-key <multibase>` or `--private-key-
 | ------------------------------------------------------------------------- | ----------------------- |
 | `acl list [--context ID]`                                                 | List ACL entries        |
 | `acl get <did>`                                                           | Get an ACL entry by DID |
-| `acl create --did DID --role ROLE [--label LABEL] [--contexts ctx1,ctx2]` | Create an ACL entry     |
+| `acl create --did DID --role ROLE [--label LABEL] [--contexts ctx1,ctx2] [--expires N[s\|m\|h\|d\|w]]` | Create an ACL entry     |
 | `acl update <did> [--role ROLE] [--label LABEL] [--contexts ctx1,ctx2]`   | Update an ACL entry     |
 | `acl delete <did>`                                                        | Delete an ACL entry     |
 

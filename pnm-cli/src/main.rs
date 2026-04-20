@@ -684,6 +684,11 @@ enum AclCommands {
         /// Comma-separated context IDs (empty = unrestricted)
         #[arg(long, value_delimiter = ',')]
         contexts: Vec<String>,
+        /// Optional expiry — accepts `N[s|m|h|d|w]` (e.g. `24h`, `7d`). When
+        /// set, the server's ACL sweeper removes the entry after the deadline.
+        /// Without this flag the entry is permanent.
+        #[arg(long)]
+        expires: Option<String>,
     },
     /// Update an ACL entry
     Update {
@@ -938,6 +943,19 @@ fn resolve_admin_acl_options(
         label: admin_label,
         expires_at,
     })
+}
+
+/// Resolve an optional `--expires` duration string (e.g. `24h`, `7d`) to an
+/// absolute unix-epoch `expires_at`. Matches the error-prefix style used by
+/// `resolve_admin_acl_options` so CLI messages read consistently.
+fn resolve_expires_at(expires: Option<&str>) -> Result<Option<u64>, Box<dyn std::error::Error>> {
+    match expires {
+        Some(s) => Ok(Some(
+            vta_cli_common::duration::duration_to_expires_at(s)
+                .map_err(|e| format!("--expires: {e}"))?,
+        )),
+        None => Ok(None),
+    }
 }
 
 /// Resolve CLI `--recipient` / `--recipient-pubkey` / `--recipient-nonce`
@@ -1418,7 +1436,13 @@ async fn main() {
                 role,
                 label,
                 contexts,
-            } => acl::cmd_acl_create(&client, did, role, label, contexts).await,
+                expires,
+            } => match resolve_expires_at(expires.as_deref()) {
+                Ok(expires_at) => {
+                    acl::cmd_acl_create(&client, did, role, label, contexts, expires_at).await
+                }
+                Err(e) => Err(e),
+            },
             AclCommands::Update {
                 did,
                 role,

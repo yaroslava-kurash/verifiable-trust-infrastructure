@@ -120,23 +120,35 @@ pub async fn cmd_acl_create(
     role: String,
     label: Option<String>,
     contexts: Vec<String>,
+    expires_at: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     validate_role(&role)?;
     let mut req = CreateAclRequest::new(did, role).contexts(contexts);
     if let Some(l) = label {
         req = req.label(l);
     }
+    if let Some(secs) = expires_at {
+        req = req.expires_at(secs);
+    }
     let entry = client.create_acl(req).await?;
     println!("ACL entry created:");
-    println!("  DID:      {}", entry.did);
+    println!("  DID:        {}", entry.did);
     println!(
-        "  Role:     {}",
+        "  Role:       {}",
         format_role(&entry.role, &entry.allowed_contexts)
     );
     if let Some(label) = &entry.label {
-        println!("  Label:    {label}");
+        println!("  Label:      {label}");
     }
-    println!("  Contexts: {}", format_contexts(&entry.allowed_contexts));
+    println!("  Contexts:   {}", format_contexts(&entry.allowed_contexts));
+    match entry.expires_at {
+        Some(secs) => println!(
+            "  Expires at: {} ({})",
+            crate::duration::format_local_time(secs),
+            crate::duration::format_remaining(secs),
+        ),
+        None => println!("  Expires at: (permanent)"),
+    }
     Ok(())
 }
 

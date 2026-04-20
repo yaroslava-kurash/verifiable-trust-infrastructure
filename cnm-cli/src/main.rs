@@ -438,6 +438,11 @@ enum AclCommands {
         /// Comma-separated context IDs (empty = unrestricted)
         #[arg(long, value_delimiter = ',')]
         contexts: Vec<String>,
+        /// Optional expiry — accepts `N[s|m|h|d|w]` (e.g. `24h`, `7d`). When
+        /// set, the server's ACL sweeper removes the entry after the deadline.
+        /// Without this flag the entry is permanent.
+        #[arg(long)]
+        expires: Option<String>,
     },
     /// Update an ACL entry
     Update {
@@ -975,7 +980,17 @@ async fn main() {
                 role,
                 label,
                 contexts,
-            } => acl::cmd_acl_create(&client, did, role, label, contexts).await,
+                expires,
+            } => match expires
+                .as_deref()
+                .map(vta_cli_common::duration::duration_to_expires_at)
+                .transpose()
+            {
+                Ok(expires_at) => {
+                    acl::cmd_acl_create(&client, did, role, label, contexts, expires_at).await
+                }
+                Err(e) => Err(format!("--expires: {e}").into()),
+            },
             AclCommands::Update {
                 did,
                 role,

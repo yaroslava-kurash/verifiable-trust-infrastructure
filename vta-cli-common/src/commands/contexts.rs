@@ -226,15 +226,13 @@ pub async fn cmd_context_create(
             if let Some(label) = admin.label.as_deref() {
                 hint.push_str(&format!(" --label '{label}'"));
             }
-            eprintln!("{hint}");
-            if admin.expires_at.is_some() {
-                eprintln!();
-                eprintln!("  (note: `pnm acl create` does not yet support --expires; create the");
-                eprintln!(
-                    "   permanent entry and rotate it out later, or use `pnm contexts provision`"
-                );
-                eprintln!("   for a fresh context with a setup ACL.)");
+            if let Some(expires_at) = admin.expires_at {
+                // Re-render the same duration the user supplied to --admin-expires
+                // so they can copy-paste without recomputing it.
+                let remaining = expires_at.saturating_sub(crate::duration::now_unix());
+                hint.push_str(&format!(" --expires {remaining}s"));
             }
+            eprintln!("{hint}");
             return Ok(());
         }
         Err(e) => return Err(e.into()),
