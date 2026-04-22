@@ -593,7 +593,9 @@ async fn preconditions(
     }
 
     // Template must be registered. Resolve order matches template-render:
-    // context scope first, then global.
+    // context scope → global → built-in. Built-ins always resolve via the
+    // SDK's embedded loader; only operator-uploaded templates need a
+    // stored record.
     let (template_name, admin_template_name) = match request.ask() {
         BootstrapAsk::TemplateBootstrap(ask) => (
             ask.template.name.clone(),
@@ -609,7 +611,8 @@ async fn preconditions(
     .is_some()
         || crate::did_templates::get_global_template(&state.did_templates_ks, &template_name)
             .await?
-            .is_some();
+            .is_some()
+        || vta_sdk::did_templates::load_embedded(&template_name).is_ok();
     if !template_registered {
         return Err(AppError::Validation(format!(
             "template '{template_name}' is not registered on this VTA. Register it via \
@@ -848,6 +851,9 @@ async fn resolve_template_kind(
     }
     if let Some(rec) = crate::did_templates::get_global_template(templates_ks, name).await? {
         return Ok(rec.template.kind);
+    }
+    if let Ok(tpl) = vta_sdk::did_templates::load_embedded(name) {
+        return Ok(tpl.kind);
     }
     Err(AppError::NotFound(format!("template '{name}' not found")))
 }
@@ -1180,5 +1186,217 @@ mod tests {
         let err = resolve_webvh_server(&vars, &ks).await.unwrap_err();
         assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
         assert!(err.to_string().contains("bool"), "got: {err}");
+    }
+
+    // ── preconditions / resolve_template_kind ───────────────────────
+    //
+    // Cover the three-tier template resolve (context → global → built-in)
+    // that both `preconditions` and `resolve_template_kind` share with
+    // `resolve_admin_template` and `did_webvh::resolve_template_for_render`.
+    // Built-ins like `didcomm-mediator` ship inside `vta_sdk::did_templates`
+    // and must resolve without an operator ever running
+    // `pnm did-templates upload`.
+
+    use crate::config::AppConfig;
+    use crate::didcomm_bridge::DIDCommBridge;
+    use crate::keys::seed_store::PlaintextSeedStore;
+    use ed25519_dalek::SigningKey;
+    use std::path::PathBuf;
+    use vta_sdk::did_templates::{DidTemplate, DidTemplateRecord, Scope};
+    use vta_sdk::provision_integration::request::BootstrapRequest;
+
+    /// Seven keyspaces + dir guard for a fresh per-test store. Only
+    /// `contexts_ks` and `did_templates_ks` are exercised by
+    /// `preconditions`; the remainder are filled to satisfy the
+    /// `ProvisionIntegrationDeps` shape.
+    struct TestStore {
+        _dir: tempfile::TempDir,
+        _store: Store,
+        contexts_ks: crate::store::KeyspaceHandle,
+        did_templates_ks: crate::store::KeyspaceHandle,
+        keys_ks: crate::store::KeyspaceHandle,
+        acl_ks: crate::store::KeyspaceHandle,
+        audit_ks: crate::store::KeyspaceHandle,
+        imported_ks: crate::store::KeyspaceHandle,
+        webvh_ks: crate::store::KeyspaceHandle,
+        sealed_nonces_ks: crate::store::KeyspaceHandle,
+        data_dir: PathBuf,
+    }
+
+    async fn open_test_store() -> TestStore {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let data_dir = dir.path().to_path_buf();
+        let store = Store::open(&StoreConfig {
+            data_dir: data_dir.clone(),
+        })
+        .expect("open store");
+        TestStore {
+            contexts_ks: store.keyspace("contexts").expect("contexts ks"),
+            did_templates_ks: store.keyspace("did_templates").expect("did_templates ks"),
+            keys_ks: store.keyspace("keys").expect("keys ks"),
+            acl_ks: store.keyspace("acl").expect("acl ks"),
+            audit_ks: store.keyspace("audit").expect("audit ks"),
+            imported_ks: store.keyspace("imported").expect("imported ks"),
+            webvh_ks: store.keyspace("webvh").expect("webvh ks"),
+            sealed_nonces_ks: store.keyspace("sealed_nonces").expect("nonces ks"),
+            _dir: dir,
+            _store: store,
+            data_dir,
+        }
+    }
+
+    fn test_app_config(data_dir: PathBuf) -> AppConfig {
+        AppConfig {
+            vta_did: None,
+            vta_name: None,
+            public_url: None,
+            resolver_url: None,
+            server: Default::default(),
+            log: Default::default(),
+            store: StoreConfig { data_dir },
+            messaging: None,
+            services: Default::default(),
+            auth: Default::default(),
+            audit: Default::default(),
+            secrets: Default::default(),
+            #[cfg(feature = "tee")]
+            tee: Default::default(),
+            config_path: PathBuf::new(),
+        }
+    }
+
+    fn test_deps(ts: &TestStore) -> ProvisionIntegrationDeps {
+        ProvisionIntegrationDeps {
+            keys_ks: ts.keys_ks.clone(),
+            acl_ks: ts.acl_ks.clone(),
+            audit_ks: ts.audit_ks.clone(),
+            contexts_ks: ts.contexts_ks.clone(),
+            did_templates_ks: ts.did_templates_ks.clone(),
+            imported_ks: ts.imported_ks.clone(),
+            webvh_ks: ts.webvh_ks.clone(),
+            sealed_nonces_ks: ts.sealed_nonces_ks.clone(),
+            seed_store: Arc::new(PlaintextSeedStore::new(&ts.data_dir)),
+            config: Arc::new(RwLock::new(test_app_config(ts.data_dir.clone()))),
+            did_resolver: None,
+            didcomm_bridge: Arc::new(DIDCommBridge::placeholder()),
+        }
+    }
+
+    fn super_admin_claims() -> AuthClaims {
+        AuthClaims {
+            did: "did:key:zTestAdmin".into(),
+            role: crate::acl::Role::Admin,
+            allowed_contexts: Vec::new(),
+        }
+    }
+
+    async fn signed_request(template_name: &str, context_hint: &str) -> VerifiedBootstrapRequest {
+        let seed = [7u8; 32];
+        let signing = SigningKey::from_bytes(&seed);
+        let pub_bytes: [u8; 32] = signing.verifying_key().to_bytes();
+        let client_did = affinidi_crypto::did_key::ed25519_pub_to_did_key(&pub_bytes);
+
+        let ask = BootstrapAsk::TemplateBootstrap(TemplateBootstrapAsk {
+            context_hint: Some(context_hint.into()),
+            template: DidTemplateRef {
+                name: template_name.into(),
+                vars: BTreeMap::new(),
+            },
+            admin_template: None,
+            note: None,
+        });
+
+        let req = BootstrapRequest::sign(
+            &seed,
+            &client_did,
+            [0u8; 16],
+            Duration::minutes(10),
+            None,
+            ask,
+        )
+        .await
+        .expect("sign bootstrap request");
+        req.verify().expect("verify bootstrap request")
+    }
+
+    #[tokio::test]
+    async fn preconditions_accepts_builtin_integration_template() {
+        let ts = open_test_store().await;
+        crate::contexts::create_context(&ts.contexts_ks, "prod-mediator", "Prod Mediator")
+            .await
+            .expect("create context");
+
+        let deps = test_deps(&ts);
+        let auth = super_admin_claims();
+        let request = signed_request("didcomm-mediator", "prod-mediator").await;
+
+        preconditions(&deps, &auth, "prod-mediator", &request)
+            .await
+            .expect("built-in didcomm-mediator should satisfy preconditions");
+    }
+
+    #[tokio::test]
+    async fn preconditions_rejects_unknown_template() {
+        let ts = open_test_store().await;
+        crate::contexts::create_context(&ts.contexts_ks, "prod-mediator", "Prod Mediator")
+            .await
+            .expect("create context");
+
+        let deps = test_deps(&ts);
+        let auth = super_admin_claims();
+        let request = signed_request("never-registered", "prod-mediator").await;
+
+        let err = preconditions(&deps, &auth, "prod-mediator", &request)
+            .await
+            .expect_err("unknown template must be rejected");
+        assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains("never-registered"), "got: {msg}");
+        assert!(msg.contains("is not registered on this VTA"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn resolve_template_kind_resolves_builtin_when_no_stored_record() {
+        let ts = open_test_store().await;
+
+        let kind = resolve_template_kind(&ts.did_templates_ks, "didcomm-mediator", "prod-mediator")
+            .await
+            .expect("built-in kind lookup should succeed");
+        let expected = vta_sdk::did_templates::load_embedded("didcomm-mediator")
+            .expect("built-in template available")
+            .kind;
+        assert_eq!(kind, expected);
+    }
+
+    #[tokio::test]
+    async fn resolve_template_kind_prefers_stored_record_over_builtin() {
+        // A context-scoped record must shadow the built-in, matching the
+        // resolve order in `resolve_admin_template` and
+        // `did_webvh::resolve_template_for_render`.
+        let ts = open_test_store().await;
+        let mut tpl: DidTemplate =
+            vta_sdk::did_templates::load_embedded("didcomm-mediator").expect("built-in available");
+        "shadowed-kind".clone_into(&mut tpl.kind);
+        let record = DidTemplateRecord {
+            template: tpl,
+            scope: Scope::Context {
+                context_id: "prod-mediator".into(),
+            },
+            created_at: 0,
+            updated_at: 0,
+            created_by: "test".into(),
+        };
+        crate::did_templates::store_context_template(
+            &ts.did_templates_ks,
+            "prod-mediator",
+            &record,
+        )
+        .await
+        .expect("store context template");
+
+        let kind = resolve_template_kind(&ts.did_templates_ks, "didcomm-mediator", "prod-mediator")
+            .await
+            .expect("stored record resolves");
+        assert_eq!(kind, "shadowed-kind");
     }
 }
