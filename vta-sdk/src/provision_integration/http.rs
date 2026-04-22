@@ -74,4 +74,11 @@ pub struct ProvisionSummary {
     pub bundle_id_hex: String,
     pub secret_count: usize,
     pub output_count: usize,
+    /// Resolved id of the registered webvh hosting server the VTA
+    /// published the integration's `did.jsonl` to. `None` (default)
+    /// means self-hosted at the URL — i.e. no `WEBVH_SERVER` template
+    /// var was set, or it was explicitly null. Older VTAs that
+    /// pre-date this field omit it on the wire; deserialize as `None`.
+    #[serde(default)]
+    pub webvh_server_id: Option<String>,
 }

@@ -7,7 +7,8 @@
   "requiredVars": ["URL"],
   "optionalVars": {
     "ROUTING_KEYS": [],
-    "ACCEPT": ["didcomm/v2"]
+    "ACCEPT": ["didcomm/v2"],
+    "WEBVH_SERVER": null
   },
   "defaults": {
     "preRotationCount": 2,

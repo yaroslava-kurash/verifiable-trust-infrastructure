@@ -168,6 +168,11 @@ pub struct ProvisionSummary {
     pub secret_count: usize,
     /// Number of template-emitted side outputs (1 `WebvhLog` for now).
     pub output_count: usize,
+    /// Resolved id of the registered webvh hosting server the VTA
+    /// published the integration's `did.jsonl` to. `None` when the
+    /// integration is self-hosted (no `WEBVH_SERVER` template var, or
+    /// it was explicitly null).
+    pub webvh_server_id: Option<String>,
 }
 
 /// Main entry point. See module docs for the flow.
@@ -200,11 +205,23 @@ pub async fn provision_integration(
 
     // ── 3. Mint + render + publish via create_did_webvh ─────────────
     //
-    // Templates ship with a `URL` required var for the integration's
-    // own webvh host. We pass that through as `url` on the create-did
-    // params, serverless mode (VTA does not publish to a separate
-    // webvh server). If a template has no URL the caller got a render
-    // error upstream from the template validator.
+    // Templates ship with a `URL` required var that becomes the
+    // integration's own service endpoint inside the rendered DID
+    // document (mediator's DIDComm endpoint, webvh hosting URL, etc.).
+    // It is *content* of the DID document, separate from where the
+    // `did.jsonl` log itself gets published.
+    //
+    // Publication target is selected by the optional `WEBVH_SERVER`
+    // template var:
+    //
+    //   WEBVH_SERVER absent or null → serverless mode (VTA does not
+    //     publish; the integration self-hosts at the URL above).
+    //   WEBVH_SERVER set to a registered server id → VTA publishes
+    //     `did.jsonl` to that server via its WebVHHosting endpoint.
+    //
+    // The id is validated against the registered-server catalogue
+    // before any state mutation so a typo or stale id fails fast,
+    // before key minting writes anything.
     let integration_url = template_vars
         .get("URL")
         .and_then(|v| v.as_str())
@@ -214,6 +231,13 @@ pub async fn provision_integration(
             )
         })?
         .to_string();
+
+    let webvh_server_id = resolve_webvh_server(&template_vars, &state.webvh_ks).await?;
+
+    let (params_server_id, params_url) = match &webvh_server_id {
+        Some(id) => (Some(id.clone()), None),
+        None => (None, Some(integration_url.clone())),
+    };
 
     let template_vars_hashmap: std::collections::HashMap<String, Value> =
         template_vars.clone().into_iter().collect();
@@ -229,8 +253,8 @@ pub async fn provision_integration(
         auth,
         super::did_webvh::CreateDidWebvhParams {
             context_id: context.clone(),
-            server_id: None,
-            url: Some(integration_url.clone()),
+            server_id: params_server_id,
+            url: params_url,
             path: None,
             label: Some(client_did.clone()),
             portable: true,
@@ -486,8 +510,53 @@ pub async fn provision_integration(
             bundle_id_hex,
             secret_count,
             output_count,
+            webvh_server_id,
         },
     })
+}
+
+/// Read the optional `WEBVH_SERVER` template var, validate it against
+/// the registered-server catalogue, and return the resolved id.
+///
+/// Returns `Ok(None)` when the var is absent, JSON-null, or the empty
+/// string (treated as "not set"). Returns `Err(AppError::NotFound)` when
+/// the var names an id that isn't registered with this VTA — caller
+/// surfaces that to the operator before any state is written.
+async fn resolve_webvh_server(
+    template_vars: &BTreeMap<String, Value>,
+    webvh_ks: &crate::store::KeyspaceHandle,
+) -> Result<Option<String>, AppError> {
+    let raw = match template_vars.get("WEBVH_SERVER") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(s)) => s,
+        Some(other) => {
+            let actual = match other {
+                Value::Bool(_) => "bool",
+                Value::Number(_) => "number",
+                Value::Array(_) => "array",
+                Value::Object(_) => "object",
+                _ => "non-string",
+            };
+            return Err(AppError::Validation(format!(
+                "WEBVH_SERVER must be a string (registered webvh-server id), got {actual}"
+            )));
+        }
+    };
+    let id = raw.trim();
+    if id.is_empty() {
+        return Ok(None);
+    }
+    if crate::webvh_store::get_server(webvh_ks, id)
+        .await?
+        .is_none()
+    {
+        return Err(AppError::NotFound(format!(
+            "WEBVH_SERVER '{id}' is not a registered webvh hosting server on this VTA \
+             — register it via `vta webvh add-server` first, or omit `WEBVH_SERVER` \
+             to self-host at the URL"
+        )));
+    }
+    Ok(Some(id.to_string()))
 }
 
 // ── Preconditions ───────────────────────────────────────────────────
@@ -998,5 +1067,118 @@ mod tests {
     #[test]
     fn hex_lower_formats_bytes() {
         assert_eq!(hex_lower(&[0x0a, 0xff, 0x00]), "0aff00");
+    }
+
+    // ── resolve_webvh_server ────────────────────────────────────────
+
+    use crate::config::StoreConfig;
+    use crate::store::Store;
+    use chrono::Utc;
+    use vta_sdk::webvh::WebvhServerRecord;
+
+    /// Open a fresh tempdir-backed store and return its `webvh` keyspace
+    /// plus the dir guard so the caller can drop both at end-of-test.
+    async fn fresh_webvh_keyspace() -> (tempfile::TempDir, Store, crate::store::KeyspaceHandle) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .expect("open store");
+        let ks = store.keyspace("webvh").expect("open webvh ks");
+        (dir, store, ks)
+    }
+
+    fn sample_server_record(id: &str) -> WebvhServerRecord {
+        WebvhServerRecord {
+            id: id.into(),
+            did: format!("did:webvh:{id}"),
+            label: None,
+            access_token: None,
+            access_expires_at: None,
+            refresh_token: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_webvh_server_absent_returns_none() {
+        let (_dir, _store, ks) = fresh_webvh_keyspace().await;
+        let vars = BTreeMap::new();
+        assert_eq!(resolve_webvh_server(&vars, &ks).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn resolve_webvh_server_null_returns_none() {
+        let (_dir, _store, ks) = fresh_webvh_keyspace().await;
+        let mut vars = BTreeMap::new();
+        vars.insert("WEBVH_SERVER".into(), Value::Null);
+        assert_eq!(resolve_webvh_server(&vars, &ks).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn resolve_webvh_server_empty_string_returns_none() {
+        let (_dir, _store, ks) = fresh_webvh_keyspace().await;
+        let mut vars = BTreeMap::new();
+        vars.insert("WEBVH_SERVER".into(), Value::String("   ".into()));
+        assert_eq!(resolve_webvh_server(&vars, &ks).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn resolve_webvh_server_unknown_id_is_not_found() {
+        let (_dir, _store, ks) = fresh_webvh_keyspace().await;
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "WEBVH_SERVER".into(),
+            Value::String("never-registered".into()),
+        );
+        let err = resolve_webvh_server(&vars, &ks).await.unwrap_err();
+        assert!(matches!(err, AppError::NotFound(_)), "got: {err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains("never-registered"), "got: {msg}");
+        assert!(msg.contains("vta webvh add-server"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn resolve_webvh_server_registered_id_returns_some() {
+        let (_dir, _store, ks) = fresh_webvh_keyspace().await;
+        crate::webvh_store::store_server(&ks, &sample_server_record("hosted-edge-1"))
+            .await
+            .unwrap();
+
+        let mut vars = BTreeMap::new();
+        vars.insert("WEBVH_SERVER".into(), Value::String("hosted-edge-1".into()));
+        assert_eq!(
+            resolve_webvh_server(&vars, &ks).await.unwrap(),
+            Some("hosted-edge-1".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_webvh_server_trims_whitespace() {
+        let (_dir, _store, ks) = fresh_webvh_keyspace().await;
+        crate::webvh_store::store_server(&ks, &sample_server_record("hosted-edge-1"))
+            .await
+            .unwrap();
+
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "WEBVH_SERVER".into(),
+            Value::String("  hosted-edge-1  ".into()),
+        );
+        assert_eq!(
+            resolve_webvh_server(&vars, &ks).await.unwrap(),
+            Some("hosted-edge-1".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_webvh_server_wrong_type_is_validation_error() {
+        let (_dir, _store, ks) = fresh_webvh_keyspace().await;
+        let mut vars = BTreeMap::new();
+        vars.insert("WEBVH_SERVER".into(), Value::Bool(true));
+        let err = resolve_webvh_server(&vars, &ks).await.unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
+        assert!(err.to_string().contains("bool"), "got: {err}");
     }
 }

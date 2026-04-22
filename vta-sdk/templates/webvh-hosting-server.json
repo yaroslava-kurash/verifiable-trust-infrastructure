@@ -6,7 +6,8 @@
   "methods": ["webvh", "web"],
   "requiredVars": ["URL"],
   "optionalVars": {
-    "HOSTING_PATH": "/webvh"
+    "HOSTING_PATH": "/webvh",
+    "WEBVH_SERVER": null
   },
   "defaults": {
     "preRotationCount": 2,

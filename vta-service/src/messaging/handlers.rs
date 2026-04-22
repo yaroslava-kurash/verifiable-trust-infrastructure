@@ -1214,6 +1214,7 @@ pub async fn handle_provision_integration(
             bundle_id_hex: output.summary.bundle_id_hex,
             secret_count: output.summary.secret_count,
             output_count: output.summary.output_count,
+            webvh_server_id: output.summary.webvh_server_id,
         },
     };
 

@@ -385,6 +385,8 @@ mod provision {
         pub bundle_id_hex: String,
         pub secret_count: usize,
         pub output_count: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub webvh_server_id: Option<String>,
     }
 
     /// Handler. Gated by `AdminAuth` — the caller must have admin role
@@ -431,6 +433,7 @@ mod provision {
                 bundle_id_hex: output.summary.bundle_id_hex,
                 secret_count: output.summary.secret_count,
                 output_count: output.summary.output_count,
+                webvh_server_id: output.summary.webvh_server_id,
             },
         }))
     }
