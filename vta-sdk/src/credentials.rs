@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 /// genuinely needed (e.g. at-rest keyring storage, where the OS already
 /// provides confidentiality).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CredentialBundle {
     pub did: String,
     #[serde(rename = "privateKeyMultibase")]

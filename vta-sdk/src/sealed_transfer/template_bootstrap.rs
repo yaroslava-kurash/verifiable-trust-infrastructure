@@ -22,6 +22,7 @@ use zeroize::Zeroizing;
 
 /// Top-level payload for `SealedPayloadV1::TemplateBootstrap`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TemplateBootstrapPayload {
     /// VTA-issued `VtaAuthorizationCredential`. Short-lived; verified at
     /// bundle open; never re-verified after that (ACL is the steady-
@@ -41,6 +42,7 @@ pub struct TemplateBootstrapPayload {
 /// Key material for a single DID the integration now controls. Secret
 /// bytes are zeroized on drop.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DidKeyMaterial {
     /// The DID this material is for (e.g. the rendered integration DID).
     pub did: String,
@@ -53,6 +55,7 @@ pub struct DidKeyMaterial {
 /// A single keypair with DID-URL-qualified key id. The private half is
 /// held in a [`Zeroizing`] buffer at rest.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KeyPair {
     /// DID URL with fragment, e.g. `did:webvh:host/path#key-1`. Matches
     /// the `id` of the corresponding verification method in the DID doc.
@@ -80,6 +83,7 @@ impl KeyPair {
 /// Non-credential data: template metadata, rendered DID document,
 /// template-declared side outputs, connect URL, VTA trust material.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TemplateBootstrapConfig {
     /// Name of the template the VTA rendered (audit).
     pub template_name: String,
@@ -170,6 +174,7 @@ pub enum TemplateOutput {
 ///   3. Extracts the `assertionMethod` verification method from the doc
 ///      and uses it to verify the authorization VC's proof.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VtaTrustBundle {
     pub vta_did: String,
     pub vta_did_document: serde_json::Value,

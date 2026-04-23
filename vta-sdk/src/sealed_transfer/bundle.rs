@@ -9,6 +9,7 @@ use crate::did_secrets::DidSecretsBundle;
 /// A labeled key entry, used by the `AdminKeySet` payload variant for
 /// multi-admin / future expansion.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LabeledKey {
     pub label: String,
     /// Key bytes, base64url-no-pad.
@@ -52,6 +53,7 @@ pub enum SealedPayloadV1 {
 /// between the outer request's declared key type and what was actually
 /// sealed — a defence against a compromised client mis-declaring its key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RawPrivateKey {
     /// One of: `ed25519`, `x25519`, `p256`.
     pub key_type: String,
@@ -63,6 +65,7 @@ pub struct RawPrivateKey {
 /// known DID. Used in Modes A and C when the consumer knows the VTA's DID up
 /// front.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DidSignedAssertion {
     pub did: String,
     /// Detached signature bytes (interpretation depends on the DID's key type),
@@ -75,6 +78,7 @@ pub struct DidSignedAssertion {
 /// An attestation quote (e.g. AWS Nitro CBOR document) committing to the
 /// producer's pubkey + nonce + VTA pubkey. Used in Mode B (TEE first-boot).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AttestationQuoteAssertion {
     /// Vendor / format tag, e.g. "aws-nitro-v1".
     pub format: String,
@@ -99,6 +103,7 @@ pub enum AssertionProof {
 
 /// The producer's claim that it owns the did:key embedded in chunk 0.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProducerAssertion {
     /// Producer's ephemeral Ed25519 `did:key`. Pinned by the consumer
     /// out-of-band (PinnedOnly), bound into the attestation user_data

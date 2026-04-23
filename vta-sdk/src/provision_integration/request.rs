@@ -33,7 +33,12 @@ use super::{BOOTSTRAP_CONTEXT_URL, ProvisionIntegrationError, VC_V2_CONTEXT_URL}
 /// at the top level; the custom bootstrap fields (`nonce`, `validUntil`,
 /// `label`, `ask`) sit alongside as additional properties authenticated
 /// by the same proof.
+///
+/// `deny_unknown_fields` keeps attackers from smuggling fields past the
+/// verifier — every field on the wire must be recognised here or the
+/// request is rejected before the DI proof is even checked.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BootstrapRequest {
     /// JSON-LD contexts. Must include `https://www.w3.org/ns/credentials/v2`
     /// and `https://openvtc.org/contexts/bootstrap-v1`.
@@ -83,6 +88,7 @@ pub enum BootstrapAsk {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TemplateBootstrapAsk {
     /// VTA context this integration will live in. The operator must
     /// confirm on the producer side (via CLI `--context`); this field
@@ -120,6 +126,7 @@ pub struct TemplateBootstrapAsk {
 
 /// Reference to a DID template registered at the VTA.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DidTemplateRef {
     /// Template name the VTA already knows (built-in or operator-
     /// uploaded via `pnm did-templates upload`).
@@ -1055,5 +1062,59 @@ mod tests {
             .unwrap();
         assert_ne!(a.bundle_id, b.bundle_id);
         assert_ne!(a.client_did, b.client_did);
+    }
+
+    #[test]
+    fn deserialize_rejects_unknown_top_level_field() {
+        // `deny_unknown_fields` must reject a VP body that tries to
+        // smuggle a field past the verifier — the guard runs before
+        // `verify()` so a modified VP never even reaches DI proof
+        // checking. Regression net for the item-22 hardening pass.
+        let json = serde_json::json!({
+            "@context": [VC_V2_CONTEXT_URL, BOOTSTRAP_CONTEXT_URL],
+            "type": ["VerifiablePresentation", "BootstrapRequest"],
+            "id": "urn:uuid:00000000-0000-0000-0000-000000000000",
+            "holder": "did:key:zTest",
+            "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+            "validUntil": "2099-01-01T00:00:00Z",
+            "ask": {
+                "type": "TemplateBootstrap",
+                "template": { "name": "didcomm-mediator" }
+            },
+            "proof": {},
+            "extraSneakyField": "attacker-controlled-value"
+        });
+        let err = serde_json::from_value::<BootstrapRequest>(json).unwrap_err();
+        assert!(
+            err.to_string().contains("extraSneakyField")
+                || err.to_string().contains("unknown field"),
+            "error must mention the rejected field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn deserialize_rejects_unknown_field_in_ask() {
+        // Same guard must kick in at the nested `ask` level — an
+        // attacker-controlled field inside TemplateBootstrapAsk is
+        // every bit as dangerous as one at the top.
+        let json = serde_json::json!({
+            "@context": [VC_V2_CONTEXT_URL, BOOTSTRAP_CONTEXT_URL],
+            "type": ["VerifiablePresentation", "BootstrapRequest"],
+            "id": "urn:uuid:00000000-0000-0000-0000-000000000000",
+            "holder": "did:key:zTest",
+            "nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+            "validUntil": "2099-01-01T00:00:00Z",
+            "ask": {
+                "type": "TemplateBootstrap",
+                "template": { "name": "didcomm-mediator" },
+                "smugglerField": 42
+            },
+            "proof": {}
+        });
+        let err = serde_json::from_value::<BootstrapRequest>(json).unwrap_err();
+        assert!(
+            err.to_string().contains("smugglerField") || err.to_string().contains("unknown field"),
+            "error must mention the rejected nested field, got: {err}"
+        );
     }
 }
