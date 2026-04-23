@@ -200,7 +200,7 @@ pub async fn provision_integration(
     preconditions(state, auth, &context, &request).await?;
 
     // ── 2. Extract templates + vars from the ask ────────────────────
-    let (template_name, template_vars) = extract_template(request.ask())?;
+    let (template_name, mut template_vars) = extract_template(request.ask())?;
     let admin_template_ref = extract_admin_template(request.ask());
 
     // ── 3. Mint + render + publish via create_did_webvh ─────────────
@@ -234,6 +234,13 @@ pub async fn provision_integration(
 
     let webvh_server_id = resolve_webvh_server(&template_vars, &state.webvh_ks).await?;
 
+    // Optional `WEBVH_PATH` template var: when the webvh server should
+    // allocate a specific path (rather than letting the server pick),
+    // the operator sets it in `mediator_template_vars`. Removed from the
+    // map so the template renderer doesn't also see it — it is transport
+    // metadata, not document content.
+    let webvh_path = take_webvh_path(&mut template_vars)?;
+
     let (params_server_id, params_url) = match &webvh_server_id {
         Some(id) => (Some(id.clone()), None),
         None => (None, Some(integration_url.clone())),
@@ -255,7 +262,7 @@ pub async fn provision_integration(
             context_id: context.clone(),
             server_id: params_server_id,
             url: params_url,
-            path: None,
+            path: webvh_path,
             label: Some(client_did.clone()),
             portable: true,
             add_mediator_service: false,
@@ -557,6 +564,41 @@ async fn resolve_webvh_server(
         )));
     }
     Ok(Some(id.to_string()))
+}
+
+/// Remove and return the optional `WEBVH_PATH` template var.
+///
+/// `WEBVH_PATH` is transport metadata — it tells the webvh server which
+/// path to allocate when the VTA calls `POST /api/dids`. It is removed
+/// from `template_vars` before the renderer sees the map so that a
+/// template author never accidentally picks it up as document content.
+///
+/// `Ok(None)` when the var is absent or JSON-null. `Ok(Some(path))` when
+/// it is a non-empty string. Empty strings and non-string types fail
+/// loud — the operator set the var intentionally and a silent fallback
+/// would mask a typo.
+fn take_webvh_path(
+    template_vars: &mut BTreeMap<String, Value>,
+) -> Result<Option<String>, AppError> {
+    let removed = match template_vars.remove("WEBVH_PATH") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(v) => v,
+    };
+    let s = match removed {
+        Value::String(s) => s,
+        _ => {
+            return Err(AppError::Validation(
+                "WEBVH_PATH must be a non-empty string".into(),
+            ));
+        }
+    };
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Validation(
+            "WEBVH_PATH must be a non-empty string".into(),
+        ));
+    }
+    Ok(Some(trimmed.to_string()))
 }
 
 // ── Preconditions ───────────────────────────────────────────────────
@@ -1186,6 +1228,89 @@ mod tests {
         let err = resolve_webvh_server(&vars, &ks).await.unwrap_err();
         assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
         assert!(err.to_string().contains("bool"), "got: {err}");
+    }
+
+    // ── take_webvh_path ─────────────────────────────────────────────
+
+    #[test]
+    fn take_webvh_path_absent_returns_none() {
+        let mut vars = BTreeMap::new();
+        vars.insert("URL".into(), Value::String("https://a".into()));
+        assert_eq!(take_webvh_path(&mut vars).unwrap(), None);
+        assert!(vars.contains_key("URL"), "unrelated keys must survive");
+    }
+
+    #[test]
+    fn take_webvh_path_null_returns_none_and_removes_key() {
+        let mut vars = BTreeMap::new();
+        vars.insert("WEBVH_PATH".into(), Value::Null);
+        assert_eq!(take_webvh_path(&mut vars).unwrap(), None);
+        assert!(
+            !vars.contains_key("WEBVH_PATH"),
+            "null WEBVH_PATH must still be removed so the renderer never sees it"
+        );
+    }
+
+    #[test]
+    fn take_webvh_path_string_returns_some_and_removes_key() {
+        let mut vars = BTreeMap::new();
+        vars.insert("URL".into(), Value::String("https://a".into()));
+        vars.insert("WEBVH_PATH".into(), Value::String("team/mediator".into()));
+        assert_eq!(
+            take_webvh_path(&mut vars).unwrap(),
+            Some("team/mediator".into())
+        );
+        assert!(
+            !vars.contains_key("WEBVH_PATH"),
+            "WEBVH_PATH must be removed so it can't reach the renderer"
+        );
+        assert!(vars.contains_key("URL"), "unrelated keys must survive");
+    }
+
+    #[test]
+    fn take_webvh_path_trims_whitespace() {
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "WEBVH_PATH".into(),
+            Value::String("  team/mediator  ".into()),
+        );
+        assert_eq!(
+            take_webvh_path(&mut vars).unwrap(),
+            Some("team/mediator".into())
+        );
+    }
+
+    #[test]
+    fn take_webvh_path_empty_string_is_validation_error() {
+        let mut vars = BTreeMap::new();
+        vars.insert("WEBVH_PATH".into(), Value::String(String::new()));
+        let err = take_webvh_path(&mut vars).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
+        assert!(
+            err.to_string().contains("WEBVH_PATH"),
+            "error must name the offending var: {err}"
+        );
+    }
+
+    #[test]
+    fn take_webvh_path_whitespace_only_is_validation_error() {
+        let mut vars = BTreeMap::new();
+        vars.insert("WEBVH_PATH".into(), Value::String("   ".into()));
+        let err = take_webvh_path(&mut vars).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn take_webvh_path_non_string_is_validation_error() {
+        let mut vars = BTreeMap::new();
+        vars.insert("WEBVH_PATH".into(), Value::Bool(true));
+        let err = take_webvh_path(&mut vars).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
+
+        let mut vars = BTreeMap::new();
+        vars.insert("WEBVH_PATH".into(), Value::Number(42.into()));
+        let err = take_webvh_path(&mut vars).unwrap_err();
+        assert!(matches!(err, AppError::Validation(_)), "got: {err:?}");
     }
 
     // ── preconditions / resolve_template_kind ───────────────────────

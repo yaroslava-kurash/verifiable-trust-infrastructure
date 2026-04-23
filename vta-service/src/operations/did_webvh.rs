@@ -734,16 +734,18 @@ pub async fn create_did_webvh(
             .map_err(|e| AppError::Internal(format!("{e}")))?;
     }
 
-    if serverless {
-        // Serverless: extract final DID document from log entry, return it + log entry.
-        // Skip publish but DO store the DID record and log locally.
-        let final_did_document = result
-            .log_entry()
-            .get_did_document()
-            .ok()
-            .unwrap_or(did_document);
+    // Extract the rendered DID document from the just-built log entry.
+    // Shared by both branches so the returned `did_document` / `log_entry`
+    // shape is identical regardless of publish target — downstream flows
+    // (notably `provision_integration`) rely on these being populated.
+    let final_did_document = result
+        .log_entry()
+        .get_did_document()
+        .ok()
+        .unwrap_or(did_document);
 
-        // Store DID record and log
+    if serverless {
+        // Serverless: skip publish but DO store the DID record and log locally.
         let did_record = WebvhDidRecord {
             did: final_did.clone(),
             server_id: "serverless".to_string(),
@@ -825,8 +827,8 @@ pub async fn create_did_webvh(
             ka_key_id: format!("{final_did}#key-1"),
             pre_rotation_key_count: pre_rotation_keys.len() as u32,
             created_at: now,
-            did_document: None,
-            log_entry: None,
+            did_document: Some(final_did_document),
+            log_entry: Some(log_content),
         })
     }
 }
