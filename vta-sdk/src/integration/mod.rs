@@ -25,10 +25,14 @@
 //!     context: "my-service".into(),
 //!     url_override: None,
 //!     timeout: None,
-//!     // Set a mediator_did to prefer the DIDComm transport on startup.
-//!     // Leave as None (with Auto) to go straight to REST.
-//!     mediator_did: Some("did:key:zMediator".into()),
+//!     // Leave mediator_did = None to let the SDK auto-resolve from the
+//!     // VTA's DID document (walks service[].type == "DIDCommMessaging").
+//!     // Supply an explicit did:key / did:webvh to override.
+//!     mediator_did: None,
 //!     transport_preference: Default::default(), // Auto
+//!     // Share an existing DID resolver if you already have one; `None`
+//!     // makes the SDK create a one-shot resolver on demand.
+//!     did_resolver: None,
 //! };
 //! let cache = MyCache::new();
 //!
@@ -57,7 +61,7 @@ const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 /// the credential is obtained (opened from a sealed bundle, read from a
 /// keyring, loaded from AWS Secrets Manager, etc.) is left to the calling
 /// service.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct VtaServiceConfig {
     /// VTA credential bundle (identity + signing key + VTA DID/URL).
     pub credential: crate::credentials::CredentialBundle,
@@ -72,21 +76,53 @@ pub struct VtaServiceConfig {
     /// Mediator DID to route DIDComm traffic through, when the DIDComm
     /// transport tier is selected.
     ///
-    /// When set, the integration layer can establish a DIDComm channel to
-    /// the VTA via this mediator — identity-native auth, no separate
-    /// challenge-response HTTP round-trip. Leave `None` to force the REST
-    /// tiers (or combine with [`TransportPreference::DidCommOnly`] to fail
-    /// loud if a DIDComm channel can't be established).
-    ///
-    /// Auto-resolution of the mediator DID from the VTA's DID document
-    /// (walking `service[].type == "DIDCommMessaging"`) is not wired yet;
-    /// supply it explicitly for now.
+    /// When set, explicit config wins over auto-resolution. When unset,
+    /// the integration layer attempts to auto-resolve the mediator DID
+    /// from the VTA's DID document (walking `service[].type ==
+    /// "DIDCommMessaging"`) using [`Self::did_resolver`] if supplied,
+    /// or a one-shot default resolver otherwise. When no mediator DID is
+    /// ultimately available (unset + auto-resolve returned `None` or
+    /// failed), the tier sequence falls through to REST — unless
+    /// [`TransportPreference::DidCommOnly`] forces an error.
     #[cfg(feature = "session")]
     pub mediator_did: Option<String>,
     /// Which transport the integration layer should try first, and whether
     /// it may fall back. Default is [`TransportPreference::Auto`].
     #[cfg(feature = "session")]
     pub transport_preference: TransportPreference,
+    /// Optional shared DID resolver for mediator auto-resolution and other
+    /// DID-lookup paths. When `None`, the integration layer creates a
+    /// one-shot [`DIDCacheClient`] on demand — fine for first-run use but
+    /// wasteful if the host already has a resolver. Supply an `Arc` for
+    /// deployments that resolve DIDs elsewhere too (e.g. the mediator's
+    /// own DIDComm stack) so cache warming is shared.
+    ///
+    /// [`DIDCacheClient`]: affinidi_did_resolver_cache_sdk::DIDCacheClient
+    #[cfg(feature = "session")]
+    pub did_resolver: Option<std::sync::Arc<affinidi_did_resolver_cache_sdk::DIDCacheClient>>,
+}
+
+// `DIDCacheClient` doesn't implement `Debug`, so we derive `Clone` only
+// and supply a manual `Debug` that renders the resolver opaquely while
+// preserving the existing `{:?}` formatting for every other field.
+impl std::fmt::Debug for VtaServiceConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut dbg = f.debug_struct("VtaServiceConfig");
+        dbg.field("credential", &self.credential)
+            .field("context", &self.context)
+            .field("url_override", &self.url_override)
+            .field("timeout", &self.timeout);
+        #[cfg(feature = "session")]
+        {
+            dbg.field("mediator_did", &self.mediator_did)
+                .field("transport_preference", &self.transport_preference)
+                .field(
+                    "did_resolver",
+                    &self.did_resolver.as_ref().map(|_| "Arc<DIDCacheClient>"),
+                );
+        }
+        dbg.finish()
+    }
 }
 
 /// Transport selection policy for [`authenticate`].

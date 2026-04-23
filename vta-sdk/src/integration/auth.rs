@@ -86,7 +86,8 @@ pub async fn authenticate(config: &VtaServiceConfig) -> Result<VtaClient, VtaErr
 
     #[cfg(feature = "session")]
     {
-        let plan = decide_transport(config.transport_preference, config.mediator_did.as_deref());
+        let effective_mediator = resolve_effective_mediator_did(config).await?;
+        let plan = decide_transport(config.transport_preference, effective_mediator.as_deref());
         match plan {
             TransportPlan::DidCommThenRest { mediator_did } => {
                 match try_didcomm(config, &mediator_did).await {
@@ -125,6 +126,85 @@ pub async fn authenticate(config: &VtaServiceConfig) -> Result<VtaClient, VtaErr
     }
 
     try_rest(config, url_override).await
+}
+
+/// Resolve the mediator DID to use for the DIDComm tier, walking this
+/// decision tree:
+///
+/// 1. Explicit [`VtaServiceConfig::mediator_did`] wins — return it
+///    verbatim, skip the resolver round-trip.
+/// 2. If the caller asked for [`TransportPreference::PreferRest`],
+///    return `None` without touching the network — DIDComm tier is
+///    not going to run anyway.
+/// 3. Otherwise call [`crate::session::resolve_mediator_did_with_resolver`]
+///    on the VTA DID in the credential:
+///    - Use the caller-supplied resolver when present (shared cache).
+///    - Otherwise create a one-shot [`DIDCacheClient`] on demand.
+/// 4. On resolver success, return whatever the DID-document walk
+///    produced (`Some(mediator_did)` when a `DIDCommMessaging` service
+///    is found, `None` when the doc has no such service).
+/// 5. On resolver failure:
+///    - [`TransportPreference::DidCommOnly`] → propagate as an error
+///      (the caller is asking to fail loud on DIDComm issues).
+///    - Otherwise log WARN + return `None` so the authentication
+///      flow falls through to REST.
+#[cfg(feature = "session")]
+async fn resolve_effective_mediator_did(
+    config: &VtaServiceConfig,
+) -> Result<Option<String>, VtaError> {
+    // (1) Explicit always wins.
+    if let Some(m) = config.mediator_did.as_deref() {
+        return Ok(Some(m.to_string()));
+    }
+    // (2) PreferRest short-circuit — don't pay for a resolver call we
+    //     won't use.
+    if matches!(config.transport_preference, TransportPreference::PreferRest) {
+        return Ok(None);
+    }
+
+    // (3) Resolver call. Reuse caller-supplied resolver when provided.
+    let vta_did = &config.credential.vta_did;
+    let result = match config.did_resolver.as_ref() {
+        Some(resolver) => {
+            crate::session::resolve_mediator_did_with_resolver(vta_did, resolver.as_ref()).await
+        }
+        None => crate::session::resolve_mediator_did(vta_did).await,
+    };
+
+    match result {
+        Ok(Some(mediator)) => {
+            tracing::info!(
+                context = config.context,
+                vta_did = %vta_did,
+                mediator_did = %mediator,
+                "Auto-resolved mediator DID from VTA DID document",
+            );
+            Ok(Some(mediator))
+        }
+        Ok(None) => {
+            tracing::debug!(
+                context = config.context,
+                vta_did = %vta_did,
+                "VTA DID document has no DIDCommMessaging service; DIDComm tier unavailable",
+            );
+            Ok(None)
+        }
+        Err(e) => match config.transport_preference {
+            TransportPreference::DidCommOnly => Err(VtaError::Other(format!(
+                "mediator DID auto-resolve failed and transport_preference is DidCommOnly \
+                 (no REST fallback): {e}"
+            ))),
+            _ => {
+                tracing::warn!(
+                    context = config.context,
+                    vta_did = %vta_did,
+                    error = %e,
+                    "Mediator DID auto-resolve failed; will try REST tiers",
+                );
+                Ok(None)
+            }
+        },
+    }
 }
 
 /// Tier 1: DIDComm via a mediator. Identity-native auth; no separate
