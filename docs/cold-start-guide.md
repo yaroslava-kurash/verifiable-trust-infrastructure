@@ -185,6 +185,37 @@ Copy the `vta import-did` command — you'll run it in Phase 4.
 > **Tip:** if you forget the VTA DID, run `vta config show` on the VTA
 > host. It prints everything `pnm setup` asks for.
 
+### Alternate: deferred-VTA-DID flow (for automated VTA hosting)
+
+If you're automating VTA hosting — for example, a Terraform module or
+a bootstrap script that needs the PNM admin DID *before* the VTA
+exists — you can mint the PNM admin identity first, pass it into
+`vta setup`, and finish PNM later once the VTA is running:
+
+```bash
+# Phase 1 (non-interactive): mint + park the ephemeral did:key.
+$ pnm setup --name "My VTA"
+{"slug":"my-vta","admin_did":"did:key:z6Mk...","state":"pending"}
+```
+
+Feed the `admin_did` into your VTA's `setup.toml` at the `admin_did`
+key (see `docs/non-interactive-setup.md`), or pass it to `vta import-did`
+on an already-running VTA. Once the VTA is up and you know its DID:
+
+```bash
+# Phase 2 (non-interactive): bind the VTA DID and finalize.
+$ pnm setup continue my-vta --vta-did did:webvh:...
+{"slug":"my-vta","admin_did":"did:key:z6Mk...","state":"complete"}
+```
+
+The same `did:key` is preserved across both phases; on first successful
+authentication PNM auto-rotates to a fresh did:key and drops the
+original from the ACL, same as the classic flow. Interactive variants
+(`pnm setup` / `pnm setup continue my-vta`) prompt instead of
+consuming flags. Multiple concurrent pending VTAs are allowed (distinct
+slugs); colliding on a pending slug requires `--overwrite`
+(non-interactive) or confirmation (interactive).
+
 ## Phase 4: Grant admin access on the VTA host
 
 Still with the VTA **stopped** (the `vta import-did` CLI takes the

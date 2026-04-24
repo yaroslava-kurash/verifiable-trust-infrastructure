@@ -534,3 +534,93 @@ async fn setup_tee(config: &mut PnmConfig) -> Result<(), Box<dyn std::error::Err
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn cfg_with(slug: &str, vta_did: Option<&str>) -> PnmConfig {
+        let mut config = PnmConfig::default();
+        config.default_vta = Some(slug.to_string());
+        let mut vtas = BTreeMap::new();
+        vtas.insert(
+            slug.to_string(),
+            VtaConfig {
+                name: slug.to_string(),
+                url: None,
+                vta_did: vta_did.map(str::to_string),
+            },
+        );
+        config.vtas = vtas;
+        config
+    }
+
+    #[test]
+    fn emit_json_shape_matches_spec() {
+        // Serialize without writing to stdout. The writer path is
+        // exercised end-to-end in manual smoke tests.
+        let line = serde_json::to_string(&SetupOutput {
+            slug: "my-vta",
+            admin_did: "did:key:z6MkTest",
+            state: "pending",
+        })
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed["slug"], "my-vta");
+        assert_eq!(parsed["admin_did"], "did:key:z6MkTest");
+        assert_eq!(parsed["state"], "pending");
+        // Exactly three keys — no accidental leakage of an unserialized
+        // field later.
+        assert_eq!(parsed.as_object().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn emit_json_states_match_spec() {
+        for state in ["pending", "complete"] {
+            let line = serde_json::to_string(&SetupOutput {
+                slug: "s",
+                admin_did: "did:key:z",
+                state,
+            })
+            .unwrap();
+            assert!(line.contains(&format!(r#""state":"{state}""#)));
+        }
+    }
+
+    #[test]
+    fn detect_existing_state_complete() {
+        let config = cfg_with("my-vta", Some("did:web:vta.example.com"));
+        match detect_existing_state(&config, "my-vta", "vta:my-vta") {
+            ExistingState::Complete { vta_did } => {
+                assert_eq!(vta_did, "did:web:vta.example.com");
+            }
+            _ => panic!("expected Complete"),
+        }
+    }
+
+    #[test]
+    fn detect_existing_state_absent_for_missing_slug() {
+        let config = cfg_with("my-vta", Some("did:web:vta.example.com"));
+        matches!(
+            detect_existing_state(&config, "other-vta", "vta:other-vta"),
+            ExistingState::None
+        );
+    }
+
+    #[test]
+    fn require_pending_rejects_complete_slug() {
+        let config = cfg_with("my-vta", Some("did:web:vta.example.com"));
+        let err = require_pending(&config, "my-vta", "vta:my-vta").unwrap_err();
+        assert!(err.to_string().contains("already set up"));
+        assert!(err.to_string().contains("pnm vta remove"));
+    }
+
+    #[test]
+    fn require_pending_rejects_unknown_slug() {
+        let config = cfg_with("existing", Some("did:web:vta.example.com"));
+        let err = require_pending(&config, "nope", "vta:nope").unwrap_err();
+        assert!(err.to_string().contains("no pending VTA"));
+        assert!(err.to_string().contains("pnm vta list"));
+    }
+}

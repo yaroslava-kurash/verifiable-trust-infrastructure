@@ -241,3 +241,72 @@ follow the
 [interactive admin-grant flow in `cold-start-guide.md`](cold-start-guide.md)
 (`pnm setup` → `vta import-did` → start VTA → first authenticated
 command auto-rotates).
+
+## Non-interactive `pnm setup` (deferred-VTA-DID)
+
+For automated VTA hosting — e.g. a Terraform module that needs the PNM
+admin DID *before* the VTA is running — `pnm setup` has a two-phase
+non-interactive mode that pairs naturally with `admin_did` in the
+`vta setup --from` file above.
+
+**Phase 1** mints the ephemeral admin `did:key` and parks it in the OS
+keyring. Pass the slug-producing `--name`:
+
+```bash
+$ pnm setup --name "Trust Prod 1"
+{"slug":"trust-prod-1","admin_did":"did:key:z6Mk...","state":"pending"}
+```
+
+The JSON line is the only thing on **stdout**; all narration is on
+**stderr**, so pipelines can `jq` this directly:
+
+```bash
+ADMIN_DID=$(pnm setup --name "Trust Prod 1" | jq -r .admin_did)
+```
+
+Feed `$ADMIN_DID` into the VTA's `setup.toml`:
+
+```toml
+admin_did   = "${ADMIN_DID}"   # the one we just minted
+admin_label = "pnm-bootstrap"
+```
+
+Run `vta setup --from setup.toml` on the VTA host, boot the VTA, capture
+the VTA's DID (`vta config show`).
+
+**Phase 2** binds the VTA DID and finalizes the PNM session:
+
+```bash
+$ pnm setup continue trust-prod-1 --vta-did did:webvh:...
+{"slug":"trust-prod-1","admin_did":"did:key:z6Mk...","state":"complete"}
+```
+
+The same `did:key` from phase 1 is preserved — don't re-mint. The first
+authenticated PNM command rotates to a fresh did:key and drops the
+original from the ACL, same as the classic flow.
+
+### Flags
+
+| Flag | Phase | Effect |
+|---|---|---|
+| `--name <human-name>` | 1 | Slugified and used as the VTA identifier. Required in non-interactive mode. |
+| `--overwrite` | 1 | Replace an *existing pending* setup for the same slug. Never overwrites a complete VTA — use `pnm vta remove <slug>` first. |
+| `--vta-did <did:...>` | 2 | Non-interactive VTA DID. Omit for the interactive prompt. |
+
+### Exit codes
+
+- `0` — success. JSON written to stdout.
+- `2` — input or state error. Targeted message on stderr (e.g.
+  "pending setup already exists for slug 'X', pass `--overwrite`" or
+  "'X' is already set up, use `pnm vta remove X` to start over").
+
+### Idempotency notes
+
+- Multiple concurrent pending VTAs are supported (distinct slugs).
+- Phase 2 is idempotent only up to the `bind_vta_did` call: once the
+  VTA DID is bound, re-running `pnm setup continue` errors with
+  "already set up". To change the VTA DID, remove and redo.
+- A keyring entry without a matching config entry (or vice versa) is
+  treated as orphaned and falls through to the generic
+  "not-configured" error path; re-run `pnm setup --name … --overwrite`
+  to reset.

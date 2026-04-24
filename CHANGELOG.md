@@ -49,6 +49,22 @@ DID minting is template-driven.
 - **Rate limiting** on unauth routes (`/bootstrap/request`,
   `/auth/*`, public `/did/{did}/log`): 5 rps + 10 burst per IP via
   `tower-governor`.
+- **Deferred-VTA-DID `pnm setup` flow** (non-TEE) — operators can now
+  mint the PNM admin `did:key` **before** the VTA exists, paste it
+  into the VTA's `admin_did` input, boot the VTA, then finish PNM
+  with `pnm setup continue <slug>`. Unblocks automated VTA hosting:
+  Terraform / scripted provisioners no longer hit the chicken-and-egg
+  where PNM wanted the VTA DID first and VTA wanted the admin DID
+  first. Interactive (`pnm setup` → prompt VTA DID blank to defer)
+  and non-interactive (`pnm setup --name <n>` phase 1 with JSON on
+  stdout, `pnm setup continue <slug> --vta-did <did>` phase 2) modes.
+  Same ephemeral `did:key` preserved across both phases. Multiple
+  concurrent pending VTAs allowed (distinct slugs). Spec:
+  `docs/design/pnm-setup-deferred-vta-did.md`.
+- **`vta-sdk` `test-support` feature** — exposes
+  `vta_sdk::session::testing::InMemorySessionBackend` for consumer
+  integration tests. Avoids OS-keyring prompts / Secret-Service
+  availability in CI. Additive, zero-cost when off.
 
 ### Changed
 
@@ -74,6 +90,14 @@ DID minting is template-driven.
   `hmac` 0.12→0.13, `hkdf` 0.12→0.13, `aes` 0.8→0.9, `cbc` 0.1→0.2.
 - **Azure crates bumped**: `azure_identity` 0.33→0.35,
   `azure_security_keyvault_secrets` 0.12→0.14.
+- **[breaking] `vta-sdk::session` public-type `vta_did`** is now
+  `Option<String>` on `Session` (internal), `SessionInfo`,
+  `SessionStatus`, and `LoginResult`. `None` encodes the new
+  `PendingVtaBinding` state used by deferred-VTA-DID `pnm setup`.
+  `SessionStore` gains `store_pending_vta_binding`, `bind_vta_did`,
+  and `has_pending_vta_binding`. Existing session JSON still
+  deserializes (serde default). No external `SessionBackend`
+  implementors exist outside the in-tree built-ins.
 
 ### Security
 
