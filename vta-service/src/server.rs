@@ -662,13 +662,16 @@ fn run_rest_thread(
         let app = traced_routes.merge(routes::health_router().with_state(state));
 
         let shutdown_rx = shutdown_rx.clone();
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async move {
-                let mut rx = shutdown_rx;
-                let _ = rx.changed().await;
-            })
-            .await
-            .expect("axum serve failed");
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            let mut rx = shutdown_rx;
+            let _ = rx.changed().await;
+        })
+        .await
+        .expect("axum serve failed");
 
         info!("REST thread shutting down");
     });
