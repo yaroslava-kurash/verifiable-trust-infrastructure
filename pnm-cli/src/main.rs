@@ -41,8 +41,40 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Configure VTA URL and credentials
-    Setup,
+    /// Configure VTA URL and credentials.
+    ///
+    /// Bare `pnm setup` runs the interactive wizard. Non-interactive
+    /// phase-1 lives behind `--name`; phase-2 (supply a VTA DID for a
+    /// pending slug) lives under the `continue` subcommand.
+    ///
+    ///   # Interactive:
+    ///   pnm setup
+    ///
+    ///   # Non-interactive phase 1 (mint + park pending; JSON on stdout):
+    ///   pnm setup --name "My VTA"
+    ///   pnm setup --name "My VTA" --overwrite    # replace existing pending
+    ///
+    ///   # Phase 2 (interactive — prompts for VTA DID):
+    ///   pnm setup continue my-vta
+    ///
+    ///   # Phase 2 (non-interactive — JSON on stdout):
+    ///   pnm setup continue my-vta --vta-did did:webvh:...
+    Setup {
+        #[command(subcommand)]
+        command: Option<SetupCommands>,
+
+        /// Non-interactive phase 1: human-readable VTA name. Slugified
+        /// the same way as the interactive wizard. Combining with the
+        /// `continue` subcommand is an error, enforced at dispatch.
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Non-interactive phase 1: overwrite an existing *pending*
+        /// setup for the same slug. Never overwrites a complete VTA —
+        /// use `pnm vta remove <slug>` first.
+        #[arg(long)]
+        overwrite: bool,
+    },
 
     /// Check service health
     Health,
@@ -122,6 +154,24 @@ enum Commands {
     DidTemplates {
         #[command(subcommand)]
         command: DidTemplateCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum SetupCommands {
+    /// Finish a pending VTA setup by supplying the VTA DID.
+    ///
+    /// Interactive when `--vta-did` is omitted; non-interactive with
+    /// JSON stdout when supplied. The ephemeral `did:key` minted in
+    /// phase 1 is preserved — this command only binds the VTA DID and
+    /// flips the session to `PendingRotation`.
+    Continue {
+        /// Slug identifying the pending VTA (see `pnm vta list`).
+        slug: String,
+
+        /// VTA DID to bind (non-interactive). Must start with `did:`.
+        #[arg(long)]
+        vta_did: Option<String>,
     },
 }
 
@@ -1093,7 +1143,7 @@ fn requires_auth(cmd: &Commands) -> bool {
         cmd,
         Commands::Health
             | Commands::Auth { .. }
-            | Commands::Setup
+            | Commands::Setup { .. }
             | Commands::Vta { .. }
             | Commands::Bootstrap { .. }
     )
@@ -1148,7 +1198,11 @@ async fn main() {
 
     // Handle commands that don't need VTA resolution
     match &cli.command {
-        Commands::Setup => {
+        Commands::Setup { .. } => {
+            // Commit 2 is CLI-shape-only; logic still routes through the
+            // existing interactive wizard. Commit 3 replaces this dispatch
+            // with the four-way start/continue × interactive/non-interactive
+            // split.
             let result = setup::run_setup(setup::SetupOptions {}, &mut pnm_config).await;
             if let Err(e) = result {
                 vta_cli_common::render::print_cli_error(e.as_ref());
@@ -1367,7 +1421,7 @@ async fn main() {
     };
 
     let result = match cli.command {
-        Commands::Setup => unreachable!(),
+        Commands::Setup { .. } => unreachable!("Setup handled earlier"),
         Commands::Bootstrap { command } => match command {
             BootstrapCommands::ProvisionIntegration {
                 request,
@@ -2195,8 +2249,137 @@ mod tests {
 
     #[test]
     fn test_requires_auth_setup_false() {
-        let cmd = Commands::Setup;
+        let cmd = Commands::Setup {
+            command: None,
+            name: None,
+            overwrite: false,
+        };
         assert!(!requires_auth(&cmd));
+    }
+
+    // ── Setup clap parse shapes ───────────────────────────────────
+    //
+    // The spec requires all of these to parse unambiguously. If clap
+    // surfaces a regression here (e.g. `--name continue` being absorbed
+    // as a value for the subcommand), these tests pin the contract.
+
+    fn parse(args: &[&str]) -> Cli {
+        Cli::try_parse_from(args).expect("should parse")
+    }
+
+    #[test]
+    fn setup_bare_parses_all_none() {
+        let cli = parse(&["pnm", "setup"]);
+        match cli.command {
+            Commands::Setup {
+                command,
+                name,
+                overwrite,
+            } => {
+                assert!(command.is_none());
+                assert!(name.is_none());
+                assert!(!overwrite);
+            }
+            _ => panic!("expected Setup"),
+        }
+    }
+
+    #[test]
+    fn setup_with_name_parses_as_non_interactive_phase1() {
+        let cli = parse(&["pnm", "setup", "--name", "My VTA"]);
+        match cli.command {
+            Commands::Setup {
+                command,
+                name,
+                overwrite,
+            } => {
+                assert!(command.is_none());
+                assert_eq!(name.as_deref(), Some("My VTA"));
+                assert!(!overwrite);
+            }
+            _ => panic!("expected Setup"),
+        }
+    }
+
+    #[test]
+    fn setup_with_name_and_overwrite_parses() {
+        let cli = parse(&["pnm", "setup", "--name", "foo", "--overwrite"]);
+        match cli.command {
+            Commands::Setup {
+                name, overwrite, ..
+            } => {
+                assert_eq!(name.as_deref(), Some("foo"));
+                assert!(overwrite);
+            }
+            _ => panic!("expected Setup"),
+        }
+    }
+
+    #[test]
+    fn setup_continue_parses_interactive() {
+        let cli = parse(&["pnm", "setup", "continue", "my-vta"]);
+        match cli.command {
+            Commands::Setup {
+                command,
+                name,
+                overwrite,
+            } => {
+                assert!(matches!(
+                    command,
+                    Some(SetupCommands::Continue { vta_did: None, .. })
+                ));
+                assert!(name.is_none());
+                assert!(!overwrite);
+                if let Some(SetupCommands::Continue { slug, .. }) = command {
+                    assert_eq!(slug, "my-vta");
+                }
+            }
+            _ => panic!("expected Setup"),
+        }
+    }
+
+    #[test]
+    fn setup_continue_parses_non_interactive() {
+        let cli = parse(&[
+            "pnm",
+            "setup",
+            "continue",
+            "my-vta",
+            "--vta-did",
+            "did:webvh:abc:vta.example.com:primary",
+        ]);
+        match cli.command {
+            Commands::Setup {
+                command: Some(SetupCommands::Continue { slug, vta_did }),
+                ..
+            } => {
+                assert_eq!(slug, "my-vta");
+                assert_eq!(
+                    vta_did.as_deref(),
+                    Some("did:webvh:abc:vta.example.com:primary")
+                );
+            }
+            _ => panic!("expected Setup+Continue"),
+        }
+    }
+
+    #[test]
+    fn setup_name_with_continue_subcommand_parses() {
+        // Clap treats subcommand and parent args as orthogonal, so
+        // `pnm setup --name foo continue bar` parses. The runtime
+        // dispatch rejects this combination — enforced in commit 3
+        // (setup logic + pending detection), covered by the
+        // integration suite in commit 4. This test pins the parse
+        // contract so a future clap upgrade doesn't silently change
+        // it.
+        let cli = parse(&["pnm", "setup", "--name", "foo", "continue", "bar"]);
+        match cli.command {
+            Commands::Setup { command, name, .. } => {
+                assert_eq!(name.as_deref(), Some("foo"));
+                assert!(matches!(command, Some(SetupCommands::Continue { .. })));
+            }
+            _ => panic!("expected Setup"),
+        }
     }
 
     #[test]
