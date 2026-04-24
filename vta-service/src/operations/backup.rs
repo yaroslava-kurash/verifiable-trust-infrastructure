@@ -283,12 +283,44 @@ pub async fn preview_import(
     Ok((payload, result))
 }
 
+/// Reject an import if the backup's `vta_did` would overwrite a
+/// different running VTA's identity. A fresh install (no running
+/// `vta_did`) accepts any backup — this covers disaster recovery from
+/// a completely lost VTA. An identity migration (deliberately
+/// replacing one VTA DID with another) requires the operator to clear
+/// `vta_did` from the running config first.
+fn check_vta_did_compatibility(
+    running_did: Option<&str>,
+    backup_did: Option<&str>,
+) -> Result<(), AppError> {
+    let running = match running_did {
+        Some(d) if !d.is_empty() => d,
+        _ => return Ok(()),
+    };
+    let backup = backup_did.unwrap_or("");
+    if backup == running {
+        return Ok(());
+    }
+    Err(AppError::Validation(format!(
+        "backup vta_did mismatch: backup claims '{backup}' but this VTA is running \
+         as '{running}'. Refusing to overwrite identity. If this is intentional \
+         (identity migration), clear vta_did from the running config first."
+    )))
+}
+
 /// Apply an import: clears all keyspaces and writes the backup data.
 ///
 /// When `store` and TEE KMS config are provided, re-encrypts the imported
 /// seed and JWT key with KMS for the bootstrap keyspace. The `store`
 /// parameter is therefore only consumed under `feature = "tee"`; non-TEE
 /// builds receive `None` and silently skip step 12.
+///
+/// **vta_did guard**: if the running VTA already has a vta_did in config
+/// and it differs from the backup's, the import is rejected — a foreign
+/// backup replacing a live VTA's state is almost certainly an operator
+/// mistake. A fresh install (no vta_did yet) accepts any backup; this
+/// covers the legitimate disaster-recovery path. To deliberately migrate
+/// an identity, clear the running config first.
 ///
 /// The caller is responsible for triggering a soft restart after this returns.
 #[cfg_attr(not(feature = "tee"), allow(unused_variables))]
@@ -299,6 +331,14 @@ pub async fn apply_import(
     config: &tokio::sync::RwLock<crate::config::AppConfig>,
     store: Option<&crate::store::Store>,
 ) -> Result<ImportResult, AppError> {
+    // vta_did cross-check: refuse to overwrite a different VTA's
+    // identity with this backup. A fresh install (running_did is None)
+    // accepts any backup.
+    {
+        let running_did = config.read().await.vta_did.clone();
+        check_vta_did_compatibility(running_did.as_deref(), payload.config.vta_did.as_deref())?;
+    }
+
     let keys_ks = ks.keys;
     let acl_ks = ks.acl;
     let contexts_ks = ks.contexts;
@@ -822,5 +862,51 @@ mod tests {
         // Different salts → different ciphertexts
         assert_ne!(env1.kdf.salt, env2.kdf.salt);
         assert_ne!(env1.ciphertext, env2.ciphertext);
+    }
+
+    // ── vta_did cross-check guard ───────────────────────────────────
+
+    #[test]
+    fn vta_did_guard_fresh_install_accepts_any_backup() {
+        // A VTA that has not yet configured a vta_did accepts any
+        // backup — this is the disaster-recovery case.
+        check_vta_did_compatibility(None, Some("did:key:z6MkAnything"))
+            .expect("fresh install must accept any backup");
+        check_vta_did_compatibility(None, None).expect("fresh install accepts no-did backup");
+        check_vta_did_compatibility(Some(""), Some("did:key:z6MkAnything"))
+            .expect("empty-string vta_did counts as fresh install");
+    }
+
+    #[test]
+    fn vta_did_guard_matching_dids_accepted() {
+        // Legitimate disaster recovery: restore the same VTA's backup
+        // onto a fresh host that has the expected vta_did configured.
+        check_vta_did_compatibility(Some("did:key:z6MkSame"), Some("did:key:z6MkSame"))
+            .expect("matching vta_did must pass");
+    }
+
+    #[test]
+    fn vta_did_guard_mismatch_rejected() {
+        let err = check_vta_did_compatibility(
+            Some("did:key:z6MkRunning"),
+            Some("did:key:z6MkForeignBackup"),
+        )
+        .expect_err("mismatched vta_did must be rejected");
+        let msg = format!("{err}");
+        assert!(msg.contains("vta_did mismatch"), "got: {msg}");
+        assert!(
+            msg.contains("z6MkForeignBackup"),
+            "must name backup did: {msg}"
+        );
+        assert!(msg.contains("z6MkRunning"), "must name running did: {msg}");
+    }
+
+    #[test]
+    fn vta_did_guard_backup_missing_did_rejected_when_running_has_did() {
+        // A backup with no vta_did can't legitimately replace a
+        // running VTA's identity — treat empty as mismatch.
+        let err = check_vta_did_compatibility(Some("did:key:z6MkRunning"), None)
+            .expect_err("missing backup vta_did must be rejected when running has one");
+        assert!(format!("{err}").contains("vta_did mismatch"), "got {err:?}");
     }
 }
