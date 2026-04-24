@@ -71,6 +71,12 @@ affinidi-crypto = { workspace = true }
 # direct so `vta-service::operations::provision_integration` can name
 # the type.
 affinidi-secrets-resolver = { workspace = true }
+# HOLD: RustCrypto 0.11 ecosystem (sha1 0.11, hmac 0.13, hkdf 0.13,
+# aes 0.9, cbc 0.2) is released but rsa 0.10 and aes-gcm 0.11 are still
+# at release-candidate (0.10.0-rc.17 / 0.11.0-rc.3). Partial bump
+# duplicates the `digest`/`cipher` trait crates and breaks trait impls
+# (e.g. rsa::Oaep's DynDigest bound). Re-audit once rsa 0.10 and
+# aes-gcm 0.11 stabilize — they lead the migration for everything else.
 hkdf = "0.12"
 affinidi-tdk = { workspace = true }
 affinidi-messaging-didcomm = "0.13"
