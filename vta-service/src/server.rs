@@ -749,75 +749,99 @@ async fn init_auth(
     // 2. Secrets resolver with VTA's Ed25519 + X25519 secrets
     let (secrets_resolver, _handle) = ThreadedSecretsResolver::new(None).await;
 
-    // Load stored key records for validation
-    let stored_signing: Option<KeyRecord> = keys_ks
-        .get(crate::keys::store_key(&format!("{vta_did}#key-0")))
-        .await
-        .ok()
-        .flatten();
-    let stored_ka: Option<KeyRecord> = keys_ks
-        .get(crate::keys::store_key(&format!("{vta_did}#key-1")))
-        .await
-        .ok()
-        .flatten();
-
-    // Derive and insert VTA signing secret (Ed25519)
-    match root.derive_ed25519(&signing_path) {
-        Ok(mut signing_secret) => {
-            // Validate: runtime key must match what was stored at DID creation time
-            if let Some(ref record) = stored_signing {
-                match signing_secret.get_public_keymultibase() {
-                    Ok(runtime_pub) if runtime_pub != record.public_key => {
-                        error!(
-                            key_id = %format!("{vta_did}#key-0"),
-                            stored = %record.public_key,
-                            runtime = %runtime_pub,
-                            "SIGNING KEY MISMATCH: runtime-derived Ed25519 public key does not match \
-                             the key stored in the key record (and published in the DID document). \
-                             DIDComm message signing/verification will fail. \
-                             This likely means the DID was created with different code or seed."
-                        );
+    if vta_did.starts_with("did:key:") {
+        // did:key uses fragment IDs like {did}#{ed_pub_mb} and {did}#{x_pub_mb},
+        // and the X25519 key is derived FROM the Ed25519 key (not independently).
+        // Use the SDK helper which handles both correctly.
+        let dp: ed25519_dalek_bip32::DerivationPath = match signing_path.parse() {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("invalid signing derivation path: {e}");
+                return (Some(did_resolver), None, None, None);
+            }
+        };
+        match root.derive(&dp) {
+            Ok(derived) => {
+                let seed_bytes: &[u8; 32] = derived.signing_key.as_bytes();
+                match vta_sdk::did_key::secrets_from_did_key(&vta_did, seed_bytes) {
+                    Ok(secrets) => {
+                        info!(signing_id = %secrets.signing.id, ka_id = %secrets.key_agreement.id, "did:key secrets loaded");
+                        secrets_resolver.insert(secrets.signing).await;
+                        secrets_resolver.insert(secrets.key_agreement).await;
                     }
-                    Ok(runtime_pub) => {
-                        info!(key_id = %format!("{vta_did}#key-0"), pub_key = %runtime_pub, "signing key validated");
+                    Err(e) => {
+                        warn!("failed to build did:key secrets: {e} — auth will not work");
+                        return (Some(did_resolver), None, None, None);
                     }
-                    Err(e) => warn!("could not extract signing public key for validation: {e}"),
                 }
             }
-            signing_secret.id = format!("{vta_did}#key-0");
-            secrets_resolver.insert(signing_secret).await;
+            Err(e) => warn!("failed to derive VTA signing key: {e}"),
         }
-        Err(e) => warn!("failed to derive VTA signing key: {e}"),
-    }
+    } else {
+        // did:webvh / other methods: use #key-0 / #key-1 fragment convention
+        // with independently derived Ed25519 + X25519 keys.
 
-    // Derive and insert VTA key-agreement secret (X25519)
-    match root.derive_x25519(&ka_path) {
-        Ok(mut ka_secret) => {
-            // Validate: runtime key must match what was stored at DID creation time
-            if let Some(ref record) = stored_ka {
-                match ka_secret.get_public_keymultibase() {
-                    Ok(runtime_pub) if runtime_pub != record.public_key => {
-                        error!(
-                            key_id = %format!("{vta_did}#key-1"),
-                            stored = %record.public_key,
-                            runtime = %runtime_pub,
-                            "KEY-AGREEMENT KEY MISMATCH: runtime-derived X25519 public key does not match \
-                             the key stored in the key record (and published in the DID document). \
-                             DIDComm encryption/decryption will fail. Others will encrypt to the DID \
-                             document key but this VTA holds a different private key. \
-                             The DID document must be updated or the VTA identity must be regenerated."
-                        );
+        // Load stored key records for validation
+        let stored_signing: Option<KeyRecord> = keys_ks
+            .get(crate::keys::store_key(&format!("{vta_did}#key-0")))
+            .await
+            .ok()
+            .flatten();
+        let stored_ka: Option<KeyRecord> = keys_ks
+            .get(crate::keys::store_key(&format!("{vta_did}#key-1")))
+            .await
+            .ok()
+            .flatten();
+
+        // Derive and insert VTA signing secret (Ed25519)
+        match root.derive_ed25519(&signing_path) {
+            Ok(mut signing_secret) => {
+                if let Some(ref record) = stored_signing {
+                    match signing_secret.get_public_keymultibase() {
+                        Ok(runtime_pub) if runtime_pub != record.public_key => {
+                            error!(
+                                key_id = %format!("{vta_did}#key-0"),
+                                stored = %record.public_key,
+                                runtime = %runtime_pub,
+                                "SIGNING KEY MISMATCH"
+                            );
+                        }
+                        Ok(runtime_pub) => {
+                            info!(key_id = %format!("{vta_did}#key-0"), pub_key = %runtime_pub, "signing key validated");
+                        }
+                        Err(e) => warn!("could not extract signing public key for validation: {e}"),
                     }
-                    Ok(runtime_pub) => {
-                        info!(key_id = %format!("{vta_did}#key-1"), pub_key = %runtime_pub, "key-agreement key validated");
-                    }
-                    Err(e) => warn!("could not extract KA public key for validation: {e}"),
                 }
+                signing_secret.id = format!("{vta_did}#key-0");
+                secrets_resolver.insert(signing_secret).await;
             }
-            ka_secret.id = format!("{vta_did}#key-1");
-            secrets_resolver.insert(ka_secret).await;
+            Err(e) => warn!("failed to derive VTA signing key: {e}"),
         }
-        Err(e) => warn!("failed to derive VTA key-agreement key: {e}"),
+
+        // Derive and insert VTA key-agreement secret (X25519)
+        match root.derive_x25519(&ka_path) {
+            Ok(mut ka_secret) => {
+                if let Some(ref record) = stored_ka {
+                    match ka_secret.get_public_keymultibase() {
+                        Ok(runtime_pub) if runtime_pub != record.public_key => {
+                            error!(
+                                key_id = %format!("{vta_did}#key-1"),
+                                stored = %record.public_key,
+                                runtime = %runtime_pub,
+                                "KEY-AGREEMENT KEY MISMATCH"
+                            );
+                        }
+                        Ok(runtime_pub) => {
+                            info!(key_id = %format!("{vta_did}#key-1"), pub_key = %runtime_pub, "key-agreement key validated");
+                        }
+                        Err(e) => warn!("could not extract KA public key for validation: {e}"),
+                    }
+                }
+                ka_secret.id = format!("{vta_did}#key-1");
+                secrets_resolver.insert(ka_secret).await;
+            }
+            Err(e) => warn!("failed to derive VTA key-agreement key: {e}"),
+        }
     }
 
     // 3. JWT signing key from config (random key, not BIP-32 derived)
