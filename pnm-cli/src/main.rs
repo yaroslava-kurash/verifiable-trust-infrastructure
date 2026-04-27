@@ -1253,8 +1253,13 @@ async fn main() {
                     }),
                     None,
                 ) => {
-                    setup::continue_non_tee_setup_non_interactive(&mut pnm_config, slug, vta_did, vta_url.as_deref())
-                        .await
+                    setup::continue_non_tee_setup_non_interactive(
+                        &mut pnm_config,
+                        slug,
+                        vta_did,
+                        vta_url.as_deref(),
+                    )
+                    .await
                 }
                 (None, Some(name)) => {
                     setup::start_non_tee_setup_non_interactive(&mut pnm_config, name, *overwrite)

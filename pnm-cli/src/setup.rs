@@ -178,7 +178,9 @@ async fn start_non_tee_setup_interactive(
             .interact_text()?;
         let url = url.trim().to_string();
         if url.is_empty() {
-            return Err("did:key VTAs require an explicit URL (the DID has no service endpoint)".into());
+            return Err(
+                "did:key VTAs require an explicit URL (the DID has no service endpoint)".into(),
+            );
         }
         Some(url)
     } else {
@@ -193,7 +195,15 @@ async fn start_non_tee_setup_interactive(
         &did,
         &private_key_multibase,
     )?;
-    finalize_session(config, &slug, &name, vta_did_input, &did, vta_url.as_deref(), false)?;
+    finalize_session(
+        config,
+        &slug,
+        &name,
+        vta_did_input,
+        &did,
+        vta_url.as_deref(),
+        false,
+    )?;
 
     Ok(())
 }
@@ -279,14 +289,24 @@ pub async fn continue_non_tee_setup_interactive(
             .interact_text()?;
         let url = url.trim().to_string();
         if url.is_empty() {
-            return Err("did:key VTAs require an explicit URL (the DID has no service endpoint)".into());
+            return Err(
+                "did:key VTAs require an explicit URL (the DID has no service endpoint)".into(),
+            );
         }
         Some(url)
     } else {
         None
     };
 
-    finalize_session(config, slug, &name, vta_did, &existing_did, vta_url.as_deref(), false)?;
+    finalize_session(
+        config,
+        slug,
+        &name,
+        vta_did,
+        &existing_did,
+        vta_url.as_deref(),
+        false,
+    )?;
     Ok(())
 }
 
@@ -310,9 +330,11 @@ pub async fn continue_non_tee_setup_non_interactive(
     let vta_url = if vta_did.starts_with("did:key:") {
         match vta_url {
             Some(u) => Some(u),
-            None => return Err(
-                "did:key VTAs require --vta-url (the DID has no service endpoint)".into()
-            ),
+            None => {
+                return Err(
+                    "did:key VTAs require --vta-url (the DID has no service endpoint)".into(),
+                );
+            }
         }
     } else {
         vta_url

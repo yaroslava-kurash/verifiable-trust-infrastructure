@@ -238,8 +238,7 @@ pub async fn run(
         let webvh_ks = apply_encryption(store.keyspace("webvh")?);
 
         // Initialize auth infrastructure
-        let auth =
-            init_auth(&config, &*seed_store, &keys_ks).await;
+        let auth = init_auth(&config, &*seed_store, &keys_ks).await;
 
         // In TEE required mode, warn if auth isn't initialized.
         #[cfg(feature = "tee")]
@@ -371,15 +370,15 @@ pub async fn run(
                     // Collect secrets using the VM IDs from init_auth (correct for both
                     // did:key and did:webvh — avoids hardcoding #key-0/#key-1 fragments).
                     let mut secrets = Vec::new();
-                    if let Some(ref signing_id) = auth.signing_vm_id {
-                        if let Some(s) = sr.get_secret(signing_id).await {
-                            secrets.push(s);
-                        }
+                    if let Some(ref signing_id) = auth.signing_vm_id
+                        && let Some(s) = sr.get_secret(signing_id).await
+                    {
+                        secrets.push(s);
                     }
-                    if let Some(ref ka_id) = auth.ka_vm_id {
-                        if let Some(s) = sr.get_secret(ka_id).await {
-                            secrets.push(s);
-                        }
+                    if let Some(ref ka_id) = auth.ka_vm_id
+                        && let Some(s) = sr.get_secret(ka_id).await
+                    {
+                        secrets.push(s);
                     }
 
                     let profile = TDKProfile::new(
@@ -784,7 +783,10 @@ async fn init_auth(
             Ok(p) => p,
             Err(e) => {
                 warn!("invalid signing derivation path: {e}");
-                return AuthInit { did_resolver: Some(did_resolver), ..AuthInit::empty() };
+                return AuthInit {
+                    did_resolver: Some(did_resolver),
+                    ..AuthInit::empty()
+                };
             }
         };
         match root.derive(&dp) {
@@ -800,7 +802,10 @@ async fn init_auth(
                     }
                     Err(e) => {
                         warn!("failed to build did:key secrets: {e} — auth will not work");
-                        return AuthInit { did_resolver: Some(did_resolver), ..AuthInit::empty() };
+                        return AuthInit {
+                            did_resolver: Some(did_resolver),
+                            ..AuthInit::empty()
+                        };
                     }
                 }
             }
