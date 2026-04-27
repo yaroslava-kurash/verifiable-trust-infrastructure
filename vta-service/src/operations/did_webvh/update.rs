@@ -31,8 +31,11 @@ use serde_json::Value;
 use vta_sdk::keys::KeyRecord;
 use vta_sdk::webvh::WebvhDidRecord;
 
+use super::WebvhTransport;
 use super::webvh_keys::{self, WebvhKeyHandle, WebvhKeyRole};
+use crate::audit;
 use crate::auth::AuthClaims;
+use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::AppError;
 use crate::keys::paths::allocate_path;
 use crate::keys::seed_store::SeedStore;
@@ -445,11 +448,13 @@ pub async fn rotate_did_webvh_keys(
     keys_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
     webvh_ks: &KeyspaceHandle,
+    audit_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
     auth: &AuthClaims,
     scid: &str,
     opts: RotateDidWebvhKeysOptions,
     did_resolver: &DIDCacheClient,
+    didcomm_bridge: &Arc<DIDCommBridge>,
     channel: &str,
 ) -> Result<UpdateDidWebvhResult, UpdateDidWebvhError> {
     // 1. Load record + log.
@@ -566,6 +571,7 @@ pub async fn rotate_did_webvh_keys(
         keys_ks,
         contexts_ks,
         webvh_ks,
+        audit_ks,
         seed_store,
         auth,
         scid,
@@ -578,6 +584,7 @@ pub async fn rotate_did_webvh_keys(
             label,
         },
         did_resolver,
+        didcomm_bridge,
         channel,
     )
     .await?;
@@ -638,6 +645,15 @@ fn state_from_jsonl(did_log: &str) -> Result<DIDWebVHState, UpdateDidWebvhError>
 /// Re-derive the secret material for a [`WebvhKeyHandle`] from the seed
 /// + BIP-32 path. The handle stores the path; the seed lives in the
 /// seed store.
+///
+/// The returned [`Secret`]'s `id` is set to a proper `did:key`
+/// verification-method form (`did:key:<mb>#<mb>`) — the
+/// `affinidi-data-integrity::Signer::verification_method()` impl on
+/// `Secret` returns `&self.id`, and `didwebvh-rs::update_did` parses
+/// the `#`-separated multibase out of it to verify the signing key is
+/// in the previous entry's `update_keys` set. Secrets minted with the
+/// default kid (a random base64url u64) fail this check with
+/// `verification_method 'X' must contain '#' with multibase key`.
 async fn derive_secret_for_handle(
     keys_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
@@ -654,10 +670,9 @@ async fn derive_secret_for_handle(
     let derived = root.derive(&path).map_err(|e| {
         UpdateDidWebvhError::Persistence(format!("derive at `{}`: {e}", handle.derivation_path))
     })?;
-    Ok(Secret::generate_ed25519(
-        None,
-        Some(derived.signing_key.as_bytes()),
-    ))
+    let mut secret = Secret::generate_ed25519(None, Some(derived.signing_key.as_bytes()));
+    secret.id = format!("did:key:{mb}#{mb}", mb = handle.public_key);
+    Ok(secret)
 }
 
 /// Serialize a [`DIDWebVHState`]'s log entries back to JSONL for
@@ -679,11 +694,13 @@ pub async fn update_did_webvh(
     keys_ks: &KeyspaceHandle,
     contexts_ks: &KeyspaceHandle,
     webvh_ks: &KeyspaceHandle,
+    audit_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
     auth: &AuthClaims,
     scid: &str,
     opts: UpdateDidWebvhOptions,
     did_resolver: &DIDCacheClient,
+    didcomm_bridge: &Arc<DIDCommBridge>,
     channel: &str,
 ) -> Result<UpdateDidWebvhResult, UpdateDidWebvhError> {
     // 1. Resolve SCID → record.
@@ -881,9 +898,57 @@ pub async fn update_did_webvh(
         .await
         .map_err(|e| UpdateDidWebvhError::Persistence(format!("store_did: {e}")))?;
 
-    // TODO: publish to webvh hosting server when not serverless
-    // (mirrors the create flow). Not in this commit's scope.
-    // TODO: emit `did.update` audit event.
+    // 13. Publish the new log to the hosting server for non-serverless
+    //     DIDs. The webvh server's `PUT /api/dids/{mnemonic}` is
+    //     idempotent and accepts the full updated JSONL — same call
+    //     shape as create. Local state is already committed, so a
+    //     publish failure surfaces as `Publish` (HTTP 500) but doesn't
+    //     undo the local update; operators can retry the publish
+    //     out-of-band by re-issuing the same update.
+    if record.server_id != "serverless" {
+        let server = webvh_store::get_server(webvh_ks, &record.server_id)
+            .await
+            .map_err(|e| UpdateDidWebvhError::Persistence(format!("get_server: {e}")))?
+            .ok_or_else(|| {
+                UpdateDidWebvhError::Publish(format!(
+                    "webvh server `{}` referenced by DID is missing",
+                    record.server_id
+                ))
+            })?;
+        let transport = WebvhTransport::from_server(&server, did_resolver, didcomm_bridge)
+            .await
+            .map_err(|e| UpdateDidWebvhError::Publish(format!("transport: {e}")))?;
+        transport
+            .publish_did(&record.mnemonic, &new_log_jsonl)
+            .await
+            .map_err(|e| UpdateDidWebvhError::Publish(format!("publish_did: {e}")))?;
+    }
+
+    // 14. Audit emission. Best-effort — a missing audit row should
+    //     not undo a successful update, so we log+swallow on error.
+    let resource = format!(
+        "did:webvh:{scid} v{} → v{}",
+        initial_log_entry_count, record.log_entry_count
+    );
+    let label = opts.label.as_deref().unwrap_or("update");
+    if let Err(e) = audit::record(
+        audit_ks,
+        &format!("did.update:{label}"),
+        &auth.did,
+        Some(&resource),
+        "success",
+        Some(channel),
+        Some(&record.context_id),
+    )
+    .await
+    {
+        tracing::warn!(
+            channel,
+            did = %record.did,
+            error = %e,
+            "did.update audit emission failed; update committed"
+        );
+    }
 
     tracing::info!(
         channel,

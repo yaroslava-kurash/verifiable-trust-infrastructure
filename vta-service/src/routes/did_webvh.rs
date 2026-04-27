@@ -233,11 +233,13 @@ pub async fn update_did_handler(
         &state.keys_ks,
         &state.contexts_ks,
         &state.webvh_ks,
+        &state.audit_ks,
         &*state.seed_store,
         &auth.0,
         &scid,
         body,
         did_resolver,
+        &state.didcomm_bridge,
         "rest",
     )
     .await?;
@@ -261,11 +263,13 @@ pub async fn rotate_did_keys_handler(
         &state.keys_ks,
         &state.contexts_ks,
         &state.webvh_ks,
+        &state.audit_ks,
         &*state.seed_store,
         &auth.0,
         &scid,
         body,
         did_resolver,
+        &state.didcomm_bridge,
         "rest",
     )
     .await?;

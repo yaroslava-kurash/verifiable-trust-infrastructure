@@ -1280,11 +1280,13 @@ pub async fn handle_update_did_webvh(
             &state.keys_ks,
             &state.contexts_ks,
             &state.webvh_ks,
+            &state.audit_ks,
             &*state.seed_store,
             &auth,
             &env.scid,
             opts,
             did_resolver,
+            &state.didcomm_bridge,
             "didcomm",
         )
         .await
@@ -1329,11 +1331,13 @@ pub async fn handle_rotate_did_webvh_keys(
             &state.keys_ks,
             &state.contexts_ks,
             &state.webvh_ks,
+            &state.audit_ks,
             &*state.seed_store,
             &auth,
             &env.scid,
             opts,
             did_resolver,
+            &state.didcomm_bridge,
             "didcomm",
         )
         .await

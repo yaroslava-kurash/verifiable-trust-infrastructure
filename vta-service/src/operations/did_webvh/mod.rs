@@ -992,7 +992,7 @@ pub async fn delete_did_webvh(
 /// Unified transport for communicating with a WebVH server via REST or DIDComm.
 ///
 /// Owns all necessary state so callers don't need to branch on transport type.
-enum WebvhTransport<'a> {
+pub(super) enum WebvhTransport<'a> {
     Rest(WebvhClient),
     DIDComm {
         bridge: &'a DIDCommBridge,
@@ -1004,7 +1004,7 @@ impl<'a> WebvhTransport<'a> {
     /// Resolve the server DID and construct the appropriate transport.
     ///
     /// Prefers `DIDCommMessaging` and falls back to `WebVHHostingService`.
-    async fn from_server(
+    pub(super) async fn from_server(
         server: &WebvhServerRecord,
         did_resolver: &DIDCacheClient,
         didcomm_bridge: &'a Arc<DIDCommBridge>,
@@ -1059,7 +1059,11 @@ impl<'a> WebvhTransport<'a> {
         }
     }
 
-    async fn publish_did(&self, mnemonic: &str, log_content: &str) -> Result<(), AppError> {
+    pub(super) async fn publish_did(
+        &self,
+        mnemonic: &str,
+        log_content: &str,
+    ) -> Result<(), AppError> {
         match self {
             Self::Rest(c) => c.publish_did(mnemonic, log_content).await,
             Self::DIDComm { bridge, server_did } => {

@@ -2509,3 +2509,161 @@ async fn create_did_webvh_context_scoped_template_shadows_global() {
     let doc = &body["did_document"];
     assert_eq!(doc["service"][0]["type"], "Custom");
 }
+
+// ── webvh DID update + rotate-keys tests ─────────────────────────
+
+/// Helper: create a context + a serverless webvh DID, return
+/// `(token, scid, did)` for follow-up update/rotate calls.
+#[cfg(feature = "webvh")]
+async fn create_test_webvh_did(
+    app: &TestApp,
+    ctx: &TestContext,
+    context_id: &str,
+) -> (String, String, String) {
+    let token = setup_webvh_context(app, ctx, context_id).await;
+    let (status, created) = app
+        .request(post_auth(
+            "/webvh/dids",
+            &token,
+            json!({
+                "context_id": context_id,
+                "url": "https://example.com/.well-known/did/did.jsonl",
+                "set_primary": false,
+            }),
+        ))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "create did: {status} {created}"
+    );
+    let scid = created["scid"]
+        .as_str()
+        .expect("scid in response")
+        .to_string();
+    let did = created["did"]
+        .as_str()
+        .expect("did in response")
+        .to_string();
+    (token, scid, did)
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn update_did_webvh_metadata_only_succeeds() {
+    let (app, ctx) = TestApp::new().await;
+    let (token, scid, did) = create_test_webvh_did(&app, &ctx, "update-meta").await;
+
+    // Toggle pre-rotation off — metadata-only change.
+    let (status, body) = app
+        .request(post_auth(
+            &format!("/contexts/update-meta/dids/{scid}/update"),
+            &token,
+            json!({ "pre_rotation_count": 0 }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK, "update: {status} {body}");
+    assert_eq!(body["did"], did);
+    assert_eq!(body["pre_rotation_key_count"], 0);
+    assert!(body["new_version_id"].as_str().unwrap().starts_with("2-"));
+    assert!(!body["new_log_entry"].as_str().unwrap().is_empty());
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn update_did_webvh_with_new_document_rotates_keys() {
+    let (app, ctx) = TestApp::new().await;
+    let (token, scid, did) = create_test_webvh_did(&app, &ctx, "update-doc").await;
+
+    // Fetch current doc so we can hand back a valid (id-matching) one.
+    let (status, get_body) = app
+        .request(post_auth(
+            &format!("/webvh/dids/{}/log", urlencoding::encode(&did)),
+            &token,
+            json!({}),
+        ))
+        .await;
+    // Fall back: get the current entry by parsing it from the create
+    // response's `log_entry`. Simpler than fetching.
+    let _ = (status, get_body);
+
+    let new_doc = json!({
+        "@context": ["https://www.w3.org/ns/did/v1"],
+        "id": did,
+        "verificationMethod": [{
+            "id": format!("{did}#key-99"),
+            "type": "Multikey",
+            "controller": did.clone(),
+            "publicKeyMultibase": "z6MkExternalPubForTest"
+        }]
+    });
+    let (status, body) = app
+        .request(post_auth(
+            &format!("/contexts/update-doc/dids/{scid}/update"),
+            &token,
+            json!({ "document": new_doc }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK, "update with doc: {status} {body}");
+    assert_eq!(
+        body["update_keys_count"], 1,
+        "auth keys rotated to 1 fresh key"
+    );
+    assert!(body["new_version_id"].as_str().unwrap().starts_with("2-"));
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn rotate_did_webvh_keys_advances_fragment_ids() {
+    let (app, ctx) = TestApp::new().await;
+    let (token, scid, _did) = create_test_webvh_did(&app, &ctx, "rotate-frags").await;
+
+    let (status, body) = app
+        .request(post_auth(
+            &format!("/contexts/rotate-frags/dids/{scid}/rotate-keys"),
+            &token,
+            json!({ "label": "test rotation" }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK, "rotate-keys: {status} {body}");
+    assert!(body["new_version_id"].as_str().unwrap().starts_with("2-"));
+    assert_eq!(body["update_keys_count"], 1);
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn update_did_webvh_unknown_scid_returns_404() {
+    let (app, ctx) = TestApp::new().await;
+    let token = setup_webvh_context(&app, &ctx, "not-here").await;
+
+    let (status, _body) = app
+        .request(post_auth(
+            "/contexts/not-here/dids/Qnonexistent/update",
+            &token,
+            json!({ "pre_rotation_count": 0 }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn update_did_webvh_invalid_document_returns_400() {
+    let (app, ctx) = TestApp::new().await;
+    let (token, scid, _did) = create_test_webvh_did(&app, &ctx, "bad-doc").await;
+
+    // id mismatch — caller can't rename a DID via update
+    let bad_doc = json!({
+        "@context": ["https://www.w3.org/ns/did/v1"],
+        "id": "did:webvh:totally-different",
+        "verificationMethod": []
+    });
+    let (status, _body) = app
+        .request(post_auth(
+            &format!("/contexts/bad-doc/dids/{scid}/update"),
+            &token,
+            json!({ "document": bad_doc }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
