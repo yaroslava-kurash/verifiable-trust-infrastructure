@@ -46,3 +46,15 @@ pub use crate::integration::{
 
 // Protocols — commonly used request/response bodies
 pub use crate::protocols::audit_management::list::ListAuditLogsBody;
+
+// Provision client (feature-gated) — integration-side online provisioning
+// workflow. See `vta_sdk::provision_client` for the contrast with
+// `integration::startup` (provisioning vs runtime startup).
+#[cfg(feature = "provision-client")]
+pub use crate::provision_client::{
+    AdminCredentialReply, AttemptLog, AttemptResult, AttemptResultKind, ConnectedInfo, DiagCheck,
+    DiagEntry, DiagStatus, EphemeralSetupKey, InitialChoice, MediatorMessages, OperatorMessages,
+    Protocol, ProvisionAsk, ProvisionError, ProvisionResult, ResolvedVta, VtaEvent, VtaIntent,
+    VtaReply, WebvhServiceMessages, provision_via_didcomm, provision_via_rest, resolve_vta,
+    run_connection_test, run_provision, select_initial_transport,
+};

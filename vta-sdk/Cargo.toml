@@ -71,8 +71,19 @@ provision-integration = [
 # against the AWS Nitro root). Consumers of sealed-bootstrap Mode B enable
 # this to validate the `Attested` producer assertion end-to-end.
 attest-verify = ["dep:nitro_attest", "dep:time", "dep:affinidi-crypto"]
-# Expose in-memory `SessionBackend` mocks for downstream integration tests.
-# Additive, zero-cost when off.
+# Integration-side provisioning workflow: the orchestration layer above
+# `provision-integration` that drives setup-key minting, transport selection,
+# connection testing, and sealed-bundle opening. Used by setup tools that
+# onboard an integration (mediator, webvh, future apps) against a running
+# VTA. TUI-agnostic — emits events on a consumer-owned channel.
+provision-client = [
+  "provision-integration",
+  "session",
+  "dep:tracing",
+]
+# Expose in-memory test fixtures for downstream integration tests.
+# Currently gates: `SessionBackend` mocks (always); `provision_client::test_helpers`
+# (when `provision-client` is also on). Additive, zero-cost when off.
 test-support = ["session"]
 
 [dependencies]
@@ -113,3 +124,5 @@ zeroize = { version = "1", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+tempfile = "3"
+wiremock = "0.6"

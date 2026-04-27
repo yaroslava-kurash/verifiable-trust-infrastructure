@@ -20,6 +20,8 @@ pub mod didcomm_session;
 pub mod keys;
 pub mod prelude;
 pub mod protocols;
+#[cfg(feature = "provision-client")]
+pub mod provision_client;
 #[cfg(feature = "provision-integration")]
 pub mod provision_integration;
 #[cfg(feature = "sealed-transfer")]

@@ -656,6 +656,156 @@ e.g. the mediator tool in `affinidi-tdk-rs`) reads the VC's
 signing + KA keys, and discards `client_did` after the first
 successful call to the VTA as the new admin DID.
 
+## Client SDK (`vta_sdk::provision_client`)
+
+Setup tools that drive the **online** provisioning flow on the
+integration side (mediator-setup, webvh-* setup wizards, future apps)
+build on `vta_sdk::provision_client` rather than re-implementing the
+orchestration. The module sits **above** `vta_sdk::provision_integration`
+(wire types) and below the consumer-side UI (TUI, headless CLI, custom).
+Enable the `provision-client` feature on `vta-sdk` to get it.
+
+### Provisioning vs runtime startup
+
+`provision_client` is *one-shot, first-boot*: it mints a setup `did:key`,
+asks the VTA to provision a new integration via a DID template, opens the
+sealed response bundle, returns the integration DID + private keys + admin
+credential. Runs once per integration.
+
+`integration::startup` (different module) is *every-boot, runtime*: loads
+already-provisioned credentials and opens a steady-state authenticated
+session with the VTA. Runs on every process start.
+
+Setup tooling wants `provision_client`. The integration itself wants
+`integration::startup`.
+
+### Workflow at a glance
+
+```rust
+use std::sync::Arc;
+use vta_sdk::prelude::*;
+
+// 1. Mint a setup did:key. Persist if you need a two-phase split
+//    (operator runs `pnm acl create` between phases).
+let key = EphemeralSetupKey::generate()?;
+
+// 2. Resolve the VTA's transport endpoints.
+let resolved = resolve_vta(&vta_did).await?;
+
+// 3. Build a ProvisionAsk. Curated builders cover the four built-in
+//    templates; for_template handles custom templates.
+let ask = ProvisionAsk::didcomm_mediator("prod-mediator", "https://m.example.com");
+
+// 4. Pick (or implement) an OperatorMessages.
+let messages: Arc<dyn OperatorMessages> = Arc::new(MediatorMessages);
+
+// 5. Drive the workflow. Events stream to your channel; the result
+//    comes back via the Result.
+let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+let reply = run_provision(
+    VtaIntent::FullSetup,
+    vta_did,
+    key.did.clone(),
+    key.private_key_multibase().to_string(),
+    ask,
+    /* force_transport */ None,
+    messages,
+    tx,
+).await?;
+```
+
+### `ProvisionAsk` — curated vs `for_template`
+
+Four curated builders mirror the built-in templates shipped by
+`vta-service`:
+
+| Builder | Template | Required vars |
+|---|---|---|
+| `ProvisionAsk::didcomm_mediator(ctx, url)` | `didcomm-mediator` | `URL` |
+| `ProvisionAsk::webvh_service(ctx, mediator_did)` | `webvh-service` | `MEDIATOR_DID` |
+| `ProvisionAsk::webvh_hosting_server(ctx, url)` | `webvh-hosting-server` | `URL` |
+| `ProvisionAsk::vta_admin(ctx)` | `vta-admin` | (none) |
+
+For an operator-supplied template, use
+`ProvisionAsk::for_template(name, vars, context)` and pass the
+`requiredVars` the template declares.
+
+**Adding a built-in template to `vta-service` without adding the
+matching curated builder is an SDK-side bug.** An equivalence test in
+`vta_sdk::provision_client::ask::tests` pins the two sides together —
+each curated builder must produce a `BootstrapRequest` byte-equal to
+`for_template(name, expected_vars, ctx)`.
+
+### `OperatorMessages` — per-integration strings
+
+The library never hardcodes integration nouns ("mediator", "WebVH
+service") or full PNM commands. Each consumer implements
+`OperatorMessages` and passes an `Arc<dyn OperatorMessages>` into
+`run_provision` and the headless `driver` helpers. Two default impls
+ship: `MediatorMessages` and `WebvhServiceMessages`.
+
+```rust
+use vta_sdk::prelude::*;
+
+struct MyAppMessages;
+impl OperatorMessages for MyAppMessages {
+    fn integration_label(&self) -> &str { "MyApp" }
+    fn integration_label_lower(&self) -> &str { "myapp" }
+    fn pnm_admin_command_hint(&self, ctx: &str, did: &str) -> String {
+        format!(
+            "pnm contexts create --id {ctx} --name \"MyApp\" \\\n  \
+             --admin-did {did} --admin-expires 1h"
+        )
+    }
+}
+```
+
+### `VtaEvent` — the channel protocol
+
+The runner emits a typed event sequence on a consumer-owned
+`mpsc::Sender<VtaEvent>`:
+
+```
+CheckStart(ResolveDid)
+CheckDone(ResolveDid, Ok(...))
+Resolved(ResolvedVta)
+CheckStart(EnumerateServices)
+CheckDone(EnumerateServices, Ok(...))
+... transport-specific check rows ...
+AttemptCompleted { protocol, outcome }
+[ PreflightDone { servers, ... } ]   // FullSetup over DIDComm only
+CheckDone(ProvisionIntegration, Ok(...))
+Connected { protocol, reply, ... }   // success terminal
+```
+
+Or, on failure: `CheckDone(..., Failed(...))` followed by `Failed(reason)`
+as the terminal event. Variants are stable; new variants are
+**additive only** — match exhaustively and treat unknown variants as
+forward-compat noise once the channel grows past v1.
+
+### Headless driver
+
+`provision_client::driver` ships a non-interactive helper that takes a
+`&mut dyn Write` and renders the event stream as text. Two phases:
+
+- `run_phase1_init` — mint key, persist, write the `pnm contexts
+  create` command for the operator.
+- `run_phase2_connect` — reload key, drive `run_provision`, render
+  diagnostic checklist lines.
+
+The library is fully TUI-agnostic — `provision_client` has no
+`ratatui` / `crossterm` / `dialoguer` dep, and no `print!` / `println!`
+appears anywhere in the module (`driver` writes to the supplied
+`&mut dyn Write` only). TUI consumers route the same `VtaEvent` stream
+into their state machine.
+
+### Test fixtures (`test-support` feature)
+
+Enable both `provision-client` and `test-support` to reach
+`vta_sdk::provision_client::test_helpers::sample_provision_result` for
+seeding integration tests with a populated `ProvisionResult` without
+standing up a live VTA.
+
 ## CLI + HTTP surface
 
 ### VTA host (offline flow)

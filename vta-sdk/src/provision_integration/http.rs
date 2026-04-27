@@ -51,7 +51,7 @@ pub struct ProvisionIntegrationResponse {
     pub summary: ProvisionSummary,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ProvisionSummary {
     /// Ephemeral DID that signed the VP and opens the sealed bundle.
