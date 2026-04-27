@@ -64,7 +64,7 @@ pub mod test_helpers;
 pub use runner::{
     InitialChoice, provision_via_rest, run_connection_test, run_provision, select_initial_transport,
 };
-pub use runner_didcomm::provision_via_didcomm;
+pub use runner_didcomm::{provision_via_didcomm, run_provision_flight};
 
 pub use ask::{
     BUILTIN_MEDIATOR_TEMPLATE, BUILTIN_VTA_ADMIN_TEMPLATE, BUILTIN_WEBVH_HOSTING_TEMPLATE,

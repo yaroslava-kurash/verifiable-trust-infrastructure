@@ -232,6 +232,12 @@ pub(crate) async fn run_didcomm_attempt(
 /// [`VtaEvent::PreflightDone`] has been handled and the operator's
 /// webvh-server choice is settled.
 ///
+/// Public because interactive consumers (TUIs that drive their own
+/// webvh-server picker) call it directly between `PreflightDone` and
+/// the final provisioning step. Non-interactive callers should use
+/// [`super::run_provision`] instead — it auto-picks for the 0/1-server
+/// case and bails when there are 2+.
+///
 /// Opens a fresh DIDComm session rather than keeping preflight's session
 /// alive across the picker dialog — the picker may stay on screen for
 /// many seconds, and tying a live session to a UI wait is fragile.
@@ -246,7 +252,7 @@ pub(crate) async fn run_didcomm_attempt(
 /// suggestion to the webvh server's `request_uri` call; `None` → server
 /// auto-assigns. Only meaningful when `webvh_server_id` is `Some`.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_provision_flight(
+pub async fn run_provision_flight(
     vta_did: String,
     setup_did: String,
     setup_privkey_mb: String,

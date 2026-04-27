@@ -56,5 +56,5 @@ pub use crate::provision_client::{
     DiagEntry, DiagStatus, EphemeralSetupKey, InitialChoice, MediatorMessages, OperatorMessages,
     Protocol, ProvisionAsk, ProvisionError, ProvisionResult, ResolvedVta, VtaEvent, VtaIntent,
     VtaReply, WebvhServiceMessages, provision_via_didcomm, provision_via_rest, resolve_vta,
-    run_connection_test, run_provision, select_initial_transport,
+    run_connection_test, run_provision, run_provision_flight, select_initial_transport,
 };
