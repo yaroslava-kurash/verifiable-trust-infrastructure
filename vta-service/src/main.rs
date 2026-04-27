@@ -314,11 +314,19 @@ enum BootstrapCommands {
         #[arg(long)]
         request: PathBuf,
         /// VTA context the integration will live in. Must be an
-        /// existing context the operator is admin of. If the request
+        /// existing context the operator is admin of (or pass
+        /// `--create-context` to create it inline). If the request
         /// carries a `contextHint`, this flag must either match it or
         /// be omitted.
         #[arg(long)]
         context: Option<String>,
+        /// Create the target context if it does not already exist.
+        /// Idempotent — silently succeeds if the context exists. The
+        /// context is created with `name = <id>`; rename later via the
+        /// REST API if needed. Without this flag, a missing context
+        /// fails with operator-remediation guidance.
+        #[arg(long)]
+        create_context: bool,
         /// Producer assertion mode on the returned sealed bundle.
         /// `did-signed` (default) signs with the VTA's `{vta_did}#key-0`.
         /// `pinned-only` is a dev/test escape hatch — no in-band
@@ -391,6 +399,28 @@ enum KeyCliCommands {
 
 #[derive(Subcommand)]
 enum ContextCommands {
+    /// Create an application context (offline, no running VTA required).
+    ///
+    /// Allocates the next BIP-32 context index and writes the context
+    /// record. Mirrors the online `POST /contexts` endpoint (and
+    /// `pnm contexts create`) for cold-start / air-gapped operators
+    /// who need to provision a context before standing the service up.
+    ///
+    /// No keys, ACL entries, or DID are minted — pair with
+    /// `vta bootstrap provision-integration` (or run it with
+    /// `--create-context`) to populate the context.
+    Create {
+        /// Context ID (slug). Lowercase alphanumeric + hyphens, ≤64
+        /// chars, no leading/trailing hyphen.
+        #[arg(long)]
+        id: String,
+        /// Human-readable name. Defaults to the id when omitted.
+        #[arg(long)]
+        name: Option<String>,
+        /// Free-form description.
+        #[arg(long)]
+        description: Option<String>,
+    },
     /// Export an existing context — its admin credential + all DID
     /// keys (signing + KA + any pre-rotation) + DID document + log —
     /// as a sealed ContextProvision bundle for a new/backup admin to
@@ -753,11 +783,16 @@ async fn main() {
         }
         Some(Commands::Context { command }) => {
             match &command {
-                ContextCommands::Reprovision { .. } => {
+                ContextCommands::Create { .. } | ContextCommands::Reprovision { .. } => {
                     check_seal(&cli.config).await;
                 }
             }
             let result = match command {
+                ContextCommands::Create {
+                    id,
+                    name,
+                    description,
+                } => bootstrap_cli::run_context_create(cli.config, id, name, description).await,
                 ContextCommands::Reprovision {
                     id,
                     admin_key,
@@ -925,6 +960,7 @@ async fn main() {
                 BootstrapCommands::ProvisionIntegration {
                     request,
                     context,
+                    create_context,
                     assertion,
                     vc_validity_hours,
                     out,
@@ -933,6 +969,7 @@ async fn main() {
                         cli.config.clone(),
                         request,
                         context,
+                        create_context,
                         assertion,
                         vc_validity_hours,
                         out,

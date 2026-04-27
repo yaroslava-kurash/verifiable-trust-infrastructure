@@ -206,15 +206,19 @@ vta bootstrap provision-integration \
     --out      mediator-bundle.armor
 ```
 
-(Omit `--context` if the request's `contextHint` is authoritative.)
+(Omit `--context` if the request's `contextHint` is authoritative.
+Add `--create-context` to provision the context inline if it does
+not yet exist — idempotent, equivalent to running
+`vta context create --id mediator-prod` first.)
 
 What it does:
 
 1. Loads the VTA's config + opens the store.
 2. Verifies the VP: signature (against the ephemeral `holder`),
    types, freshness (`validUntil`), context agreement.
-3. Creates the target context if needed (`--context` must match
-   either the explicit flag or the `contextHint`).
+3. Resolves the target context (must already exist, or pass
+   `--create-context` to allocate it inline; `--context` must match
+   the request's `contextHint` if one is set).
 4. Mints the integration's DID + keys via the named template. In
    greenfield setup — no webvh hosting server exists yet — this runs
    in **serverless mode**: the VTA writes `did.jsonl` to its own

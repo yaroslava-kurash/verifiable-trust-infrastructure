@@ -438,10 +438,12 @@ use vta_sdk::hex::lower as hex_lower;
 /// minted keys, admin ACL row) as part of the library-fn execution; the
 /// returned bundle is derived from that state.
 #[cfg(feature = "webvh")]
+#[allow(clippy::too_many_arguments)]
 pub async fn run_provision_integration(
     config_path: Option<PathBuf>,
     request_path: PathBuf,
     context: Option<String>,
+    create_context: bool,
     assertion: AssertionModeFlag,
     vc_validity_hours: Option<f64>,
     out_path: PathBuf,
@@ -491,8 +493,29 @@ pub async fn run_provision_integration(
     //    `vta bootstrap provision-integration` on the VTA host has root
     //    access to the keyspace; there is no over-the-wire authn to
     //    delegate through. Production-grade gating happens on the HTTP
-    //    endpoint (step 4) which extracts a real session-backed claim.
+    //    endpoint which extracts a real session-backed claim.
     let auth = AuthClaims::unsafe_local_cli_super_admin("provision-integration");
+
+    // 4a. Optionally create the target context inline. Idempotent: if
+    //     it already exists we proceed to provisioning; the upcoming
+    //     preconditions check would otherwise reject the call.
+    if create_context
+        && crate::contexts::get_context(&state.contexts_ks, &target_context)
+            .await?
+            .is_none()
+    {
+        crate::operations::contexts::create_context(
+            &state.contexts_ks,
+            &auth,
+            &target_context,
+            target_context.clone(),
+            None,
+            "provision-integration",
+        )
+        .await
+        .map_err(|e| format!("create context '{target_context}': {e}"))?;
+        eprintln!("Created context '{target_context}' (--create-context).");
+    }
 
     // 5. Call the shared library fn.
     let vc_validity = vc_validity_hours.map(|hrs| {
@@ -689,6 +712,51 @@ pub async fn run_keys_bundle(
         out.as_deref(),
     )
     .await
+}
+
+/// `vta context create` — offline equivalent of `POST /contexts`
+/// (and `pnm contexts create`).
+///
+/// Allocates the next BIP-32 context index and writes the context
+/// record directly to the local keystore. No keys, ACL entries, or
+/// DID are minted; pair with `vta bootstrap provision-integration`
+/// (or run that command with `--create-context` to do both in one
+/// step) to populate the context.
+pub async fn run_context_create(
+    config_path: Option<PathBuf>,
+    id: String,
+    name: Option<String>,
+    description: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::auth::AuthClaims;
+
+    let app_config = AppConfig::load(config_path)?;
+    let store = Store::open(&app_config.store)?;
+    let contexts_ks = store.keyspace("contexts")?;
+
+    let auth = AuthClaims::unsafe_local_cli_super_admin("context-create");
+    let display_name = name.unwrap_or_else(|| id.clone());
+
+    let record = crate::operations::contexts::create_context(
+        &contexts_ks,
+        &auth,
+        &id,
+        display_name,
+        description,
+        "vta-context-create",
+    )
+    .await?;
+
+    store.persist().await?;
+
+    eprintln!("Context created:");
+    eprintln!("  ID:        {}", record.id);
+    eprintln!("  Name:      {}", record.name);
+    if let Some(desc) = record.description.as_ref() {
+        eprintln!("  Desc:      {desc}");
+    }
+    eprintln!("  Index:     {}", record.base_path);
+    Ok(())
 }
 
 /// `vta context reprovision` — offline equivalent of

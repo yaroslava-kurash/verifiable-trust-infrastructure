@@ -29,7 +29,8 @@ pub(super) async fn preconditions(
     {
         return Err(AppError::NotFound(format!(
             "context '{context}' is not registered on this VTA — create it first via \
-             'vta context provision' or 'pnm contexts create'"
+             'vta context create --id {context}' (offline) or 'pnm contexts create' (online), \
+             or pass '--create-context' to provision it inline"
         )));
     }
 
