@@ -4,7 +4,35 @@ use ratatui::{
     style::{Color, Modifier},
     widgets::Widget,
 };
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+// ── Bin-name registration ───────────────────────────────────────────
+//
+// pnm-cli and cnm-cli both consume this crate's shared command
+// handlers. When one of those handlers needs to point the operator at a
+// follow-up command (e.g. context-create → "did you mean to run X
+// instead?"), it must use the binary the operator actually invoked,
+// not a hard-coded `pnm`. Each CLI binary calls `set_bin_name("pnm")`
+// or `set_bin_name("cnm")` at startup; handlers read via `bin_name()`
+// and fall back to "vta" if neither was registered (the offline `vta
+// bootstrap …` path also calls into shared modules).
+
+static BIN_NAME: OnceLock<&'static str> = OnceLock::new();
+
+/// Register the binary name used in operator-facing hints. Call once at
+/// CLI startup. Only the first call sticks; later calls are ignored so
+/// that nested invocations (e.g. unit tests) don't clobber it.
+pub fn set_bin_name(name: &'static str) {
+    let _ = BIN_NAME.set(name);
+}
+
+/// The binary name registered via [`set_bin_name`]. Defaults to `"vta"`
+/// (the offline binary's name) when nothing has been registered, so
+/// shared handlers still produce a syntactically valid command string.
+pub fn bin_name() -> &'static str {
+    BIN_NAME.get().copied().unwrap_or("vta")
+}
 
 // ── Full-display toggle ─────────────────────────────────────────────
 //
@@ -97,6 +125,16 @@ pub fn print_cli_error(err: &(dyn std::error::Error + 'static)) {
             }
             VtaError::Conflict(msg) => {
                 eprintln!("{RED}\u{2717}{RESET} Conflict: {msg}");
+            }
+            VtaError::Gone(msg) => {
+                let bin = bin_name();
+                eprintln!("{RED}\u{2717}{RESET} Resource is gone: {msg}");
+                eprintln!(
+                    "  {DIM}This usually means the bootstrap carve-out has already been used. \
+                     For a second admin, run `{bin} bootstrap provision-request` from the new \
+                     operator's host and have an existing admin run \
+                     `{bin} bootstrap provision-integration` against this VTA.{RESET}"
+                );
             }
             VtaError::Validation(msg) => {
                 eprintln!("{RED}\u{2717}{RESET} Invalid request: {msg}");

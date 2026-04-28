@@ -41,7 +41,7 @@ cargo build --package cnm-cli --release --no-default-features --features config-
 
 ### From source
 
-Requires **Rust 1.91.0+**.
+Requires **Rust 1.94.0+**.
 
 ```sh
 cargo build --package cnm-cli --release

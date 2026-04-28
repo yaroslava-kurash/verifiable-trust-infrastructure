@@ -15,7 +15,7 @@ path = "src/main.rs"
 [dependencies]
 vta-sdk = { path = "../vta-sdk", version = "0.5", features = ["didcomm"] }
 affinidi-tdk = { workspace = true }
-affinidi-did-resolver-cache-sdk = { version = "0.8", features = ["network"] }
+affinidi-did-resolver-cache-sdk = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -24,4 +24,7 @@ clap = { workspace = true }
 ed25519-dalek-bip32 = { workspace = true }
 multibase = { workspace = true }
 ed25519-dalek = { workspace = true }
-hex = "0.4"
+hex = { workspace = true }
+
+[lints]
+workspace = true

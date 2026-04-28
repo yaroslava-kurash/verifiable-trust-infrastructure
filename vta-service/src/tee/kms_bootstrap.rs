@@ -116,15 +116,37 @@ pub async fn bootstrap_secrets(
                     is_first_boot: false,
                 });
             }
-            Err(e) => {
-                // KMS decrypt failed — likely a PCR0 mismatch after image rebuild.
-                // Clear the stale bootstrap data and fall through to first boot.
+            Err((class, e)) => {
+                // Auto-clearing the bootstrap keyspace silently re-issues the
+                // VTA's identity. Only ACCESS_DENIED is a legitimate signal
+                // for "expected after an image rebuild with a new PCR0" —
+                // every other class (KMS_INTERNAL, NETWORK, INVALID_CIPHERTEXT,
+                // UNKNOWN) could be a transient outage or active tampering,
+                // and silently nuking the identity would be the wrong move.
+                // Operators who deliberately want to reset must set
+                // `tee.kms.allow_kms_reinit = true` in config.
+                let auto_clear =
+                    matches!(class, KmsErrorClass::AccessDenied) || kms_config.allow_kms_reinit;
+                if !auto_clear {
+                    error!(
+                        error = %e,
+                        class = ?class,
+                        "KMS decrypt of existing ciphertexts failed with a non-ACCESS_DENIED \
+                         class. Refusing to auto-clear the bootstrap keyspace because doing \
+                         so would silently reset the VTA's identity. Diagnose the cause \
+                         (KMS health, vsock proxy reachability, ciphertext integrity) and, \
+                         if you are certain the existing identity is unrecoverable, set \
+                         tee.kms.allow_kms_reinit = true for a one-time reset."
+                    );
+                    return Err(e);
+                }
                 warn!(
                     error = %e,
+                    class = ?class,
                     "KMS decrypt of existing ciphertexts failed — clearing stale \
-                     bootstrap data and starting fresh. This is expected after an \
-                     image rebuild with a new PCR0. The VTA will generate a new \
-                     identity."
+                     bootstrap data and starting fresh. ACCESS_DENIED is expected after \
+                     an image rebuild with a new PCR0; other classes were authorized \
+                     by allow_kms_reinit. The VTA will generate a new identity."
                 );
                 bs_ks.remove(BOOTSTRAP_DK_CT_KEY).await?;
                 bs_ks.remove(BOOTSTRAP_SEED_CT_KEY).await?;
@@ -433,31 +455,36 @@ fn unwrap_cms_response(
 /// key policy's PCR conditions.
 ///
 /// Without `/dev/nsm` (simulated mode), uses direct KMS Decrypt.
+///
+/// Returns `(class, AppError)` on failure so the bootstrap path can
+/// branch on `KmsErrorClass::AccessDenied` (legitimate post-rebuild
+/// PCR mismatch) without auto-clearing on every other class.
 async fn kms_decrypt_data_key(
     config: &TeeKmsConfig,
     ciphertext: &[u8],
-) -> Result<Vec<u8>, AppError> {
+) -> Result<Vec<u8>, (KmsErrorClass, AppError)> {
     if std::path::Path::new("/dev/nsm").exists() {
         match kms_decrypt_attested(config, ciphertext).await {
             Ok(plaintext) => {
                 info!("KMS Decrypt succeeded with Nitro attestation");
                 return Ok(plaintext);
             }
-            Err(e) if config.allow_unattested_fallback => {
+            Err((class, e)) if config.allow_unattested_fallback => {
                 warn!(
                     error = %e,
+                    class = ?class,
                     "attestation-based KMS Decrypt failed — falling back to direct Decrypt \
                      (allow_unattested_fallback = true). PCR policy is NOT enforced on this call."
                 );
             }
-            Err(e) => {
+            Err((class, e)) => {
                 error!(
                     error = %e,
                     "attestation-based KMS Decrypt failed on Nitro hardware — refusing to \
                      fall back. Set tee.kms.allow_unattested_fallback = true only as a \
                      break-glass measure."
                 );
-                return Err(e);
+                return Err((class, e));
             }
         }
     }
@@ -469,8 +496,9 @@ async fn kms_decrypt_data_key(
 async fn kms_decrypt_attested(
     config: &TeeKmsConfig,
     ciphertext: &[u8],
-) -> Result<Vec<u8>, AppError> {
-    let (private_key, recipient) = nsm_attested_recipient()?;
+) -> Result<Vec<u8>, (KmsErrorClass, AppError)> {
+    let (private_key, recipient) =
+        nsm_attested_recipient().map_err(|e| (KmsErrorClass::Unknown, e))?;
     let client = kms_client(config).await;
 
     let resp = client
@@ -480,13 +508,17 @@ async fn kms_decrypt_attested(
         .recipient(recipient)
         .send()
         .await
-        .map_err(|e| classify_kms_error("Decrypt(attested)", e))?;
+        .map_err(|e| classify_kms_error_typed("Decrypt(attested)", e))?;
 
     unwrap_cms_response(resp.ciphertext_for_recipient(), &private_key)
+        .map_err(|e| (KmsErrorClass::InvalidCiphertext, e))
 }
 
 /// Direct KMS Decrypt without the Recipient parameter.
-async fn kms_decrypt_direct(config: &TeeKmsConfig, ciphertext: &[u8]) -> Result<Vec<u8>, AppError> {
+async fn kms_decrypt_direct(
+    config: &TeeKmsConfig,
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, (KmsErrorClass, AppError)> {
     let client = kms_client(config).await;
 
     let resp = client
@@ -495,11 +527,16 @@ async fn kms_decrypt_direct(config: &TeeKmsConfig, ciphertext: &[u8]) -> Result<
         .key_id(&config.key_arn)
         .send()
         .await
-        .map_err(|e| classify_kms_error("Decrypt", e))?;
+        .map_err(|e| classify_kms_error_typed("Decrypt", e))?;
 
     resp.plaintext()
         .map(|b| b.as_ref().to_vec())
-        .ok_or_else(|| tee_attestation_error("KMS Decrypt returned no plaintext"))
+        .ok_or_else(|| {
+            (
+                KmsErrorClass::InvalidCiphertext,
+                tee_attestation_error("KMS Decrypt returned no plaintext"),
+            )
+        })
 }
 
 /// Generate a KMS data key, returning (kms_ciphertext, plaintext_key).
@@ -1164,8 +1201,49 @@ mod cms_der {
     }
 }
 
+/// Typed classification of a KMS error. The bootstrap path branches
+/// on this to decide whether to auto-clear stale ciphertexts: only
+/// `AccessDenied` (the post-rebuild PCR-mismatch signal) is treated
+/// as legitimate; anything else preserves the VTA's identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KmsErrorClass {
+    AccessDenied,
+    KeyNotFound,
+    InvalidCiphertext,
+    KmsInternal,
+    Network,
+    Unknown,
+}
+
+impl KmsErrorClass {
+    fn label(self) -> &'static str {
+        match self {
+            Self::AccessDenied => {
+                "ACCESS_DENIED — check KMS key policy allows this action and PCR conditions match"
+            }
+            Self::KeyNotFound => "KEY_NOT_FOUND — verify the KMS key ARN in config.toml",
+            Self::InvalidCiphertext => {
+                "INVALID_CIPHERTEXT — ciphertext may be corrupt or encrypted with a different key"
+            }
+            Self::KmsInternal => "KMS_INTERNAL — transient AWS error, retry may help",
+            Self::Network => "NETWORK — cannot reach KMS endpoint, check vsock proxy and allowlist",
+            Self::Unknown => "UNKNOWN",
+        }
+    }
+}
+
 /// Classify KMS errors for operator diagnostics.
 fn classify_kms_error<E: std::error::Error>(operation: &str, err: E) -> AppError {
+    classify_kms_error_typed(operation, err).1
+}
+
+/// Classify a KMS error into a typed class + an `AppError` ready to
+/// propagate. The class is what the bootstrap path branches on; the
+/// `AppError` is what the caller returns/logs.
+pub(crate) fn classify_kms_error_typed<E: std::error::Error>(
+    operation: &str,
+    err: E,
+) -> (KmsErrorClass, AppError) {
     // Build the full error chain string so classification catches nested causes
     // (the AWS SDK wraps the actual error type several layers deep).
     let mut full_msg = format!("{err}");
@@ -1175,25 +1253,25 @@ fn classify_kms_error<E: std::error::Error>(operation: &str, err: E) -> AppError
         source = cause.source();
     }
 
-    // Classify by error message patterns for clear operator guidance
-    let classification = if full_msg.contains("AccessDeniedException") {
-        "ACCESS_DENIED — check KMS key policy allows this action and PCR conditions match"
+    let class = if full_msg.contains("AccessDeniedException") {
+        KmsErrorClass::AccessDenied
     } else if full_msg.contains("NotFoundException") || full_msg.contains("not found") {
-        "KEY_NOT_FOUND — verify the KMS key ARN in config.toml"
+        KmsErrorClass::KeyNotFound
     } else if full_msg.contains("InvalidCiphertextException") {
-        "INVALID_CIPHERTEXT — ciphertext may be corrupt or encrypted with a different key"
+        KmsErrorClass::InvalidCiphertext
     } else if full_msg.contains("KMSInternalException") {
-        "KMS_INTERNAL — transient AWS error, retry may help"
+        KmsErrorClass::KmsInternal
     } else if full_msg.contains("connect") || full_msg.contains("timeout") {
-        "NETWORK — cannot reach KMS endpoint, check vsock proxy and allowlist"
+        KmsErrorClass::Network
     } else {
-        "UNKNOWN"
+        KmsErrorClass::Unknown
     };
 
-    let msg = format!("KMS {operation} failed [{classification}]: {full_msg}");
+    let label = class.label();
+    let msg = format!("KMS {operation} failed [{label}]: {full_msg}");
 
-    error!(operation, classification, "KMS error");
-    tee_attestation_error(msg)
+    error!(operation, classification = label, "KMS error");
+    (class, tee_attestation_error(msg))
 }
 
 #[cfg(test)]

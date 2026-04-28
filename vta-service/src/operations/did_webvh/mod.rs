@@ -365,7 +365,11 @@ pub async fn create_did_webvh(
 
         // Publish to server if not serverless
         if !serverless {
-            let server_id = params.server_id.as_ref().unwrap();
+            let server_id = params.server_id.as_ref().ok_or_else(|| {
+                AppError::Validation(
+                    "server_id is required when serverless=false (final-mode publish path)".into(),
+                )
+            })?;
             let server = webvh_store::get_server(webvh_ks, server_id)
                 .await?
                 .ok_or_else(|| {
@@ -568,7 +572,11 @@ pub async fn create_did_webvh(
 
     // Resolve URL: serverless uses user-provided URL, server-managed requests from server
     let (url_str, mnemonic) = if serverless {
-        let url_str = params.url.as_ref().unwrap().clone();
+        let url_str = params
+            .url
+            .as_ref()
+            .ok_or_else(|| AppError::Validation("url is required when serverless=true".into()))?
+            .clone();
         // Validate the URL
         let parsed_url =
             Url::parse(&url_str).map_err(|e| AppError::Validation(format!("invalid url: {e}")))?;
@@ -576,7 +584,9 @@ pub async fn create_did_webvh(
             .map_err(|e| AppError::Validation(format!("failed to parse WebVH URL: {e}")))?;
         (url_str, None)
     } else {
-        let server_id = params.server_id.as_ref().unwrap();
+        let server_id = params.server_id.as_ref().ok_or_else(|| {
+            AppError::Validation("server_id is required when serverless=false".into())
+        })?;
         let server = webvh_store::get_server(webvh_ks, server_id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("webvh server not found: {server_id}")))?;

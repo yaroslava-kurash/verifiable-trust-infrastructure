@@ -65,7 +65,7 @@ path = "src/main.rs"
 required-features = ["cli-synthesis"]
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.3", features = ["encryption"] }
+vti-common = { path = "../vti-common", version = "0.5", features = ["encryption"] }
 vta-sdk = { path = "../vta-sdk", version = "0.5", features = ["didcomm", "sealed-transfer", "provision-integration"] }
 # Shared CLI helpers for the consumer side of sealed-transfer (request
 # generation, bundle opening). Used by `vta bootstrap request` /
@@ -78,21 +78,21 @@ affinidi-crypto = { workspace = true }
 # direct so `vta-service::operations::provision_integration` can name
 # the type.
 affinidi-secrets-resolver = { workspace = true }
-hkdf = "0.13"
+hkdf = { workspace = true }
 affinidi-tdk = { workspace = true }
 affinidi-messaging-didcomm = "0.13"
 affinidi-messaging-didcomm-service = { workspace = true }
 async-trait = "0.1"
 affinidi-tdk-common = "0.5"
-affinidi-did-resolver-cache-sdk = { version = "0.8", features = ["network"] }
-tokio-util = { version = "0.7", features = ["rt"] }
+affinidi-did-resolver-cache-sdk = { workspace = true }
+tokio-util = { workspace = true, features = ["rt"] }
 base64 = { workspace = true }
-axum = "0.8"
+axum = { workspace = true }
 axum-extra = { workspace = true }
 jsonwebtoken = { workspace = true }
 fjall = { workspace = true }
-toml = "1"
-tower-http = { version = "0.6", features = ["trace", "limit"] }
+toml = { workspace = true }
+tower-http = { workspace = true, features = ["trace", "limit"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -102,7 +102,7 @@ tracing-subscriber = { workspace = true }
 bip39 = "2"
 ed25519-dalek = { workspace = true }
 ed25519-dalek-bip32 = { workspace = true }
-hex = "0.4"
+hex = { workspace = true }
 keyring = { version = "3", optional = true }
 aws-sdk-secretsmanager = { version = "1", optional = true }
 aws-config = { version = "1", features = [
@@ -120,9 +120,9 @@ dialoguer = { workspace = true }
 # Locate `~/.config/vta/` for the `vta bootstrap request` / `vta bootstrap
 # open` consumer-side seed cache. Default seed dir only — operators can
 # override with `--seed-dir`.
-dirs = "6"
-azure_security_keyvault_secrets = { version = "0.14", optional = true }
-azure_identity = { version = "0.35", optional = true }
+dirs = { workspace = true }
+azure_security_keyvault_secrets = { workspace = true, optional = true }
+azure_identity = { workspace = true, optional = true }
 # HashiCorp Vault client (vault-secrets feature). Supports KV v2 + the
 # Kubernetes / token / AppRole auth methods we expose. `rustls` is
 # vaultrs's default TLS backend, matching the rest of the workspace.
@@ -136,7 +136,7 @@ p256 = "0.13"
 url = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 tempfile = { version = "3", optional = true }
-libc = { version = "0.2", optional = true }
+libc = { workspace = true, optional = true }
 zeroize = { version = "1", features = ["derive"] }
 tower = { version = "0.5", features = ["limit"] }
 # Per-IP rate limiting for unauthenticated endpoints (`/bootstrap/request`,
@@ -144,7 +144,7 @@ tower = { version = "0.5", features = ["limit"] }
 tower_governor = "0.8"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
-aes-gcm = "0.10"
+aes-gcm = { workspace = true }
 argon2 = "0.5"
 hmac = "0.13"
 aws-sdk-kms = { version = "1", optional = true }
@@ -161,3 +161,6 @@ aws-lc-rs = { version = "1", optional = true }
 tempfile = "3"
 http-body-util = "0.1"
 urlencoding = "2"
+
+[lints]
+workspace = true

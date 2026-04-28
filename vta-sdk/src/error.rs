@@ -28,6 +28,13 @@ pub enum VtaError {
     #[error("conflict: {0}")]
     Conflict(String),
 
+    /// Gone (410) — the resource existed but is now permanently unavailable.
+    /// Most often emitted by the bootstrap carve-out endpoint after it has
+    /// been consumed; the CLI surfaces this with a "did you mean to run
+    /// `… provision-request`" hint instead of a flat string.
+    #[error("gone: {0}")]
+    Gone(String),
+
     /// Server error (5xx).
     #[error("server error ({status}): {body}")]
     Server { status: u16, body: String },
@@ -75,9 +82,20 @@ impl VtaError {
             404 => Self::NotFound(body),
             400 | 422 => Self::Validation(body),
             409 => Self::Conflict(body),
+            410 => Self::Gone(body),
             s if s >= 500 => Self::Server { status: s, body },
             s => Self::Other(format!("{s}: {body}")),
         }
+    }
+
+    /// Returns true if the resource was permanently consumed/gone (410).
+    pub fn is_gone(&self) -> bool {
+        matches!(self, Self::Gone(_))
+    }
+
+    /// Returns true if a create/insert collided with an existing entry (409).
+    pub fn is_conflict(&self) -> bool {
+        matches!(self, Self::Conflict(_))
     }
 
     /// Returns true if this is an authentication/authorization error.
@@ -115,28 +133,65 @@ impl From<&str> for VtaError {
 // Backward-compat conversion from `Box<dyn Error>` (legacy CLI handler
 // return type) into a typed `VtaError`.
 //
-// **Deprecated for new code.** This conversion collapses the error into
-// `Other(String)`, dropping the `source()` chain — fine for call sites that
-// only surface `Display`, but it breaks programmatic error handling:
-// a caller who sees `VtaError::Other(String)` cannot distinguish a
-// `Conflict` from a `NotFound` from an `Auth` problem, and so cannot
-// emit the CLI-level operator guidance the workspace's CLAUDE.md
-// "operator errors should suggest the fix" principle demands.
+// Tries `Box::downcast::<VtaError>` first — many shared-CLI handlers
+// return `Box<dyn Error>` whose inner is in fact a `VtaError` carried
+// from the SDK call. If we collapsed unconditionally to `Other(String)`,
+// the typed dispatch on `VtaError::Conflict` / `Gone` / `Forbidden` that
+// `print_cli_error` and the per-command "did you mean …" hints rely on
+// would silently fail.
 //
 // For new integrations, return a `VtaError` directly or add a typed
 // variant with `#[from]` on the underlying cause so the source chain is
-// preserved. A `#[deprecated]` marker is not applied to this impl
-// because rust-analyzer fires it on every legacy `?` through a
-// `Box<dyn Error>` — too noisy during the incremental migration. The
-// contract is documented here and in the workspace review tracking.
+// preserved. The legacy collapse to `Other(String)` is the fallback
+// only for non-VtaError errors.
 impl From<Box<dyn std::error::Error>> for VtaError {
     fn from(e: Box<dyn std::error::Error>) -> Self {
-        Self::Other(e.to_string())
+        match e.downcast::<VtaError>() {
+            Ok(typed) => *typed,
+            Err(other) => Self::Other(other.to_string()),
+        }
     }
 }
 
 impl From<crate::did_key::DidKeyError> for VtaError {
     fn from(e: crate::did_key::DidKeyError) -> Self {
         Self::Other(e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn boxed_vta_error_preserves_typed_variant_through_conversion() {
+        // Regression: shared CLI handlers return Box<dyn Error> whose inner
+        // is a VtaError. The From impl must downcast first so per-command
+        // hints can still match on Conflict / Gone / etc.
+        let original = VtaError::Conflict("context already exists".into());
+        let boxed: Box<dyn std::error::Error> = Box::new(original);
+        let recovered: VtaError = boxed.into();
+        assert!(
+            matches!(recovered, VtaError::Conflict(_)),
+            "From<Box<dyn Error>> must preserve the typed variant when the inner is \
+             a VtaError — got {recovered:?}"
+        );
+    }
+
+    #[test]
+    fn boxed_non_vta_error_falls_back_to_other() {
+        // Strings, io errors, etc. flow through Other(String) as before.
+        let boxed: Box<dyn std::error::Error> = "plain string error".into();
+        let recovered: VtaError = boxed.into();
+        assert!(matches!(recovered, VtaError::Other(_)));
+    }
+
+    #[test]
+    fn from_http_410_maps_to_gone() {
+        #[cfg(feature = "client")]
+        {
+            let err = VtaError::from_http(reqwest::StatusCode::GONE, "carve-out closed".into());
+            assert!(err.is_gone(), "410 must map to VtaError::Gone, got {err:?}");
+        }
     }
 }

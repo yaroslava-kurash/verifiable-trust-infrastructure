@@ -609,11 +609,7 @@ async fn auth_login_sealed(
     let config_dir =
         config::config_dir().map_err(|e| format!("could not resolve config dir: {e}"))?;
     if no_verify_digest {
-        eprintln!(
-            "WARNING: --no-verify-digest disables out-of-band integrity verification.\n\
-             You are trusting the producer pubkey embedded in the bundle without\n\
-             any external anchor. Use only for testing."
-        );
+        vta_cli_common::sealed_consumer::warn_no_verify_digest();
     }
     let opened = vta_cli_common::sealed_consumer::open_armored_bundle(
         credential_bundle,
@@ -695,11 +691,7 @@ fn bootstrap_open(
     no_verify_digest: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if no_verify_digest {
-        eprintln!(
-            "WARNING: --no-verify-digest disables out-of-band integrity verification.\n\
-             You are trusting the producer pubkey embedded in the bundle without\n\
-             any external anchor. Use only for testing."
-        );
+        vta_cli_common::sealed_consumer::warn_no_verify_digest();
     }
     let config_dir =
         config::config_dir().map_err(|e| format!("could not resolve config dir: {e}"))?;
@@ -780,6 +772,7 @@ async fn main() {
     // Propagate --full-display to the shared render module so list
     // commands from vta-cli-common pick it up.
     vta_cli_common::render::set_full_display(cli.full_display);
+    vta_cli_common::render::set_bin_name("cnm");
 
     // Initialize tracing: --verbose sets cnm_cli=debug, or respect RUST_LOG
     let filter = if cli.verbose {

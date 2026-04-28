@@ -6,7 +6,7 @@ those in addition to this file.
 
 ## Workspace layout
 
-Rust workspace (edition 2024, resolver 3, MSRV 1.91.0). Dependencies flow
+Rust workspace (edition 2024, resolver 3, MSRV 1.94.0). Dependencies flow
 strictly downward — no cycles.
 
 ```
@@ -145,13 +145,22 @@ Apply to any wire form where "this came from a trusted source" is a
 precondition for subsequent work. Don't paper over with a `verified:
 bool` field; use the type system.
 
-Known offender (do not emulate): `AttestationResponse.self_verified: bool`
-in `vta-service/src/tee/types.rs`. Migrate to a typestate when touched.
-`verify_producer_assertion_with_pubkey` returning `Ok(())` for the
-`Attested` variant (`vta-sdk/src/sealed_transfer/verify.rs`) has the same
-smell — the real verification lives in `vta-sdk::attestation` and callers
-must dispatch explicitly; a future refactor should return a
-`VerifiedAssertion` typestate.
+Known offenders (do not emulate):
+- `verify_vta_authorization_credential`
+  (`vta-sdk/src/provision_integration/credential.rs`) returns
+  `Result<(), _>`. Today the only caller is `verify_template_bootstrap`,
+  which threads the result into a `VerifiedTemplateBootstrap` typestate,
+  but the function is `pub` and a future caller could miss the
+  `parse_claim` follow-up. Either tighten to `pub(crate)` or return a
+  `VerifiedAuthorizationCredential` carrying the parsed claim.
+
+Reference implementation: `verify_producer_assertion_with_pubkey`
+(`vta-sdk/src/sealed_transfer/verify.rs`) returns
+`Result<VerifiedAssertion<'a>, _>` with `DidSignedVerified`,
+`PinnedOnlyAcknowledged`, and `AttestedNeedsNitroCheck` variants.
+Callers must match exhaustively, and the `Attested` arm explicitly
+demands a follow-up `verify_nitro_assertion` call. Use this shape when
+fixing the offenders above.
 
 ## Sealed-transfer is the only secret-bearing wire format
 
@@ -323,7 +332,10 @@ These are load-bearing — know they exist before adjusting nearby code.
   detects KMS ciphertext tampering or key rotation. Do not widen the
   "first boot after upgrade" silent-store path.
 - **Carve-out** (`BOOTSTRAP_CARVEOUT_CLOSED_KEY`) on `/bootstrap/request`
-  is single-use. New TEE flows must not provide a back door.
+  is single-use. The whole check-then-mint-then-set sequence is gated
+  by a process-wide async mutex (`MODE_B_LOCK`) — without it, two
+  concurrent requests both pass the `is_some()` check and both mint
+  admins. New TEE flows must not provide a back door.
 
 ## Versioning & publishing (workspace-specific)
 

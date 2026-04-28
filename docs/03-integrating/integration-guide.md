@@ -12,7 +12,7 @@ Verifiable Trust Agent (VTA). By the end you will have a service that:
 
 - A running VTA instance (local or remote)
 - A **credential bundle** (base64url string) issued by the VTA admin
-- Rust 1.91.0+ (or use the REST API directly from any language)
+- Rust 1.94.0+ (or use the REST API directly from any language)
 
 ## Concepts
 

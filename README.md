@@ -1,6 +1,6 @@
 # Verifiable Trust Communities - Verified Trust Agent
 
-[![Rust](https://img.shields.io/badge/rust-1.91.0%2B-blue.svg?maxAge=3600)](https://github.com/OpenVTC/verifiable-trust-infrastructure)
+[![Rust](https://img.shields.io/badge/rust-1.94.0%2B-blue.svg?maxAge=3600)](https://github.com/OpenVTC/verifiable-trust-infrastructure)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 A Verifiable Trust Agent (VTA) is an always-on service that manages cryptographic
@@ -73,7 +73,7 @@ For an architectural overview start with [docs/01-concepts/overview.md](docs/01-
 
 ## Prerequisites
 
-- **Rust 1.91.0+** (edition 2024)
+- **Rust 1.94.0+** (edition 2024)
 - **OS keyring support** (when using the default `keyring` feature) --
   the master seed is stored in your platform's credential manager:
   - macOS: Keychain

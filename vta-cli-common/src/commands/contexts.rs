@@ -242,6 +242,7 @@ pub async fn cmd_context_create(
         // choke on second runs.
         Err(VtaError::Conflict(_)) if admin.is_requested() => {
             let did = admin.did.as_deref().unwrap_or_default();
+            let bin = crate::render::bin_name();
             eprintln!(
                 "{YELLOW}\u{26a0}{RESET}  Context '{id}' already exists — skipping context creation."
             );
@@ -249,7 +250,7 @@ pub async fn cmd_context_create(
             eprintln!("  The --admin-did was NOT added. To grant admin access to an existing");
             eprintln!("  context, use the ACL command directly:");
             eprintln!();
-            let mut hint = format!("    pnm acl create --did {did} --role admin --contexts {id}");
+            let mut hint = format!("    {bin} acl create --did {did} --role admin --contexts {id}");
             if let Some(label) = admin.label.as_deref() {
                 hint.push_str(&format!(" --label '{label}'"));
             }

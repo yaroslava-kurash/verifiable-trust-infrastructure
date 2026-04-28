@@ -335,6 +335,52 @@ pub fn extract_admin_credential(
 
 pub use vta_sdk::hex::lower as hex_lower;
 
+/// Emit the canonical `--no-verify-digest` warning to stderr.
+///
+/// Single source of truth for the wording — every CLI surface that
+/// accepts `--no-verify-digest` should call this so a future tweak to
+/// the message lands everywhere at once. Per CLAUDE.md, digest pinning
+/// is mandatory at the CLI; this helper is what the opt-out fires when
+/// the operator explicitly chose to disable it.
+pub fn warn_no_verify_digest() {
+    eprintln!(
+        "WARNING: --no-verify-digest disables out-of-band integrity verification.\n\
+         You are trusting the producer pubkey embedded in the bundle without\n\
+         any external anchor. Use only for testing."
+    );
+}
+
+/// Validate the `(--expect-digest, --no-verify-digest)` combination and
+/// fire the opt-out warning when applicable.
+///
+/// Rules:
+/// - One of the two must be supplied (no silent TOFU).
+/// - They cannot both be supplied — that's an operator error.
+/// - On `--no-verify-digest`, the warning is printed.
+///
+/// Returns `Ok(())` when the flags are coherent; otherwise an error
+/// message suitable for surfacing to the operator verbatim.
+pub fn validate_digest_flags(
+    expect_digest: Option<&str>,
+    no_verify_digest: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match (expect_digest, no_verify_digest) {
+        (Some(_), false) => Ok(()),
+        (None, true) => {
+            warn_no_verify_digest();
+            Ok(())
+        }
+        (Some(_), true) => {
+            Err("--no-verify-digest may not be combined with --expect-digest; pick one".into())
+        }
+        (None, false) => Err(
+            "--expect-digest <hex> is required (or pass --no-verify-digest to opt out \
+             with a warning)"
+                .into(),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

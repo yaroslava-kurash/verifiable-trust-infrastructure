@@ -532,7 +532,7 @@ pub async fn run(
             info!("DIDComm service stopped");
         }
         #[cfg(not(feature = "didcomm"))]
-        drop(didcomm_service);
+        let _ = didcomm_service;
 
         if any_panic {
             let _ = shutdown_tx.send(true);
@@ -690,8 +690,12 @@ struct AuthInit {
     jwt_keys: Option<Arc<JwtKeys>>,
     atm: Option<ATM>,
     /// Signing verification method ID (e.g. `{did}#key-0` or `{did}#{ed_pub_mb}`).
+    /// Consumed only by the DIDComm secret-collection path; cfg-gated to
+    /// keep non-didcomm builds warning-free.
+    #[cfg_attr(not(feature = "didcomm"), allow(dead_code))]
     signing_vm_id: Option<String>,
     /// Key-agreement verification method ID (e.g. `{did}#key-1` or `{did}#{x_pub_mb}`).
+    #[cfg_attr(not(feature = "didcomm"), allow(dead_code))]
     ka_vm_id: Option<String>,
 }
 

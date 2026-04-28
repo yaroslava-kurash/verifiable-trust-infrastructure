@@ -22,16 +22,6 @@ pub enum StructuralCheckOutcome {
     Malformed,
 }
 
-impl StructuralCheckOutcome {
-    /// Collapse to a bool for wire compatibility with the
-    /// `AttestationResponse.self_verified` field. The bool is a
-    /// deliberately lossy projection — downstream code should prefer
-    /// matching on the enum.
-    pub fn as_bool(self) -> bool {
-        matches!(self, Self::StructurallyValid)
-    }
-}
-
 /// Trait for TEE attestation providers.
 ///
 /// Each supported TEE platform (AMD SEV-SNP, AWS Nitro, simulated)

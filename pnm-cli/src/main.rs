@@ -232,10 +232,15 @@ enum BootstrapCommands {
         /// Base URL of the target VTA.
         #[arg(long)]
         vta_url: String,
-        /// Optional out-of-band digest anchor. Compared against the server's
-        /// reported digest and the locally computed one.
+        /// Out-of-band digest anchor. Compared against the server's
+        /// reported digest and the locally computed one. Required unless
+        /// `--no-verify-digest` is passed.
         #[arg(long)]
         expect_digest: Option<String>,
+        /// Skip out-of-band digest verification (testing only — prints a warning).
+        /// Required when `--expect-digest` is not provided; there is no silent TOFU.
+        #[arg(long)]
+        no_verify_digest: bool,
         /// Slug to register this VTA under in pnm config (default: tail of the
         /// VTA DID).
         #[arg(long)]
@@ -1196,6 +1201,7 @@ async fn main() {
     // handlers — picks up the setting without threading a bool through
     // every signature.
     vta_cli_common::render::set_full_display(cli.full_display);
+    vta_cli_common::render::set_bin_name("pnm");
 
     // Initialize tracing: --verbose sets pnm_cli=debug, or respect RUST_LOG
     let filter = if cli.verbose {
@@ -1303,11 +1309,13 @@ async fn main() {
                 BootstrapCommands::Connect {
                     vta_url,
                     expect_digest,
+                    no_verify_digest,
                     slug,
                 } => Some(
                     bootstrap::run_connect(
                         vta_url.clone(),
                         expect_digest.clone(),
+                        *no_verify_digest,
                         slug.clone(),
                         &mut pnm_config,
                     )

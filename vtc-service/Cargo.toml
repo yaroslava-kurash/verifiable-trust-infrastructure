@@ -28,7 +28,7 @@ name = "vtc"
 path = "src/main.rs"
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.3" }
+vti-common = { path = "../vti-common", version = "0.5" }
 vta-sdk = { path = "../vta-sdk", version = "0.5", features = [
   "didcomm",
   "session",
@@ -36,15 +36,15 @@ vta-sdk = { path = "../vta-sdk", version = "0.5", features = [
 ] }
 affinidi-tdk = { workspace = true }
 affinidi-messaging-didcomm-service = { workspace = true }
-tokio-util = { version = "0.7", features = ["rt"] }
-affinidi-did-resolver-cache-sdk = "0.8"
+tokio-util = { workspace = true, features = ["rt"] }
+affinidi-did-resolver-cache-sdk = { workspace = true }
 base64 = { workspace = true }
-axum = "0.8"
+axum = { workspace = true }
 axum-extra = { workspace = true }
 jsonwebtoken = { workspace = true }
 fjall = { workspace = true }
-toml = "1"
-tower-http = { version = "0.6", features = ["trace"] }
+toml = { workspace = true }
+tower-http = { workspace = true, features = ["trace"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -52,7 +52,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 ed25519-dalek = { workspace = true }
-hex = "0.4"
+hex = { workspace = true }
 keyring = { version = "3", optional = true }
 aws-sdk-secretsmanager = { version = "1", optional = true }
 aws-config = { version = "1", features = [
@@ -67,8 +67,8 @@ clap = { workspace = true }
 didwebvh-rs = { workspace = true, optional = true }
 rand = { workspace = true }
 dialoguer = { workspace = true, optional = true }
-azure_security_keyvault_secrets = { version = "0.14", optional = true }
-azure_identity = { version = "0.35", optional = true }
+azure_security_keyvault_secrets = { workspace = true, optional = true }
+azure_identity = { workspace = true, optional = true }
 sha2 = { workspace = true }
 x25519-dalek = { workspace = true }
 zeroize = { version = "1", features = ["derive"] }
@@ -77,3 +77,6 @@ url = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+
+[lints]
+workspace = true

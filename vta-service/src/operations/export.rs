@@ -25,7 +25,9 @@ use crate::auth::AuthClaims;
 use crate::error::AppError;
 use crate::keys::seed_store::SeedStore;
 use crate::store::KeyspaceHandle;
-use vta_sdk::context_provision::{ContextProvisionBundle, ProvisionedDid};
+use vta_sdk::context_provision::ContextProvisionBundle;
+#[cfg(feature = "webvh")]
+use vta_sdk::context_provision::ProvisionedDid;
 use vta_sdk::credentials::CredentialBundle;
 use vta_sdk::did_secrets::{DidSecretsBundle, SecretEntry};
 use vta_sdk::keys::KeyStatus;

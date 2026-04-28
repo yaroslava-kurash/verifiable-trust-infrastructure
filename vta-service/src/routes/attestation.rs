@@ -6,7 +6,7 @@ use crate::error::{AppError, tee_attestation_error};
 use crate::operations;
 use crate::server::AppState;
 use crate::tee::mnemonic_guard::{MnemonicExportResponse, MnemonicExportStatus};
-use crate::tee::types::{AttestationRequest, AttestationResponse, TeeStatus};
+use crate::tee::types::{AttestationReport, AttestationRequest, TeeStatus};
 
 /// GET /attestation/status — TEE detection status (unauthenticated).
 pub async fn status(State(state): State<AppState>) -> Result<Json<TeeStatus>, AppError> {
@@ -23,7 +23,7 @@ pub async fn status(State(state): State<AppState>) -> Result<Json<TeeStatus>, Ap
 pub async fn generate_report(
     State(state): State<AppState>,
     Json(body): Json<AttestationRequest>,
-) -> Result<Json<AttestationResponse>, AppError> {
+) -> Result<Json<AttestationReport>, AppError> {
     let tee_state = state
         .tee
         .as_ref()
@@ -40,7 +40,7 @@ pub async fn generate_report(
 /// GET /attestation/report — Return a cached attestation report (unauthenticated).
 pub async fn cached_report(
     State(state): State<AppState>,
-) -> Result<Json<AttestationResponse>, AppError> {
+) -> Result<Json<AttestationReport>, AppError> {
     let tee_state = state
         .tee
         .as_ref()

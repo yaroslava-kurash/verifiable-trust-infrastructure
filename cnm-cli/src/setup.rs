@@ -49,11 +49,7 @@ fn open_sealed_credential(
 ) -> Result<CredentialBundle, Box<dyn std::error::Error>> {
     let config_dir = config_dir()?;
     if no_verify_digest {
-        eprintln!(
-            "WARNING: --no-verify-digest disables out-of-band integrity verification.\n\
-             You are trusting the producer pubkey embedded in the bundle without\n\
-             any external anchor. Use only for testing."
-        );
+        vta_cli_common::sealed_consumer::warn_no_verify_digest();
     }
     let opened = vta_cli_common::sealed_consumer::open_armored_bundle(
         bundle_path,

@@ -142,6 +142,16 @@ pub async fn request(
     }
 }
 
+/// Process-wide lock that serializes the carve-out check-and-set. The
+/// keyspace exposes no compare-and-swap, so two concurrent requests can
+/// each pass the `is_some()` check, mint admins, and write distinct ACL
+/// rows before either writes the closed-sentinel. A `tokio::sync::Mutex`
+/// held across the whole sequence collapses that window — the second
+/// request waits, then sees the sentinel and is refused. The mint flow
+/// is single-use and rare, so contention is irrelevant.
+#[cfg(feature = "tee")]
+static MODE_B_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Mode B: TEE first-boot sealed bootstrap. No token; the attestation quote
 /// is the sole authorization anchor.
 ///
@@ -161,6 +171,12 @@ async fn mint_mode_b(
         state.tee.as_ref().map(|tc| &tc.state).ok_or_else(|| {
             AppError::Forbidden("TEE first-boot is not available on this VTA".into())
         })?;
+
+    // Serialize the carve-out check-and-set across all concurrent requests.
+    // The lock is released when this function returns, by which point the
+    // sentinel has been written (success path) or nothing has been written
+    // (early-error path), so subsequent requests see a consistent view.
+    let _carve_out_guard = MODE_B_LOCK.lock().await;
 
     // Carve-out active ⇔ neither the closed-sentinel nor the legacy
     // admin-credential row is present. (The latter is a transitional case —
@@ -214,9 +230,19 @@ async fn mint_mode_b(
         .attest(user_data.as_slice(), &bundle_id)
         .map_err(|e| AppError::Internal(format!("tee attest failed: {e}")))?;
 
-    // Mint admin credential and insert ACL entry. Carve-out closes atomically
-    // with the sentinel write below.
+    // Mint admin credential and insert ACL entry. Sentinel write goes
+    // FIRST so that even if a future refactor breaks the `MODE_B_LOCK`
+    // guard above, a concurrent request fails closed (the sentinel is
+    // visible before any second admin row could be written). The
+    // current `MODE_B_LOCK` ensures the check-and-set is already
+    // serialized; this ordering is defence-in-depth.
     let (did, private_key_multibase) = crate::auth::credentials::generate_did_key();
+
+    state
+        .keys_ks
+        .insert_raw(BOOTSTRAP_CARVEOUT_CLOSED_KEY, did.as_bytes().to_vec())
+        .await?;
+
     let entry = AclEntry {
         did: did.clone(),
         role: Role::Admin,
@@ -227,11 +253,6 @@ async fn mint_mode_b(
         expires_at: None,
     };
     store_acl_entry(&state.acl_ks, &entry).await?;
-
-    state
-        .keys_ks
-        .insert_raw(BOOTSTRAP_CARVEOUT_CLOSED_KEY, did.as_bytes().to_vec())
-        .await?;
 
     let credential = CredentialBundle {
         did,

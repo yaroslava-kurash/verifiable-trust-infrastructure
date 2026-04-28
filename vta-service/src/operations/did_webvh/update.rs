@@ -549,10 +549,10 @@ pub async fn rotate_did_webvh_keys(
             .and_then(|v| v.as_array_mut())
         {
             for entry in arr.iter_mut() {
-                if let Some(s) = entry.as_str() {
-                    if let Some((_, new_id)) = frag_remap.iter().find(|(old, _)| old == s) {
-                        *entry = Value::String(new_id.clone());
-                    }
+                if let Some(s) = entry.as_str()
+                    && let Some((_, new_id)) = frag_remap.iter().find(|(old, _)| old == s)
+                {
+                    *entry = Value::String(new_id.clone());
                 }
             }
         }
@@ -648,8 +648,8 @@ fn state_from_jsonl(did_log: &str) -> Result<DIDWebVHState, UpdateDidWebvhError>
 }
 
 /// Re-derive the secret material for a [`WebvhKeyHandle`] from the seed
-/// + BIP-32 path. The handle stores the path; the seed lives in the
-/// seed store.
+/// plus its BIP-32 path. The handle stores the path; the seed lives in
+/// the seed store.
 ///
 /// The returned [`Secret`]'s `id` is set to a proper `did:key`
 /// verification-method form (`did:key:<mb>#<mb>`) — the

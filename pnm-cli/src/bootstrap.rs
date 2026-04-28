@@ -1,24 +1,18 @@
 //! `pnm bootstrap` — sealed-transfer consumer commands.
 //!
-//! Phase 1 implements the offline (Mode C) consumer flow:
-//!
-//! - `pnm bootstrap request` generates a fresh Ed25519 keypair, persists the
-//!   seed on disk under `~/.config/pnm/bootstrap-secrets/<bundle_id>.key`,
-//!   and writes a `BootstrapRequest` JSON (`client_did` as `did:key`) the
-//!   operator can hand to the producer.
-//! - `pnm bootstrap open` reads an armored sealed bundle, looks up the seed
-//!   by bundle_id, derives the X25519 HPKE secret, opens the bundle, prints
-//!   the payload, and (for `AdminCredential` payloads) optionally hands off
-//!   to `pnm auth login` so the new credential is installed in the keyring.
+//! Thin pnm-side wrapper over `vta_cli_common::sealed_consumer`. The shared
+//! crate owns the seed-file conventions (`<config_dir>/bootstrap-secrets/<bundle_id>.key`,
+//! 0600 on Unix, owner-only DACL on Windows), the armor-decode/HPKE-open
+//! pipeline, and the `--no-verify-digest` warning text. This module only
+//! adds pnm-specific glue: payload pretty-printing for `bootstrap open`,
+//! the online TEE attest/connect flow, and the authed REST bridge for
+//! `provision-integration`.
 //!
 //! `--expect-digest <hex>` is required by default. `--no-verify-digest` is
 //! available but prints a warning — there is no silent TOFU.
 
 use std::fs;
-use std::io::Write;
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::Deserialize;
 use vta_sdk::attestation::verify_nitro_assertion;
@@ -30,59 +24,6 @@ use vta_sdk::sealed_transfer::{
 use crate::auth;
 use crate::config;
 
-const SECRETS_SUBDIR: &str = "bootstrap-secrets";
-
-fn secrets_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let dir = config::config_dir()?.join(SECRETS_SUBDIR);
-    if !dir.exists() {
-        fs::create_dir_all(&dir)?;
-        // Restrict to owner on every supported platform — the directory
-        // itself reveals nothing, but the files inside contain raw
-        // 32-byte Ed25519 seeds.
-        if let Err(e) = vta_cli_common::secure_file::restrict_dir_to_owner(&dir) {
-            eprintln!(
-                "warning: could not restrict {} to owner ({e}) — secrets may be \
-                 accessible to other local users",
-                dir.display()
-            );
-        }
-    }
-    Ok(dir)
-}
-
-fn secret_path(bundle_id_hex: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    Ok(secrets_dir()?.join(format!("{bundle_id_hex}.key")))
-}
-
-fn write_secret(path: &Path, secret: &[u8; 32]) -> Result<(), Box<dyn std::error::Error>> {
-    let mut opts = fs::OpenOptions::new();
-    opts.create(true).write(true).truncate(true);
-    // Unix: open atomically with 0600 so the file is never publicly
-    // readable between create and chmod. Windows: post-open DACL via
-    // `restrict_file_to_owner` (see `secure_file` for details).
-    #[cfg(unix)]
-    opts.mode(0o600);
-    let mut file = opts.open(path)?;
-    file.write_all(secret)?;
-    drop(file);
-    if let Err(e) = vta_cli_common::secure_file::restrict_file_to_owner(path) {
-        eprintln!(
-            "warning: could not restrict {} to owner ({e}) — secret may be readable \
-             by other local users",
-            path.display()
-        );
-    }
-    Ok(())
-}
-
-fn read_secret(path: &Path) -> Result<[u8; 32], Box<dyn std::error::Error>> {
-    let bytes = fs::read(path)?;
-    bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| format!("secret file {} is not 32 bytes", path.display()).into())
-}
-
 use vta_sdk::hex::lower as hex_lower;
 
 /// `pnm bootstrap request --out <PATH> [--label <NAME>]`
@@ -90,22 +31,16 @@ pub async fn run_request(
     out: PathBuf,
     label: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (seed, public) = generate_ed25519_keypair();
-    let nonce: [u8; 16] = rand::random();
-    let bundle_id_hex = hex_lower(&nonce);
-
-    let path = secret_path(&bundle_id_hex)?;
-    write_secret(&path, &seed)?;
-
-    let request = BootstrapRequest::new(public, nonce, label);
-    let json = serde_json::to_string_pretty(&request)?;
+    let config_dir = config::config_dir()?;
+    let created = vta_cli_common::sealed_consumer::create_bootstrap_request(&config_dir, label)?;
+    let json = serde_json::to_string_pretty(&created.request)?;
     fs::write(&out, json.as_bytes())?;
 
     println!("Bootstrap request written to {}", out.display());
     println!();
-    println!("  Bundle-Id:  {bundle_id_hex}");
-    println!("  Client DID: {}", request.client_did);
-    println!("  Seed saved: {}", path.display());
+    println!("  Bundle-Id:  {}", created.bundle_id_hex);
+    println!("  Client DID: {}", created.request.client_did);
+    println!("  Seed saved: {}", created.secret_path.display());
     println!();
     println!("Hand the request to the producer. They will return an armored bundle.");
     println!("Verify the SHA-256 digest they print to you out-of-band, then run:");
@@ -200,51 +135,18 @@ pub async fn run_open(
     no_verify_digest: bool,
     expect_vta_did: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if expect_digest.is_none() && !no_verify_digest {
-        return Err(
-            "--expect-digest <hex> is required (or pass --no-verify-digest to opt out)".into(),
-        );
-    }
-    if no_verify_digest {
-        eprintln!(
-            "WARNING: --no-verify-digest disables out-of-band integrity verification.\n\
-             You are trusting the producer pubkey embedded in the bundle without\n\
-             any external anchor. Use only for testing."
-        );
-    }
-
-    let armored = fs::read_to_string(&bundle_path)
-        .map_err(|e| format!("read {}: {e}", bundle_path.display()))?;
-    let bundles = armor::decode(&armored)?;
-    if bundles.len() != 1 {
-        return Err(format!(
-            "expected exactly one bundle in {}, found {}",
-            bundle_path.display(),
-            bundles.len()
-        )
-        .into());
-    }
-    let bundle = &bundles[0];
-    let bundle_id_hex = hex_lower(&bundle.bundle_id);
-
-    let secret_path = secret_path(&bundle_id_hex)?;
-    if !secret_path.exists() {
-        return Err(format!(
-            "no stored secret for bundle_id {bundle_id_hex} (expected at {}). \
-             Did you run `pnm bootstrap request` on this host?",
-            secret_path.display()
-        )
-        .into());
-    }
-    let ed_seed = read_secret(&secret_path)?;
-    let x_secret = ed25519_seed_to_x25519_secret(&ed_seed);
-
-    let opened = open_bundle(&x_secret, bundle, expect_digest.as_deref())?;
+    let config_dir = config::config_dir()?;
+    let opened = vta_cli_common::sealed_consumer::open_armored_bundle(
+        &bundle_path,
+        &config_dir,
+        expect_digest.as_deref(),
+        no_verify_digest,
+    )?;
 
     println!("Sealed bundle opened.");
     println!();
-    println!("  Bundle-Id:       {bundle_id_hex}");
-    println!("  Digest (sha256): {}", bundle_digest(bundle));
+    println!("  Bundle-Id:       {}", opened.bundle_id_hex);
+    println!("  Digest (sha256): {}", opened.digest);
     println!("  Producer DID:    {}", opened.producer.producer_did);
     println!("  Producer proof:  {:?}", opened.producer.proof);
     println!();
@@ -308,18 +210,6 @@ pub async fn run_open(
         }
     }
 
-    // Best-effort cleanup of the now-used secret. The bundle_id is single-use
-    // by design; keeping the secret around offers no value and slightly
-    // expands the blast radius if the host is later compromised. Overwrite
-    // the bytes with zeros before unlink so a casual forensic read can't
-    // recover the seed from the freed blocks.
-    if let Err(e) = vta_cli_common::sealed_consumer::zero_overwrite_and_remove(&secret_path) {
-        eprintln!(
-            "warning: could not remove used secret {}: {e}",
-            secret_path.display()
-        );
-    }
-
     Ok(())
 }
 
@@ -344,9 +234,17 @@ struct BootstrapResponseWire {
 pub async fn run_connect(
     vta_url: String,
     expect_digest: Option<String>,
+    no_verify_digest: bool,
     vta_slug: Option<String>,
     pnm_config: &mut crate::config::PnmConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Digest pinning is mandatory at the CLI; --no-verify-digest is the only
+    // explicit opt-out and prints a warning. There is no silent TOFU.
+    vta_cli_common::sealed_consumer::validate_digest_flags(
+        expect_digest.as_deref(),
+        no_verify_digest,
+    )?;
+
     let (ed_seed, ed_pub) = generate_ed25519_keypair();
     let nonce: [u8; 16] = rand::random();
     let bundle_id_hex = hex_lower(&nonce);
