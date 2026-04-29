@@ -57,7 +57,7 @@ pub struct DidKeyMaterial {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KeyPair {
-    /// DID URL with fragment, e.g. `did:webvh:host/path#key-1`. Matches
+    /// DID URL with fragment, e.g. `did:webvh:host/path#key-0`. Matches
     /// the `id` of the corresponding verification method in the DID doc.
     pub key_id: String,
     /// Multibase-encoded public key.
@@ -199,12 +199,12 @@ mod tests {
                 DidKeyMaterial {
                     did: "did:webvh:mediator.example.com".into(),
                     signing_key: KeyPair {
-                        key_id: "did:webvh:mediator.example.com#key-1".into(),
+                        key_id: "did:webvh:mediator.example.com#key-0".into(),
                         public_key_multibase: "z6Mk...".into(),
                         private_key_multibase: "z...".into(),
                     },
                     ka_key: KeyPair {
-                        key_id: "did:webvh:mediator.example.com#key-2".into(),
+                        key_id: "did:webvh:mediator.example.com#key-1".into(),
                         public_key_multibase: "z6LS...".into(),
                         private_key_multibase: "z...".into(),
                     },

@@ -34,12 +34,12 @@ pub fn sample_provision_result(rolled_over: bool) -> ProvisionResult {
         DidKeyMaterial {
             did: integration_did.into(),
             signing_key: KeyPair {
-                key_id: format!("{integration_did}#key-1"),
+                key_id: format!("{integration_did}#key-0"),
                 public_key_multibase: "z6MkSample".into(),
                 private_key_multibase: "zPrivateSample".into(),
             },
             ka_key: KeyPair {
-                key_id: format!("{integration_did}#key-2"),
+                key_id: format!("{integration_did}#key-1"),
                 public_key_multibase: "z6LSSample".into(),
                 private_key_multibase: "zKaPrivate".into(),
             },
@@ -51,12 +51,12 @@ pub fn sample_provision_result(rolled_over: bool) -> ProvisionResult {
             DidKeyMaterial {
                 did: admin_did.into(),
                 signing_key: KeyPair {
-                    key_id: format!("{admin_did}#key-1"),
+                    key_id: format!("{admin_did}#key-0"),
                     public_key_multibase: "z6MkAdminSigning".into(),
                     private_key_multibase: "zAdminSigningPrivate".into(),
                 },
                 ka_key: KeyPair {
-                    key_id: format!("{admin_did}#key-2"),
+                    key_id: format!("{admin_did}#key-1"),
                     public_key_multibase: "z6LSAdminKa".into(),
                     private_key_multibase: "zAdminKaPrivate".into(),
                 },

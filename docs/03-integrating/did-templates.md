@@ -41,7 +41,7 @@ A template is a single JSON file:
     "@context": ["https://www.w3.org/ns/did/v1"],
     "id": "{DID}",
     "verificationMethod": [{
-      "id": "{DID}#key-1",
+      "id": "{DID}#key-0",
       "type": "Multikey",
       "controller": "{DID}",
       "publicKeyMultibase": "{SIGNING_KEY_MB}"

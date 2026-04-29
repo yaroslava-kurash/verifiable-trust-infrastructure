@@ -435,13 +435,14 @@ pub async fn provision_integration(
         .await?;
 
         // The bundle's `key_id` strings must equal the `verificationMethod.id`
-        // entries in the *published* DID document, not the VTA's internal
-        // storage convention (`{did}#key-0` / `#key-1`). Templates are free
-        // to declare different fragments — `didcomm-mediator` uses
-        // `#key-1` / `#key-2`, which previously diverged from the bundle
-        // (silently producing keys consumers couldn't resolve). Look up
-        // the kid by matching publicKeyMultibase so each template gets
-        // bundle entries that match its own VM ids.
+        // entries in the *published* DID document. Built-in templates
+        // are aligned with the VTA's internal storage convention
+        // (`{did}#key-0` / `#key-1`), but operator-uploaded templates
+        // may declare arbitrary fragments. Look up the kid by matching
+        // publicKeyMultibase so each template gets bundle entries that
+        // match its own VM ids — a consumer storing the bundle verbatim
+        // can then resolve an inbound JWE's kid against the live document
+        // and find the matching private key.
         let signing_kid =
             published_kid_for(&did_document, &signing_secret_resp.public_key_multibase)
                 .ok_or_else(|| {
@@ -1352,20 +1353,22 @@ mod tests {
 
     #[tokio::test]
     async fn provision_integration_bundle_kids_match_published_did_document() {
-        // Regression test for the kid-numbering mismatch: the canonical
-        // `didcomm-mediator` template publishes verificationMethod ids
-        // `#key-1` (signing) and `#key-2` (key-agreement), but the
-        // bundle previously exported `#key-0` / `#key-1` from the VTA's
-        // internal storage convention. Consumers stored the bundle
-        // verbatim and then couldn't match an inbound JWE for `#key-2`
-        // to any private key.
+        // Regression test for the kid-numbering mismatch. The canonical
+        // `didcomm-mediator` template now publishes verificationMethod
+        // ids `#key-0` (signing) and `#key-1` (key-agreement) — matching
+        // the VTA's internal storage convention and the other built-in
+        // webvh templates (webvh-control / webvh-daemon / webvh-server).
+        // Earlier shapes (`#key-1` / `#key-2`) diverged from both, and
+        // consumers couldn't match an inbound JWE for `#key-2` to any
+        // private key.
         //
-        // Asserts (a) the bundle's kids equal `#key-1` / `#key-2`
-        // exactly — the literal strings the canonical template
-        // declares — and (b) every kid in `payload.secrets` equals a
-        // `verificationMethod.id` in `payload.config.did_document`. If
-        // either side drifts, this fails on the diff so the regression
-        // is obvious.
+        // Asserts (a) the bundle's kids equal `#key-0` / `#key-1`
+        // exactly — the literal strings the canonical template declares
+        // — and (b) every kid in `payload.secrets` equals a
+        // `verificationMethod.id` in `payload.config.did_document`. The
+        // doc-derived lookup in `provision_integration` is still
+        // load-bearing for any future template that uses non-default
+        // fragment names.
         use super::sealed_transfer_open::open_for_test;
 
         let ts = open_test_store().await;
@@ -1407,17 +1410,17 @@ mod tests {
 
         // (a) Literal kid assertion. Spelled out so a future regression
         // shows up directly in the diff.
-        let expected_signing_kid = format!("{integration_did}#key-1");
-        let expected_ka_kid = format!("{integration_did}#key-2");
+        let expected_signing_kid = format!("{integration_did}#key-0");
+        let expected_ka_kid = format!("{integration_did}#key-1");
         assert_eq!(
             material.signing_key.key_id, expected_signing_kid,
             "signing kid must be the canonical didcomm-mediator template's \
-             1-indexed `#key-1` to match the published DID doc"
+             `#key-0` to match the published DID doc"
         );
         assert_eq!(
             material.ka_key.key_id, expected_ka_kid,
             "key-agreement kid must be the canonical didcomm-mediator \
-             template's 1-indexed `#key-2` to match the published DID doc"
+             template's `#key-1` to match the published DID doc"
         );
 
         // (b) Every kid in the bundle must appear as a

@@ -78,12 +78,12 @@ impl Respond for SealResponder {
             DidKeyMaterial {
                 did: self.integration_did.clone(),
                 signing_key: KeyPair {
-                    key_id: format!("{}#key-1", self.integration_did),
+                    key_id: format!("{}#key-0", self.integration_did),
                     public_key_multibase: "z6MkSyntheticIntegrationSig".into(),
                     private_key_multibase: "zSyntheticIntegrationSigPriv".into(),
                 },
                 ka_key: KeyPair {
-                    key_id: format!("{}#key-2", self.integration_did),
+                    key_id: format!("{}#key-1", self.integration_did),
                     public_key_multibase: "z6LSSyntheticIntegrationKa".into(),
                     private_key_multibase: "zSyntheticIntegrationKaPriv".into(),
                 },
@@ -94,12 +94,12 @@ impl Respond for SealResponder {
             DidKeyMaterial {
                 did: self.admin_did.clone(),
                 signing_key: KeyPair {
-                    key_id: format!("{}#key-1", self.admin_did),
+                    key_id: format!("{}#key-0", self.admin_did),
                     public_key_multibase: "z6MkSyntheticAdminSig".into(),
                     private_key_multibase: "zSyntheticAdminSigPriv".into(),
                 },
                 ka_key: KeyPair {
-                    key_id: format!("{}#key-2", self.admin_did),
+                    key_id: format!("{}#key-1", self.admin_did),
                     public_key_multibase: "z6LSSyntheticAdminKa".into(),
                     private_key_multibase: "zSyntheticAdminKaPriv".into(),
                 },
