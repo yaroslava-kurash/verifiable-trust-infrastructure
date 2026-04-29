@@ -9,3 +9,5 @@ pub mod handshake;
 pub mod live_prover;
 pub mod registry;
 pub mod router;
+#[cfg(all(feature = "webvh", feature = "didcomm"))]
+pub mod transient_handshake;

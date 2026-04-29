@@ -80,11 +80,28 @@ pub async fn enable_didcomm_handler(
         .ok_or(EnableDidcommHttpError::DidResolverUnavailable)?
         .clone();
 
-    let prover = AlwaysOkProver;
     let timeout = Duration::from_secs(
         req.handshake_timeout_secs
             .unwrap_or(DEFAULT_HANDSHAKE_TIMEOUT_SECS),
     );
+
+    // Try to run the full handshake against the new mediator
+    // BEFORE publishing the LogEntry. Spins up a transient
+    // DIDCommService just for the round-trip. Best-effort: if
+    // the secrets/vm_ids aren't available (early-boot fixture,
+    // etc.), fall through to the operation's AlwaysOkProver path
+    // — the caller still gets DID resolution + service-shape
+    // validation via the operation's own handshake invocation.
+    if !req.force
+        && let Err(e) =
+            try_run_first_enable_handshake(&state, &did_resolver, &req.mediator_did, timeout).await
+    {
+        return Err(EnableDidcommHttpError::Op(
+            crate::operations::protocol::enable_didcomm::EnableDidcommError::Handshake(e),
+        ));
+    }
+
+    let prover = AlwaysOkProver;
 
     let result = enable_didcomm(
         &state.config,
@@ -1061,4 +1078,69 @@ async fn build_live_prover(
         Arc::clone(bridge),
         builder,
     ))
+}
+
+/// Run the transient first-enable handshake against the new
+/// mediator if the VTA has the prerequisites (secrets resolver,
+/// signing/ka vm ids, vta_did). Returns `Ok(())` if the handshake
+/// succeeded OR if the prerequisites aren't available (the caller
+/// then falls back to the operation's AlwaysOkProver path).
+/// Returns `Err(HandshakeError::Failed)` only when the handshake
+/// actually ran and failed.
+async fn try_run_first_enable_handshake(
+    state: &AppState,
+    resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
+    mediator_did: &str,
+    timeout: std::time::Duration,
+) -> Result<(), crate::messaging::handshake::HandshakeError> {
+    use crate::messaging::handshake::HandshakeOptions;
+    use crate::messaging::transient_handshake::{
+        TransientHandshakeContext, run_transient_handshake,
+    };
+    use affinidi_tdk::secrets_resolver::SecretsResolver;
+
+    let Some(secrets_resolver) = state.secrets_resolver.as_ref() else {
+        return Ok(());
+    };
+    let Some(signing_vm_id) = state.signing_vm_id.as_ref() else {
+        return Ok(());
+    };
+    let Some(ka_vm_id) = state.ka_vm_id.as_ref() else {
+        return Ok(());
+    };
+    let vta_did = {
+        let cfg = state.config.read().await;
+        match cfg.vta_did.clone() {
+            Some(d) => d,
+            None => return Ok(()),
+        }
+    };
+
+    let mut secrets = Vec::with_capacity(2);
+    if let Some(s) = secrets_resolver.get_secret(signing_vm_id).await {
+        secrets.push(s);
+    }
+    if let Some(s) = secrets_resolver.get_secret(ka_vm_id).await {
+        secrets.push(s);
+    }
+    if secrets.is_empty() {
+        return Ok(());
+    }
+
+    run_transient_handshake(
+        TransientHandshakeContext {
+            vta_did,
+            secrets,
+            tdk_config: None,
+        },
+        resolver,
+        &state.telemetry,
+        mediator_did,
+        HandshakeOptions {
+            timeout,
+            force: false,
+        },
+    )
+    .await
+    .map(|_| ())
 }
