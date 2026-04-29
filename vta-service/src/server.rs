@@ -415,6 +415,13 @@ pub async fn run(
                 #[cfg(feature = "webvh")]
                 webvh_ks: webvh_ks.clone(),
                 sealed_nonces_ks: sealed_nonces_ks.clone(),
+                #[cfg(feature = "webvh")]
+                drains_ks: drains_ks.clone(),
+                #[cfg(feature = "webvh")]
+                mediator_registry: Arc::clone(&mediator_registry),
+                #[cfg(feature = "webvh")]
+                drain_sweeper: Arc::clone(&drain_sweeper),
+                telemetry: Arc::clone(&telemetry),
                 seed_store: seed_store.clone(),
                 config: Arc::new(RwLock::new(config.clone())),
                 did_resolver: auth.did_resolver.clone(),

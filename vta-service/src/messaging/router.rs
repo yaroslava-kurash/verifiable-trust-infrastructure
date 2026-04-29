@@ -26,6 +26,8 @@ use super::handlers;
 use vta_sdk::protocols::attestation_management;
 #[cfg(feature = "webvh")]
 use vta_sdk::protocols::did_management;
+#[cfg(feature = "webvh")]
+use vta_sdk::protocols::protocol_management;
 // `provision-integration` is unconditionally enabled via the
 // `vta-sdk` feature list in vta-service's Cargo.toml — no cfg gate.
 use vta_sdk::protocols::provision_integration_management;
@@ -49,6 +51,23 @@ pub struct VtaState {
     /// the DIDComm provision-integration handler so it can drive the
     /// same shared library function the REST handler does.
     pub sealed_nonces_ks: KeyspaceHandle,
+    /// Persisted drain set for the protocol-management feature
+    /// (`docs/05-design-notes/didcomm-protocol-management.md`).
+    /// Accessible from DIDComm handlers so disable/migrate over
+    /// DIDComm transport land in the same drain bookkeeping as
+    /// the REST path.
+    #[cfg(feature = "webvh")]
+    pub drains_ks: KeyspaceHandle,
+    /// In-process registry of active + draining mediator listeners.
+    #[cfg(feature = "webvh")]
+    pub mediator_registry: Arc<crate::messaging::registry::MediatorListenerRegistry>,
+    /// Per-mediator TTL sweeper.
+    #[cfg(feature = "webvh")]
+    pub drain_sweeper: Arc<crate::messaging::drain_sweeper::DrainSweeper>,
+    /// Pluggable telemetry sink — driven by both REST and DIDComm
+    /// transport handlers so `mediator report` is consistent
+    /// regardless of which transport posted the inbound event.
+    pub telemetry: vti_common::telemetry::SharedTelemetrySink,
     pub seed_store: Arc<dyn SeedStore>,
     pub config: Arc<RwLock<AppConfig>>,
     pub did_resolver: Option<DIDCacheClient>,
@@ -321,6 +340,28 @@ pub fn build_handler(
             .route(
                 did_management::ROTATE_DID_WEBVH_KEYS,
                 handler_fn(handlers::handle_rotate_did_webvh_keys),
+            )?;
+
+        // Protocol management over DIDComm. `enable` is REST-only
+        // by nature so it has no DIDComm route; the rest go through
+        // the same operation functions as the REST handlers.
+        // Spec: docs/05-design-notes/didcomm-protocol-management.md.
+        router = router
+            .route(
+                protocol_management::DISABLE_DIDCOMM,
+                handler_fn(super::handlers_protocol::handle_disable_didcomm),
+            )?
+            .route(
+                protocol_management::MIGRATE_MEDIATOR,
+                handler_fn(super::handlers_protocol::handle_migrate_mediator),
+            )?
+            .route(
+                protocol_management::DRAIN_CANCEL,
+                handler_fn(super::handlers_protocol::handle_drain_cancel),
+            )?
+            .route(
+                protocol_management::MEDIATOR_REPORT,
+                handler_fn(super::handlers_protocol::handle_mediator_report),
             )?;
     }
 

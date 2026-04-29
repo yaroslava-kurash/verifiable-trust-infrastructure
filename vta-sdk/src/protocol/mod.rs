@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::client::VtaClient;
 use crate::error::VtaError;
+use crate::protocols::protocol_management;
 
 /// Request body for `POST /services/didcomm/enable`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,9 +124,9 @@ impl VtaClient {
         req: DisableDidcommRequest,
     ) -> Result<DisableDidcommResponse, VtaError> {
         self.rpc(
-            "services-management/1.0/disable",
+            protocol_management::DISABLE_DIDCOMM,
             serde_json::to_value(&req)?,
-            "services-management/1.0/disable-result",
+            protocol_management::DISABLE_DIDCOMM_RESULT,
             30,
             |c, url| c.post(format!("{url}/services/didcomm/disable")).json(&req),
         )
@@ -140,9 +141,9 @@ impl VtaClient {
         req: MigrateMediatorRequest,
     ) -> Result<MigrateMediatorResponse, VtaError> {
         self.rpc(
-            "mediator-management/1.0/migrate",
+            protocol_management::MIGRATE_MEDIATOR,
             serde_json::to_value(&req)?,
-            "mediator-management/1.0/migrate-result",
+            protocol_management::MIGRATE_MEDIATOR_RESULT,
             120,
             |c, url| c.post(format!("{url}/mediators/migrate")).json(&req),
         )
@@ -245,9 +246,9 @@ impl VtaClient {
         req: DrainCancelRequest,
     ) -> Result<DrainCancelResponse, VtaError> {
         self.rpc(
-            "mediator-management/1.0/drain-cancel",
+            protocol_management::DRAIN_CANCEL,
             serde_json::to_value(&req)?,
-            "mediator-management/1.0/drain-cancel-result",
+            protocol_management::DRAIN_CANCEL_RESULT,
             30,
             |c, url| c.post(format!("{url}/mediators/drain/cancel")).json(&req),
         )
@@ -268,12 +269,12 @@ impl VtaClient {
         let until_owned = until.map(str::to_string);
         let qs = build_report_query(since_owned.as_deref(), until_owned.as_deref());
         self.rpc(
-            "mediator-management/1.0/report",
+            protocol_management::MEDIATOR_REPORT,
             serde_json::json!({
                 "since": since_owned,
                 "until": until_owned,
             }),
-            "mediator-management/1.0/report-result",
+            protocol_management::MEDIATOR_REPORT_RESULT,
             30,
             move |c, url| {
                 let url = if qs.is_empty() {
