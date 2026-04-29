@@ -357,34 +357,45 @@ fn didcomm_mediator_builtin_renders_end_to_end() {
 #[test]
 fn ws_url_is_derived_from_url_when_omitted() {
     // The renderer auto-derives WS_URL from URL by swapping the
-    // scheme so `vta setup` and similar one-URL flows can render the
-    // mediator template without a separate `--var WS_URL=...`.
+    // scheme and appending `/ws` so `vta setup` and similar one-URL
+    // flows can render the mediator template without a separate
+    // `--var WS_URL=...`. Mirrors the deployed convention
+    // (`/mediator/v1` over HTTP, `/mediator/v1/ws` over WSS).
     let tpl = load_embedded("didcomm-mediator").unwrap();
     let mut vars = TemplateVars::new();
     vars.insert_string("DID", "did:webvh:example.com:mediator");
     vars.insert_string("SIGNING_KEY_MB", "z6MkSign");
     vars.insert_string("KA_KEY_MB", "z6LSKa");
-    vars.insert_string("URL", "https://mediator.example.com/path");
+    vars.insert_string("URL", "https://mediator.example.com/mediator/v1");
     // WS_URL deliberately omitted.
 
     let doc = tpl.render(&vars).expect("render with derived WS_URL");
     let endpoints = doc["service"][0]["serviceEndpoint"].as_array().unwrap();
-    assert_eq!(endpoints[0]["uri"], "https://mediator.example.com/path");
-    assert_eq!(endpoints[1]["uri"], "wss://mediator.example.com/path");
+    assert_eq!(
+        endpoints[0]["uri"],
+        "https://mediator.example.com/mediator/v1"
+    );
+    assert_eq!(
+        endpoints[1]["uri"],
+        "wss://mediator.example.com/mediator/v1/ws"
+    );
 }
 
 #[test]
-fn ws_url_derivation_handles_plain_http() {
+fn ws_url_derivation_handles_plain_http_and_trailing_slash() {
+    // Trailing slash on URL must not produce a double slash in the
+    // derived WS_URL: `http://host/` → `ws://host/ws`, not
+    // `ws://host//ws`.
     let tpl = load_embedded("didcomm-mediator").unwrap();
     let mut vars = TemplateVars::new();
     vars.insert_string("DID", "did:webvh:example.com:mediator");
     vars.insert_string("SIGNING_KEY_MB", "z6MkSign");
     vars.insert_string("KA_KEY_MB", "z6LSKa");
-    vars.insert_string("URL", "http://mediator.local");
+    vars.insert_string("URL", "http://mediator.local/");
 
     let doc = tpl.render(&vars).expect("render with derived ws://");
     let endpoints = doc["service"][0]["serviceEndpoint"].as_array().unwrap();
-    assert_eq!(endpoints[1]["uri"], "ws://mediator.local");
+    assert_eq!(endpoints[1]["uri"], "ws://mediator.local/ws");
 }
 
 #[test]
