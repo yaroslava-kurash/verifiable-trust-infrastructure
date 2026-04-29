@@ -2808,6 +2808,77 @@ async fn disable_didcomm_returns_typed_error_body() {
 
 #[cfg(feature = "webvh")]
 #[tokio::test]
+async fn drain_cancel_unauthenticated_returns_401() {
+    let (app, _ctx) = TestApp::new().await;
+    let req = Request::builder()
+        .method("POST")
+        .uri("/mediators/drain/cancel")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({ "mediator_did": "did:m:A" }).to_string()))
+        .unwrap();
+    let (status, _body) = app.request(req).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn drain_cancel_unknown_mediator_returns_typed_error() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
+    let (status, body) = app
+        .request(post_auth(
+            "/mediators/drain/cancel",
+            &token,
+            json!({ "mediator_did": "did:m:never-registered" }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        body.get("error").and_then(|v| v.as_str()),
+        Some("not_registered")
+    );
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn mediator_report_unauthenticated_returns_401() {
+    let (app, _ctx) = TestApp::new().await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/mediators/report")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _body) = app.request(req).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
+async fn mediator_report_returns_empty_report_when_no_traffic() {
+    let (app, ctx) = TestApp::new().await;
+    let token = ctx.auth_token("did:key:z6MkSuper", "admin", vec![]).await;
+    let req = Request::builder()
+        .method("GET")
+        .uri("/mediators/report")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = app.request(req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body.get("mediators")
+            .and_then(|v| v.as_array())
+            .map(Vec::len),
+        Some(0)
+    );
+    assert_eq!(
+        body.get("senders").and_then(|v| v.as_array()).map(Vec::len),
+        Some(0)
+    );
+}
+
+#[cfg(feature = "webvh")]
+#[tokio::test]
 async fn migrate_mediator_unauthenticated_returns_401() {
     let (app, _ctx) = TestApp::new().await;
     let req = Request::builder()

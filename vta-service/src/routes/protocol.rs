@@ -808,3 +808,186 @@ impl IntoResponse for MigrateMediatorHttpError {
         (status, Json(body)).into_response()
     }
 }
+
+// ────────────────────────────────────────────────────────────────────
+// drain_cancel
+// ────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct DrainCancelRequest {
+    pub mediator_did: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DrainCancelResponse {
+    pub mediator_did: String,
+}
+
+pub async fn drain_cancel_handler(
+    auth: SuperAdminAuth,
+    State(state): State<AppState>,
+    Json(req): Json<DrainCancelRequest>,
+) -> Result<Json<DrainCancelResponse>, DrainCancelHttpError> {
+    use crate::operations::protocol::drain_cancel::{DrainCancelParams, drain_cancel};
+    let result = drain_cancel(
+        &state.config,
+        &state.drains_ks,
+        &state.mediator_registry,
+        &state.telemetry,
+        &auth.0,
+        DrainCancelParams {
+            mediator_did: req.mediator_did,
+        },
+        "rest",
+    )
+    .await?;
+    Ok(Json(DrainCancelResponse {
+        mediator_did: result.mediator_did,
+    }))
+}
+
+#[derive(Debug)]
+pub enum DrainCancelHttpError {
+    Op(crate::operations::protocol::drain_cancel::DrainCancelError),
+}
+
+impl From<crate::operations::protocol::drain_cancel::DrainCancelError> for DrainCancelHttpError {
+    fn from(value: crate::operations::protocol::drain_cancel::DrainCancelError) -> Self {
+        Self::Op(value)
+    }
+}
+
+impl IntoResponse for DrainCancelHttpError {
+    fn into_response(self) -> Response {
+        use crate::operations::protocol::drain_cancel::DrainCancelError;
+        let (status, body) = match self {
+            Self::Op(DrainCancelError::Auth(e)) => (
+                StatusCode::FORBIDDEN,
+                ErrorBody {
+                    error: "forbidden",
+                    message: e,
+                    suggested_fix: Some("This operation requires super-admin privileges.".into()),
+                    stage: None,
+                },
+            ),
+            Self::Op(DrainCancelError::Registry(e)) => {
+                use crate::messaging::registry::RegistryError;
+                let (code, fix) = match &e {
+                    RegistryError::CannotCancelActive(_) => (
+                        "cannot_cancel_active",
+                        Some(
+                            "Use `pnm services disable didcomm` to disable the active mediator instead.".to_string(),
+                        ),
+                    ),
+                    RegistryError::NotRegistered(_) => (
+                        "not_registered",
+                        Some(
+                            "List drains with `pnm mediator report` to see what's currently in drain state.".to_string(),
+                        ),
+                    ),
+                    _ => ("registry_failed", None),
+                };
+                (
+                    StatusCode::CONFLICT,
+                    ErrorBody {
+                        error: code,
+                        message: e.to_string(),
+                        suggested_fix: fix,
+                        stage: None,
+                    },
+                )
+            }
+        };
+        (status, Json(body)).into_response()
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────
+// mediator report
+// ────────────────────────────────────────────────────────────────────
+
+use axum::extract::Query;
+
+#[derive(Debug, Deserialize)]
+pub struct MediatorReportQuery {
+    /// Lower bound (RFC 3339).
+    #[serde(default)]
+    pub since: Option<String>,
+    /// Upper bound (RFC 3339).
+    #[serde(default)]
+    pub until: Option<String>,
+}
+
+pub async fn mediator_report_handler(
+    auth: SuperAdminAuth,
+    State(state): State<AppState>,
+    Query(q): Query<MediatorReportQuery>,
+) -> Result<Json<crate::operations::protocol::report::MediatorReport>, MediatorReportHttpError> {
+    use crate::operations::protocol::report::{ReportParams, mediator_report};
+    let since = parse_rfc3339(q.since.as_deref())?;
+    let until = parse_rfc3339(q.until.as_deref())?;
+    let report = mediator_report(&state.telemetry, &auth.0, ReportParams { since, until }).await?;
+    Ok(Json(report))
+}
+
+fn parse_rfc3339(
+    s: Option<&str>,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, MediatorReportHttpError> {
+    use chrono::{DateTime, Utc};
+    match s {
+        None => Ok(None),
+        Some(s) => DateTime::parse_from_rfc3339(s)
+            .map(|d| Some(d.with_timezone(&Utc)))
+            .map_err(|e| MediatorReportHttpError::BadTimestamp(e.to_string())),
+    }
+}
+
+#[derive(Debug)]
+pub enum MediatorReportHttpError {
+    Op(crate::operations::protocol::report::ReportError),
+    BadTimestamp(String),
+}
+
+impl From<crate::operations::protocol::report::ReportError> for MediatorReportHttpError {
+    fn from(value: crate::operations::protocol::report::ReportError) -> Self {
+        Self::Op(value)
+    }
+}
+
+impl IntoResponse for MediatorReportHttpError {
+    fn into_response(self) -> Response {
+        use crate::operations::protocol::report::ReportError;
+        let (status, body) = match self {
+            Self::Op(ReportError::Auth(e)) => (
+                StatusCode::FORBIDDEN,
+                ErrorBody {
+                    error: "forbidden",
+                    message: e,
+                    suggested_fix: Some("This operation requires super-admin privileges.".into()),
+                    stage: None,
+                },
+            ),
+            Self::Op(ReportError::Telemetry(e)) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorBody {
+                    error: "telemetry_query_failed",
+                    message: e.to_string(),
+                    suggested_fix: None,
+                    stage: None,
+                },
+            ),
+            Self::BadTimestamp(e) => (
+                StatusCode::BAD_REQUEST,
+                ErrorBody {
+                    error: "bad_timestamp",
+                    message: format!("invalid RFC 3339 timestamp: {e}"),
+                    suggested_fix: Some(
+                        "Use RFC 3339 / ISO 8601 like `2026-04-29T15:00:00Z`.".into(),
+                    ),
+                    stage: None,
+                },
+            ),
+        };
+        (status, Json(body)).into_response()
+    }
+}

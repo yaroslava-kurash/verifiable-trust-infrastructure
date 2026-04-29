@@ -733,6 +733,34 @@ enum MediatorCommands {
         #[arg(long)]
         handshake_timeout: Option<u64>,
     },
+    /// Drain-set management (cancel an in-flight drain).
+    Drain {
+        #[command(subcommand)]
+        command: MediatorDrainCommands,
+    },
+    /// Show inbound-message attribution by mediator and sender.
+    Report {
+        /// Lower bound (RFC 3339, e.g. 2026-04-29T15:00:00Z).
+        #[arg(long)]
+        since: Option<String>,
+        /// Upper bound (RFC 3339).
+        #[arg(long)]
+        until: Option<String>,
+        /// Output format: `json` (default) or `table`.
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum MediatorDrainCommands {
+    /// Cancel a drain entry. Drops the listener for that mediator
+    /// immediately. Refuses if the named DID is the active mediator
+    /// (use `services disable didcomm` instead).
+    Cancel {
+        #[arg(long)]
+        mediator_did: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1761,6 +1789,19 @@ async fn main() {
                 )
                 .await
             }
+            MediatorCommands::Drain { command } => match command {
+                MediatorDrainCommands::Cancel { mediator_did } => {
+                    mediator::cmd_mediator_drain_cancel(&client, mediator_did).await
+                }
+            },
+            MediatorCommands::Report {
+                since,
+                until,
+                format,
+            } => match format.parse::<mediator::ReportFormat>() {
+                Ok(format) => mediator::cmd_mediator_report(&client, since, until, format).await,
+                Err(msg) => Err(msg.into()),
+            },
         },
         Commands::Contexts { command } => match command {
             ContextCommands::List => contexts::cmd_context_list(&client).await,

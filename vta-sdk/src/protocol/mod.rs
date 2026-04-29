@@ -199,3 +199,116 @@ pub struct MigrateMediatorResponse {
     pub active_mediator_endpoint: String,
     pub drains_until: String,
 }
+
+/// Request body for `POST /mediators/drain/cancel`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DrainCancelRequest {
+    pub mediator_did: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DrainCancelResponse {
+    pub mediator_did: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediatorStats {
+    pub mediator_did: String,
+    pub inbound_count: u64,
+    pub first_seen: String,
+    pub last_seen: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SenderLastSeen {
+    pub sender_did: String,
+    pub last_seen_mediator: String,
+    pub last_seen_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediatorReport {
+    #[serde(default)]
+    pub since: Option<String>,
+    pub until: String,
+    pub mediators: Vec<MediatorStats>,
+    pub senders: Vec<SenderLastSeen>,
+}
+
+impl VtaClient {
+    /// Cancel a drain entry early, dropping the listener for that
+    /// mediator immediately. Refuses if the named DID is the
+    /// active mediator (use `services disable didcomm` instead) or
+    /// not registered at all.
+    pub async fn drain_cancel(
+        &self,
+        req: DrainCancelRequest,
+    ) -> Result<DrainCancelResponse, VtaError> {
+        self.rpc(
+            "mediator-management/1.0/drain-cancel",
+            serde_json::to_value(&req)?,
+            "mediator-management/1.0/drain-cancel-result",
+            30,
+            |c, url| c.post(format!("{url}/mediators/drain/cancel")).json(&req),
+        )
+        .await
+    }
+
+    /// Query the mediator-attribution report. `since`/`until` are
+    /// optional RFC 3339 timestamps. Returns per-mediator inbound
+    /// counts and per-sender last-seen mediator (so operators can
+    /// spot senders still using the prior mediator after a
+    /// migrate).
+    pub async fn mediator_report(
+        &self,
+        since: Option<&str>,
+        until: Option<&str>,
+    ) -> Result<MediatorReport, VtaError> {
+        let since_owned = since.map(str::to_string);
+        let until_owned = until.map(str::to_string);
+        let qs = build_report_query(since_owned.as_deref(), until_owned.as_deref());
+        self.rpc(
+            "mediator-management/1.0/report",
+            serde_json::json!({
+                "since": since_owned,
+                "until": until_owned,
+            }),
+            "mediator-management/1.0/report-result",
+            30,
+            move |c, url| {
+                let url = if qs.is_empty() {
+                    format!("{url}/mediators/report")
+                } else {
+                    format!("{url}/mediators/report?{qs}")
+                };
+                c.get(url)
+            },
+        )
+        .await
+    }
+}
+
+fn build_report_query(since: Option<&str>, until: Option<&str>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(s) = since {
+        parts.push(format!("since={}", url_encode(s)));
+    }
+    if let Some(u) = until {
+        parts.push(format!("until={}", url_encode(u)));
+    }
+    parts.join("&")
+}
+
+fn url_encode(s: &str) -> String {
+    // RFC 3339 timestamps contain `:` and `+`; the latter is the
+    // form-urlencoded representation of a space and would mangle
+    // the timestamp on the server side. Encode the unsafe chars
+    // explicitly.
+    s.chars()
+        .flat_map(|c| match c {
+            ':' => "%3A".chars().collect::<Vec<_>>(),
+            '+' => "%2B".chars().collect::<Vec<_>>(),
+            _ => vec![c],
+        })
+        .collect()
+}

@@ -219,7 +219,12 @@ pub fn router() -> Router<AppState> {
         .route(
             "/mediators/migrate",
             post(protocol::migrate_mediator_handler),
-        );
+        )
+        .route(
+            "/mediators/drain/cancel",
+            post(protocol::drain_cancel_handler),
+        )
+        .route("/mediators/report", get(protocol::mediator_report_handler));
 
     // WebVH routes (feature-gated)
     #[cfg(feature = "webvh")]
