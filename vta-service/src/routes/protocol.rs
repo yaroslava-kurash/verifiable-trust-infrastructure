@@ -23,6 +23,9 @@ use crate::operations::protocol::disable_didcomm::{
 use crate::operations::protocol::enable_didcomm::{
     EnableDidcommError, EnableDidcommParams, enable_didcomm,
 };
+use crate::operations::protocol::migrate_mediator::{
+    MigrateAuditKind, MigrateMediatorError, MigrateMediatorParams, migrate_mediator,
+};
 use crate::server::AppState;
 
 /// Default trust-ping round-trip timeout for first-enable when the
@@ -496,6 +499,292 @@ impl IntoResponse for DisableDidcommHttpError {
                 },
             ),
             Self::Op(DisableDidcommError::Storage(e)) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorBody {
+                    error: "storage_failed",
+                    message: e,
+                    suggested_fix: None,
+                    stage: None,
+                },
+            ),
+            Self::DidResolverUnavailable => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorBody {
+                    error: "did_resolver_unavailable",
+                    message: "DID resolver is not initialised on this VTA.".into(),
+                    suggested_fix: Some(
+                        "Configure `resolver_url` or run with the local resolver.".into(),
+                    ),
+                    stage: None,
+                },
+            ),
+        };
+        (status, Json(body)).into_response()
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────
+// migrate_mediator
+// ────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct MigrateMediatorRequest {
+    pub new_mediator_did: String,
+    pub drain_ttl_secs: u64,
+    #[serde(default)]
+    pub force: bool,
+    #[serde(default)]
+    pub handshake_timeout_secs: Option<u64>,
+    /// Distinguish forward migrate from rollback in telemetry.
+    #[serde(default)]
+    pub rollback: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MigrateMediatorResponse {
+    pub new_version_id: String,
+    pub prior_mediator_did: String,
+    pub active_mediator_did: String,
+    pub active_mediator_endpoint: String,
+    pub drains_until: String,
+}
+
+/// `POST /mediators/migrate` — change the active mediator. Auth:
+/// super-admin. Runs the full pre-promotion handshake against the
+/// new mediator (steps 2-5 currently bypassed via `AlwaysOkProver`
+/// — live `DIDCommService`-backed prover is a follow-up).
+pub async fn migrate_mediator_handler(
+    auth: SuperAdminAuth,
+    State(state): State<AppState>,
+    Json(req): Json<MigrateMediatorRequest>,
+) -> Result<Json<MigrateMediatorResponse>, MigrateMediatorHttpError> {
+    let bridge = Arc::clone(&state.didcomm_bridge);
+    let did_resolver = state
+        .did_resolver
+        .as_ref()
+        .ok_or(MigrateMediatorHttpError::DidResolverUnavailable)?
+        .clone();
+
+    let prover = AlwaysOkProver;
+    let timeout = Duration::from_secs(
+        req.handshake_timeout_secs
+            .unwrap_or(DEFAULT_HANDSHAKE_TIMEOUT_SECS),
+    );
+    let audit_kind = if req.rollback {
+        MigrateAuditKind::Rollback
+    } else {
+        MigrateAuditKind::Forward
+    };
+
+    let result = migrate_mediator(
+        &state.config,
+        &state.keys_ks,
+        &state.contexts_ks,
+        &state.webvh_ks,
+        &state.audit_ks,
+        &state.drains_ks,
+        &*state.seed_store,
+        &did_resolver,
+        &bridge,
+        &state.mediator_registry,
+        &state.telemetry,
+        &prover,
+        &auth.0,
+        MigrateMediatorParams {
+            new_mediator_did: req.new_mediator_did,
+            drain_ttl: Duration::from_secs(req.drain_ttl_secs),
+            force: req.force,
+            handshake_timeout: timeout,
+            audit_kind,
+        },
+        "rest",
+    )
+    .await?;
+
+    Ok(Json(MigrateMediatorResponse {
+        new_version_id: result.new_version_id,
+        prior_mediator_did: result.prior_mediator_did,
+        active_mediator_did: result.active_mediator_did,
+        active_mediator_endpoint: result.active_mediator_endpoint,
+        drains_until: result.drains_until.to_rfc3339(),
+    }))
+}
+
+#[derive(Debug)]
+pub enum MigrateMediatorHttpError {
+    Op(MigrateMediatorError),
+    DidResolverUnavailable,
+}
+
+impl From<MigrateMediatorError> for MigrateMediatorHttpError {
+    fn from(value: MigrateMediatorError) -> Self {
+        Self::Op(value)
+    }
+}
+
+impl IntoResponse for MigrateMediatorHttpError {
+    fn into_response(self) -> Response {
+        let (status, body) = match self {
+            Self::Op(MigrateMediatorError::DidcommNotEnabled) => (
+                StatusCode::CONFLICT,
+                ErrorBody {
+                    error: "didcomm_not_enabled",
+                    message:
+                        "DIDComm is not currently enabled — there is no active mediator to migrate from."
+                            .into(),
+                    suggested_fix: Some(
+                        "Use `pnm services enable didcomm --mediator-did <did>` first.".into(),
+                    ),
+                    stage: None,
+                },
+            ),
+            Self::Op(MigrateMediatorError::SameAsActive(did)) => (
+                StatusCode::CONFLICT,
+                ErrorBody {
+                    error: "same_as_active",
+                    message: format!("`{did}` is already the active mediator — nothing to migrate."),
+                    suggested_fix: None,
+                    stage: None,
+                },
+            ),
+            Self::Op(MigrateMediatorError::AlreadyDraining(did)) => (
+                StatusCode::CONFLICT,
+                ErrorBody {
+                    error: "already_draining",
+                    message: format!("`{did}` is currently in drain state."),
+                    suggested_fix: Some(format!(
+                        "Run `pnm mediator drain cancel --mediator-did {did}` first, or use `pnm mediator rollback --to {did}` to make it active."
+                    )),
+                    stage: None,
+                },
+            ),
+            Self::Op(MigrateMediatorError::VtaDidNotConfigured) => (
+                StatusCode::CONFLICT,
+                ErrorBody {
+                    error: "vta_did_not_configured",
+                    message: "VTA DID is not configured.".into(),
+                    suggested_fix: Some(
+                        "Run `vta setup` to configure the VTA's DID first.".into(),
+                    ),
+                    stage: None,
+                },
+            ),
+            Self::Op(MigrateMediatorError::VtaDidRecordMissing(did)) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorBody {
+                    error: "vta_did_record_missing",
+                    message: format!("VTA DID `{did}` has no webvh record on disk."),
+                    suggested_fix: Some(
+                        "Re-run `vta setup` — local state appears corrupted.".into(),
+                    ),
+                    stage: None,
+                },
+            ),
+            Self::Op(MigrateMediatorError::VtaDidLogMissing(did)) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorBody {
+                    error: "vta_did_log_missing",
+                    message: format!("VTA DID `{did}` has no published log."),
+                    suggested_fix: Some(
+                        "Re-run `vta setup` — local state appears corrupted.".into(),
+                    ),
+                    stage: None,
+                },
+            ),
+            Self::Op(MigrateMediatorError::EmptyLog) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorBody {
+                    error: "vta_did_log_empty",
+                    message: "VTA DID log is empty.".into(),
+                    suggested_fix: Some(
+                        "Re-run `vta setup` — local state appears corrupted.".into(),
+                    ),
+                    stage: None,
+                },
+            ),
+            Self::Op(MigrateMediatorError::NoActiveMediator) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorBody {
+                    error: "no_active_mediator",
+                    message:
+                        "DIDComm is enabled but the DID document has no `#vta-didcomm` service entry."
+                            .into(),
+                    suggested_fix: Some(
+                        "On-disk state is inconsistent — re-run `vta setup`.".into(),
+                    ),
+                    stage: None,
+                },
+            ),
+            Self::Op(MigrateMediatorError::Handshake(HandshakeError::Failed { stage, cause })) => {
+                (
+                    StatusCode::BAD_GATEWAY,
+                    ErrorBody {
+                        error: "mediator_handshake_failed",
+                        message: format!("mediator handshake failed: {cause}"),
+                        suggested_fix: Some(match stage {
+                            HandshakeStage::Resolve => {
+                                "Check the mediator DID is correct and reachable.".into()
+                            }
+                            _ => {
+                                "Inspect the mediator's logs; or retry with `--force` if you've validated reachability out-of-band."
+                                    .into()
+                            }
+                        }),
+                        stage: Some(stage_str(stage)),
+                    },
+                )
+            }
+            Self::Op(MigrateMediatorError::DocumentPatch(e)) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorBody {
+                    error: "document_patch_failed",
+                    message: e.to_string(),
+                    suggested_fix: None,
+                    stage: None,
+                },
+            ),
+            Self::Op(MigrateMediatorError::WebVHUpdate(e)) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorBody {
+                    error: "webvh_update_failed",
+                    message: e.to_string(),
+                    suggested_fix: None,
+                    stage: None,
+                },
+            ),
+            Self::Op(MigrateMediatorError::ConfigPersistence(e)) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorBody {
+                    error: "config_persistence_failed",
+                    message: e,
+                    suggested_fix: Some(
+                        "Check the VTA's config file is writable; the LogEntry was published. Fix permissions and retry."
+                            .into(),
+                    ),
+                    stage: None,
+                },
+            ),
+            Self::Op(MigrateMediatorError::Registry(e)) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorBody {
+                    error: "registry_failed",
+                    message: e.to_string(),
+                    suggested_fix: None,
+                    stage: None,
+                },
+            ),
+            Self::Op(MigrateMediatorError::Auth(e)) => (
+                StatusCode::FORBIDDEN,
+                ErrorBody {
+                    error: "forbidden",
+                    message: e,
+                    suggested_fix: Some(
+                        "This operation requires super-admin privileges.".into(),
+                    ),
+                    stage: None,
+                },
+            ),
+            Self::Op(MigrateMediatorError::Storage(e)) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 ErrorBody {
                     error: "storage_failed",

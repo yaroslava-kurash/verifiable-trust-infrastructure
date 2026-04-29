@@ -10,6 +10,7 @@
 pub mod disable_didcomm;
 pub mod document;
 pub mod enable_didcomm;
+pub mod migrate_mediator;
 
 /// Process-wide lock serializing every protocol-state mutation
 /// (enable / disable / migrate / drain-cancel). Modeled on

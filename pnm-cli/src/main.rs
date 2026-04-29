@@ -7,7 +7,8 @@ use clap::{Parser, Subcommand};
 use vta_sdk::client::VtaClient;
 
 use vta_cli_common::commands::{
-    acl, audit, config as config_cmd, contexts, credentials, did_templates, keys, services, webvh,
+    acl, audit, config as config_cmd, contexts, credentials, did_templates, keys, mediator,
+    services, webvh,
 };
 use vta_cli_common::render::{CYAN, DIM, GREEN, RED, RESET};
 
@@ -97,6 +98,14 @@ enum Commands {
     Services {
         #[command(subcommand)]
         command: ServicesCommands,
+    },
+
+    /// Manage the active and draining DIDComm mediators.
+    ///
+    /// Spec: docs/05-design-notes/didcomm-protocol-management.md
+    Mediator {
+        #[command(subcommand)]
+        command: MediatorCommands,
     },
 
     /// Key management
@@ -685,6 +694,44 @@ enum ServicesDisableProtocol {
         /// transport; over REST any value is permitted.
         #[arg(long, default_value_t = 3600)]
         drain_ttl: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum MediatorCommands {
+    /// Migrate to a new mediator. Runs the pre-promotion handshake;
+    /// the prior mediator's listener stays up until `drain-ttl`
+    /// expires so in-flight messages can still arrive.
+    Migrate {
+        /// New mediator's DID.
+        #[arg(long = "to")]
+        new_mediator_did: String,
+        /// Drain window for the prior mediator (seconds).
+        #[arg(long, default_value_t = 3600)]
+        drain_ttl: u64,
+        /// Skip handshake steps 2-5 (DID resolution always runs).
+        #[arg(long)]
+        force: bool,
+        /// Trust-ping timeout (seconds, default 10).
+        #[arg(long)]
+        handshake_timeout: Option<u64>,
+    },
+    /// Rollback to a previously-active mediator. Mechanically the
+    /// same as `migrate`, but tagged in telemetry as a rollback.
+    Rollback {
+        /// Target mediator's DID (typically a previously-active one
+        /// that may still be in drain).
+        #[arg(long = "to")]
+        target_mediator_did: String,
+        /// Drain window for the now-prior mediator (seconds).
+        #[arg(long, default_value_t = 3600)]
+        drain_ttl: u64,
+        /// Skip handshake steps 2-5 (DID resolution always runs).
+        #[arg(long)]
+        force: bool,
+        /// Trust-ping timeout (seconds, default 10).
+        #[arg(long)]
+        handshake_timeout: Option<u64>,
     },
 }
 
@@ -1682,6 +1729,38 @@ async fn main() {
                     services::cmd_services_disable_didcomm(&client, drain_ttl).await
                 }
             },
+        },
+        Commands::Mediator { command } => match command {
+            MediatorCommands::Migrate {
+                new_mediator_did,
+                drain_ttl,
+                force,
+                handshake_timeout,
+            } => {
+                mediator::cmd_mediator_migrate(
+                    &client,
+                    new_mediator_did,
+                    drain_ttl,
+                    force,
+                    handshake_timeout,
+                )
+                .await
+            }
+            MediatorCommands::Rollback {
+                target_mediator_did,
+                drain_ttl,
+                force,
+                handshake_timeout,
+            } => {
+                mediator::cmd_mediator_rollback(
+                    &client,
+                    target_mediator_did,
+                    drain_ttl,
+                    force,
+                    handshake_timeout,
+                )
+                .await
+            }
         },
         Commands::Contexts { command } => match command {
             ContextCommands::List => contexts::cmd_context_list(&client).await,

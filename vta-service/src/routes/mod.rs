@@ -215,6 +215,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/services/didcomm/disable",
             post(protocol::disable_didcomm_handler),
+        )
+        .route(
+            "/mediators/migrate",
+            post(protocol::migrate_mediator_handler),
         );
 
     // WebVH routes (feature-gated)

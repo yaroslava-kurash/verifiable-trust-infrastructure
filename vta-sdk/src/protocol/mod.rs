@@ -131,4 +131,71 @@ impl VtaClient {
         )
         .await
     }
+
+    /// Migrate the active mediator. Runs the pre-promotion
+    /// handshake against the new mediator and places the prior
+    /// mediator in drain state for the requested TTL.
+    pub async fn migrate_mediator(
+        &self,
+        req: MigrateMediatorRequest,
+    ) -> Result<MigrateMediatorResponse, VtaError> {
+        self.rpc(
+            "mediator-management/1.0/migrate",
+            serde_json::to_value(&req)?,
+            "mediator-management/1.0/migrate-result",
+            120,
+            |c, url| c.post(format!("{url}/mediators/migrate")).json(&req),
+        )
+        .await
+    }
+}
+
+/// Request body for `POST /mediators/migrate`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MigrateMediatorRequest {
+    pub new_mediator_did: String,
+    pub drain_ttl_secs: u64,
+    #[serde(default)]
+    pub force: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handshake_timeout_secs: Option<u64>,
+    /// Tag the operation as a rollback in telemetry.
+    #[serde(default)]
+    pub rollback: bool,
+}
+
+impl MigrateMediatorRequest {
+    pub fn new(new_mediator_did: impl Into<String>, drain_ttl_secs: u64) -> Self {
+        Self {
+            new_mediator_did: new_mediator_did.into(),
+            drain_ttl_secs,
+            force: false,
+            handshake_timeout_secs: None,
+            rollback: false,
+        }
+    }
+
+    pub fn force(mut self, force: bool) -> Self {
+        self.force = force;
+        self
+    }
+
+    pub fn rollback(mut self, rollback: bool) -> Self {
+        self.rollback = rollback;
+        self
+    }
+
+    pub fn handshake_timeout_secs(mut self, secs: u64) -> Self {
+        self.handshake_timeout_secs = Some(secs);
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MigrateMediatorResponse {
+    pub new_version_id: String,
+    pub prior_mediator_did: String,
+    pub active_mediator_did: String,
+    pub active_mediator_endpoint: String,
+    pub drains_until: String,
 }
