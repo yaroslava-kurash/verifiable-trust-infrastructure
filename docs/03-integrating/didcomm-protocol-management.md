@@ -268,8 +268,7 @@ the VTA's telemetry sink (default: in-memory ring buffer of
 
 ## Known limitations
 
-These are the v1 cuts that reduce scope without reducing
-correctness. Each is tracked for a focused follow-up.
+These are the items still deferred for focused follow-ups.
 
 1. **First-enable handshake is partial.** `pnm services enable
    didcomm` runs only step 1 of the handshake (DID resolution +
@@ -281,25 +280,39 @@ correctness. Each is tracked for a focused follow-up.
    `pnm services enable didcomm` followed by
    `pnm mediator migrate --to <same>` — the migrate path runs
    the full handshake.
-2. **Live `DIDCommService`-backed handshake is a follow-up.**
-   All routes currently use a placeholder prover that satisfies
-   handshake steps 2-5 with a noop. Step 1 (DID resolve) still
-   runs. Wiring the live prover requires an in-process mock
-   mediator for end-to-end test coverage; tracked separately.
-3. **DIDComm transport for these admin calls.** REST is the
+2. **DIDComm transport for these admin calls.** REST is the
    only available transport today. The operations layer's
    1-hour-min-TTL guard (when `disable` is called over DIDComm)
    is wired and tested but has no DIDComm route handler invoking
    it yet.
-4. **Listener teardown signal.** `disable` and drain expiry
-   signal upstream listener teardown via an mpsc channel. The
-   bootstrap-side consumer that translates the signal into
-   `DIDCommService::remove_listener` calls hasn't been wired in
-   `server.rs` yet — same scope rationale as #2.
+3. **End-to-end mock-mediator integration test.** The live
+   `DIDCommServiceProver` is wired into `migrate` and exercised
+   when DIDComm is running, but the full
+   spin-up-an-in-process-mediator-and-round-trip test fixture
+   that would cover criterion #1's happy path doesn't ship yet.
+   Existing unit tests cover the operation/route/SDK/CLI shape;
+   the live runtime is genuinely exercised in production
+   migrations but doesn't have a dedicated integration test
+   yet.
 
-None of these change the on-disk state model or the DID-document
-semantics. They're places where the wire-shape is in place but
-the live runtime hasn't been hooked up.
+Resolved since the initial cut:
+
+- **Live `DIDCommService`-backed handshake** is wired into the
+  `migrate` route. Falls back to a no-op prover only when
+  DIDComm isn't running or the secrets resolver isn't
+  initialised — both of which are expected non-DIDComm
+  conditions, not bugs.
+- **Drain sweeper + teardown consumer** are spawned at server
+  boot. Drain TTLs fire end-to-end:
+  `record_drain_persisted` arms a `tokio::time::sleep_until`
+  task; on expiry, the sweeper signals the teardown channel
+  and the bootstrap-side consumer calls
+  `DIDCommService::remove_listener`. Persisted drains are
+  replayed on restart so reboots don't leak listeners.
+
+None of the remaining limitations change the on-disk state
+model or the DID-document semantics — they're test-fixture and
+DIDComm-transport-handler items respectively.
 
 ## Cross-references
 
