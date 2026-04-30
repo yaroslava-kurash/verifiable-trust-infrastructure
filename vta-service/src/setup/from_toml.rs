@@ -343,7 +343,7 @@ pub async fn apply_inputs(inputs: WizardInputs) -> Result<(), Box<dyn std::error
     // 9. Build a scratch AppConfig the messaging/DID builders can use to
     //    open the seed store. The real AppConfig is constructed at the end
     //    once we have the VTA DID.
-    let wizard_config = scratch_config_for_seed_store(
+    let mut wizard_config = scratch_config_for_seed_store(
         inputs.data_dir.clone(),
         secrets_config.clone(),
         inputs.config_path.clone(),
@@ -393,6 +393,12 @@ pub async fn apply_inputs(inputs: WizardInputs) -> Result<(), Box<dyn std::error
             })
         }
     };
+
+    // Propagate the resolved mediator into the scratch config so the VTA DID
+    // builder can embed `DIDCommMessaging` in the DID document. Without this,
+    // `build_did_document_inner` sees `config.messaging == None` and silently
+    // drops the service even when `add_mediator_service == true`.
+    wizard_config.messaging = messaging.clone();
 
     // 11. VTA DID.
     let vta_did = match &inputs.vta_did {

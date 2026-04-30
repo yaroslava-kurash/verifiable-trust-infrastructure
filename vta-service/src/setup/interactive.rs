@@ -526,7 +526,7 @@ pub async fn run_setup_wizard(
     let jwt_signing_key = BASE64.encode(jwt_key_bytes);
 
     // Create a temporary AppConfig for the seed store (config hasn't been saved yet)
-    let wizard_config = AppConfig {
+    let mut wizard_config = AppConfig {
         vta_did: None,
         vta_name: None,
         public_url: public_url.clone(),
@@ -566,6 +566,12 @@ pub async fn run_setup_wizard(
     } else {
         None
     };
+
+    // Propagate the resolved mediator into the scratch config so the VTA DID
+    // builder can embed `DIDCommMessaging` in the DID document. Without this,
+    // `build_did_document_inner` sees `config.messaging == None` and silently
+    // drops the service even when `add_mediator_service == true`.
+    wizard_config.messaging = messaging.clone();
 
     // 13. VTA DID (after mediator so we can embed it as a service endpoint)
     let vta_did = create_vta_did(
