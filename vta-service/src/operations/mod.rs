@@ -16,6 +16,7 @@ pub mod did_webvh;
 /// `vta keys bundle` CLIs for cold-start environments where PNM can't
 /// reach the VTA over the network.
 pub mod export;
+pub mod internal_authority;
 pub mod keys;
 /// DIDComm protocol management: enable/disable/migrate operations that
 /// patch the VTA's own DID document service array. See

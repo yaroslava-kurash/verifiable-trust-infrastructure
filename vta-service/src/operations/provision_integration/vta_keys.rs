@@ -7,16 +7,18 @@
 //!     assertion (distinct from `#key-0` so VC issuance and producer
 //!     assertion can rotate independently)
 //!
-//! Loading either requires an authenticated admin claim; the library-
-//! level caller has already been authorised upstream, so we synthesise
-//! a `server_internal_super_admin` and document the elevation
-//! explicitly rather than smuggling it through a fake-looking DID.
+//! These are server-internal step, not actions attributable to the
+//! user caller (who has already been authorised upstream). The
+//! sealed-authority pattern in
+//! [`crate::operations::internal_authority::InternalAuthority`] makes
+//! the elevation explicit at the call site and unforgeable from outside
+//! the operations layer.
 
 use affinidi_secrets_resolver::secrets::Secret;
 use ed25519_dalek::{Signer as Ed25519Signer, SigningKey};
 
-use crate::auth::AuthClaims;
 use crate::error::AppError;
+use crate::operations::internal_authority::InternalAuthority;
 use vta_sdk::did_key::decode_private_key_multibase;
 use vta_sdk::sealed_transfer::{
     AssertionProof, DidSignedAssertion, ProducerAssertion, template_bootstrap::VtaTrustBundle,
@@ -30,22 +32,21 @@ use super::ProvisionIntegrationDeps;
 /// producer-assertion key (`#sealed-transfer-0`, see
 /// [`load_vta_sealed_transfer_secret`]).
 ///
-/// Internal-use: synthesises a super-admin `AuthClaims` to satisfy the
-/// `get_key_secret` authz check. The real caller was already authorised
-/// as a context admin at precondition time — loading the VTA's own
-/// signing material here is a server-internal step, not an action
-/// attributable to the user caller.
+/// Constructs an [`InternalAuthority`] tagged `provision-integration`.
+/// Route handlers cannot construct one (its constructor is `pub(super)`
+/// to `operations`), so this elevation is reachable only from the
+/// operations layer.
 async fn load_vta_key_as_secret(
     state: &ProvisionIntegrationDeps,
     key_id: String,
 ) -> Result<Secret, AppError> {
-    let internal_auth = AuthClaims::server_internal_super_admin("provision-integration");
-    let resp = crate::operations::keys::get_key_secret(
+    let authority = InternalAuthority::new("provision-integration");
+    let resp = crate::operations::keys::get_key_secret_internal(
         &state.keys_ks,
         &state.imported_ks,
         &state.seed_store,
         &state.audit_ks,
-        &internal_auth,
+        authority,
         &key_id,
         "provision-integration-internal",
     )

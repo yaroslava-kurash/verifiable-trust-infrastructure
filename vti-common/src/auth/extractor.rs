@@ -117,31 +117,6 @@ impl AuthClaims {
         }
     }
 
-    /// **UNSAFE**: Synthesize a super-admin claim for a **server-internal**
-    /// privilege elevation — e.g. a library function needs to load the
-    /// VTA's own signing key to complete an action already authorized
-    /// upstream by the real caller.
-    ///
-    /// Unlike `unsafe_local_cli_super_admin`, this is always available
-    /// (no feature gate) because library callers inside the enclave need
-    /// it. The sentinel DID `internal:{purpose}` distinguishes synthesis
-    /// in audit logs from real caller identities and from CLI synthesis.
-    ///
-    /// Follow-up: long-term this pattern should be replaced by explicit
-    /// `*_unchecked` variants on the operations layer (e.g.
-    /// `get_key_secret_unchecked`) so privilege elevation is visible at
-    /// the call site rather than laundered through a fake claim.
-    ///
-    /// Do NOT call this from a route handler. Route handlers already
-    /// have the caller's real `AuthClaims`; use it directly.
-    pub fn server_internal_super_admin(purpose: &str) -> Self {
-        Self {
-            did: format!("internal:{purpose}"),
-            role: Role::Admin,
-            allowed_contexts: Vec::new(),
-        }
-    }
-
     /// Returns `true` if the caller is an admin with unrestricted access
     /// (empty `allowed_contexts`).
     pub fn is_super_admin(&self) -> bool {
@@ -381,16 +356,5 @@ mod tests {
         let a = AuthClaims::unsafe_local_cli_super_admin("provision-integration");
         let b = AuthClaims::unsafe_local_cli_super_admin("keys-bundle");
         assert_ne!(a.did, b.did);
-    }
-
-    #[test]
-    fn server_internal_super_admin_uses_distinct_did_prefix() {
-        // Server-internal synthesis must be distinguishable from both
-        // real DIDs and CLI-synthesized claims in audit logs.
-        let claims = AuthClaims::server_internal_super_admin("load-vta-key");
-        assert_eq!(claims.did, "internal:load-vta-key");
-        assert!(!claims.did.starts_with("did:"));
-        assert!(!claims.did.starts_with("cli:"));
-        assert!(claims.is_super_admin());
     }
 }
