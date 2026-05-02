@@ -202,6 +202,33 @@ impl TestContext {
         self.jwt_keys.encode(&claims).expect("encode jwt")
     }
 
+    /// Mint a token signed with a different audience. Used to verify
+    /// audience-isolation rejection — a VTC-audience token must not
+    /// authenticate against a VTA route. CLAUDE.md guards this as a
+    /// load-bearing invariant; tested at the JWT layer in vti-common
+    /// but here through the full route stack.
+    #[allow(dead_code)]
+    fn auth_token_with_audience(
+        &self,
+        did: &str,
+        role: &str,
+        contexts: Vec<String>,
+        audience: &str,
+    ) -> String {
+        // Use a fresh JwtKeys with the specified audience — this is what
+        // a VTC instance issuing tokens for its own audience would do.
+        let foreign_keys = JwtKeys::from_ed25519_bytes(&[0x42u8; 32], audience).unwrap();
+        let claims = foreign_keys.new_claims(
+            did.to_string(),
+            format!("sess-{}", uuid::Uuid::new_v4()),
+            role.to_string(),
+            contexts,
+            900,
+            false,
+        );
+        foreign_keys.encode(&claims).expect("encode foreign jwt")
+    }
+
     /// Create an ACL entry for a DID.
     #[allow(dead_code)]
     async fn create_acl(&self, did: &str, role: Role, contexts: Vec<String>) {
@@ -3003,4 +3030,43 @@ async fn enable_didcomm_propagates_resolve_failure_with_stage() {
         body.get("message").and_then(|v| v.as_str()).is_some(),
         "message in body: {body}"
     );
+}
+
+// ── JWT audience isolation ────────────────────────────────────────────
+//
+// CLAUDE.md identifies cross-audience token rejection as a load-bearing
+// invariant: a JWT minted by the VTC service (audience = "VTC") MUST
+// NOT authenticate against a VTA route, and vice versa. Tested at the
+// JWT-encode/decode layer in `vti-common/src/auth/jwt.rs`; these tests
+// run the assertion through the full route stack to catch any
+// integration-layer drift (a future refactor that, say, normalises
+// audience strings before validation).
+
+#[tokio::test]
+async fn vtc_audience_token_rejected_by_vta_route() {
+    let (app, ctx) = TestApp::new().await;
+    // Mint a token whose `aud` claim is "VTC". The JwtKeys validation
+    // path on the VTA side configures `audience = "VTA"` and uses
+    // `Validation::set_audience(&["VTA"])`, so the foreign-audience
+    // token must be rejected at decode time.
+    let foreign_token = ctx.auth_token_with_audience("did:key:z6MkAdmin", "admin", vec![], "VTC");
+    let (status, _body) = app.request(get_auth("/contexts", &foreign_token)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "VTC-audience JWT must be rejected by VTA routes"
+    );
+}
+
+#[tokio::test]
+async fn unknown_audience_token_rejected_by_vta_route() {
+    // Defence-in-depth: any audience that isn't "VTA" must be rejected,
+    // not just the well-known "VTC" string. A future "VTM" service or
+    // an attacker-supplied token with a custom audience must never
+    // authenticate.
+    let (app, ctx) = TestApp::new().await;
+    let foreign_token =
+        ctx.auth_token_with_audience("did:key:z6MkAdmin", "admin", vec![], "EVIL-SERVICE-V99");
+    let (status, _body) = app.request(get_auth("/contexts", &foreign_token)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
