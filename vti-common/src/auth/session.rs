@@ -13,7 +13,12 @@ pub enum SessionState {
 }
 
 /// A session record stored in fjall under `session:{session_id}`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `Debug` is hand-written below to redact the `refresh_token`. The raw
+/// derive would render it inline — any `tracing::debug!("{session:?}")`,
+/// panic backtrace, or `dbg!()` call holding a `Session` would otherwise
+/// exfiltrate a bearer-equivalent secret to logs.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Session {
     pub session_id: String,
     pub did: String,
@@ -22,6 +27,34 @@ pub struct Session {
     pub created_at: u64,
     pub refresh_token: Option<String>,
     pub refresh_expires_at: Option<u64>,
+    /// Whether the **challenge issued for this session** was accompanied
+    /// by a successful TEE attestation. Distinct from "this VTA was built
+    /// with the TEE feature": a TEE binary running in `TeeMode::Optional`
+    /// can serve unattested challenges when the provider errors out, and
+    /// the resulting JWT must reflect that.
+    ///
+    /// `#[serde(default)]` so older session records (written before this
+    /// field existed) deserialize as `false` — the conservative default.
+    #[serde(default)]
+    pub tee_attested: bool,
+}
+
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session")
+            .field("session_id", &self.session_id)
+            .field("did", &self.did)
+            .field("challenge", &self.challenge)
+            .field("state", &self.state)
+            .field("created_at", &self.created_at)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("refresh_expires_at", &self.refresh_expires_at)
+            .field("tee_attested", &self.tee_attested)
+            .finish()
+    }
 }
 
 fn session_key(session_id: &str) -> String {
@@ -199,7 +232,27 @@ mod tests {
             created_at: now_epoch(),
             refresh_token: None,
             refresh_expires_at: None,
+            tee_attested: false,
         }
+    }
+
+    #[test]
+    fn debug_redacts_refresh_token() {
+        // Regression: Session derives a manual Debug that must hide
+        // refresh_token. A `tracing::debug!("{session:?}")` in any code
+        // path holding a Session must not exfiltrate the bearer-
+        // equivalent secret.
+        let mut s = sample_session("sess-1", "did:key:zA", SessionState::Authenticated);
+        s.refresh_token = Some("super-secret-refresh-uuid".into());
+        let rendered = format!("{s:?}");
+        assert!(
+            !rendered.contains("super-secret-refresh-uuid"),
+            "raw refresh token must not appear in Debug output, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("<redacted>"),
+            "expected redaction marker, got: {rendered}"
+        );
     }
 
     // ── Session key helpers ─────────────────────────────────────────

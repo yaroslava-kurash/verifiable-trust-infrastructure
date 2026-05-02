@@ -581,6 +581,14 @@ enum WebvhCommands {
         /// Number of pre-rotation keys to generate
         #[arg(long)]
         pre_rotation: Option<u32>,
+        /// Print the generated mnemonic to stderr. **Off by default** —
+        /// printing puts the master seed in shell history, terminal
+        /// scrollback, CI log collectors, and tmux/screen buffers. The
+        /// mnemonic is also persisted via the configured seed-store; if
+        /// you need it for paper backup, run `vta export-mnemonic`
+        /// instead so it goes through the time-bounded export guard.
+        #[arg(long)]
+        print_mnemonic: bool,
     },
     /// List WebVH DIDs
     ListDids {
@@ -970,6 +978,7 @@ async fn main() {
                     mediator_service,
                     services,
                     pre_rotation,
+                    print_mnemonic,
                 } => {
                     webvh_cli::run_create_did(
                         cli.config,
@@ -981,6 +990,7 @@ async fn main() {
                         mediator_service,
                         services,
                         pre_rotation,
+                        print_mnemonic,
                     )
                     .await
                 }

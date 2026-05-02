@@ -45,6 +45,12 @@ use crate::error::AppError;
 use crate::sealed_nonce_store::PersistentNonceStore;
 use crate::server::AppState;
 
+/// Maximum length (in bytes) of the operator-supplied bootstrap label.
+/// The wire body is already capped globally, but the label is the only
+/// free-form attacker-controlled string in this DTO and ends up in audit
+/// logs — keep it short so an aggressive logger can't spill MBs.
+const MAX_LABEL_LEN: usize = 256;
+
 /// Request body. `#[serde(deny_unknown_fields)]` so a client cannot smuggle
 /// in `requested_role` / `allowed_contexts` — minting parameters are
 /// determined entirely by attestation policy.
@@ -61,10 +67,26 @@ pub struct BootstrapRequestBody {
     /// Optional human-readable label (operator-visible only). Echoed into
     /// server-side audit logs. Wire field stays present on non-TEE builds so
     /// older clients keep deserializing; the value is only consumed by the
-    /// TEE first-boot path.
-    #[serde(default)]
+    /// TEE first-boot path. Bounded length protects audit log size from a
+    /// hostile caller submitting an MB-scale string.
+    #[serde(default, deserialize_with = "deserialize_bounded_label")]
     #[cfg_attr(not(feature = "tee"), allow(dead_code))]
     pub label: Option<String>,
+}
+
+fn deserialize_bounded_label<'de, D>(de: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s: Option<String> = Option::deserialize(de)?;
+    if let Some(label) = &s
+        && label.len() > MAX_LABEL_LEN
+    {
+        return Err(serde::de::Error::custom(format!(
+            "label exceeds {MAX_LABEL_LEN} bytes"
+        )));
+    }
+    Ok(s)
 }
 
 /// Response body — a single armored sealed bundle as UTF-8 text, plus the

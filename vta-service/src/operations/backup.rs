@@ -35,6 +35,30 @@ const ARGON2_P_COST: u32 = 4;
 const SALT_LEN: usize = 32;
 const NONCE_LEN: usize = 12;
 
+// ── Argon2id parameter clamps (import-side defence) ────────────────
+//
+// `decrypt_backup` reads KDF parameters from the envelope itself —
+// without bounds, an attacker who can submit a backup can force a
+// memory bomb (`m_cost = u32::MAX` ≈ 4 TiB) or a trivially-fast KDF
+// for known-plaintext probes. On a Nitro Enclave with fixed memory,
+// a memory bomb is fatal. These bounds give honest backups generous
+// headroom (the OWASP profile sits well within them) while rejecting
+// adversarial values.
+
+/// Maximum memory cost (in KiB) accepted on import. 1 GiB.
+const MAX_M_COST: u32 = 1 << 20;
+/// Minimum memory cost (in KiB) accepted on import. 8 MiB — well below
+/// the OWASP recommendation, here only to reject the m=1 footgun.
+const MIN_M_COST: u32 = 8 * 1024;
+/// Maximum iteration count.
+const MAX_T_COST: u32 = 10;
+/// Minimum iteration count.
+const MIN_T_COST: u32 = 1;
+/// Maximum parallelism factor.
+const MAX_P_COST: u32 = 16;
+/// Minimum parallelism factor.
+const MIN_P_COST: u32 = 1;
+
 // ── Export ──────────────────────────────────────────────────────────
 
 /// Assemble and encrypt a backup of the entire VTA state.
@@ -629,6 +653,39 @@ pub fn decrypt_backup(
         )));
     }
 
+    // Reject KDF parameters outside sane bounds. An untrusted envelope
+    // can otherwise force a memory bomb or a near-trivial KDF.
+    if envelope.kdf.algorithm != "argon2id" {
+        return Err(AppError::Validation(format!(
+            "unsupported KDF algorithm: '{}' (only 'argon2id' is accepted)",
+            envelope.kdf.algorithm
+        )));
+    }
+    if !(MIN_M_COST..=MAX_M_COST).contains(&envelope.kdf.m_cost) {
+        return Err(AppError::Validation(format!(
+            "argon2 m_cost {} out of bounds [{}, {}]",
+            envelope.kdf.m_cost, MIN_M_COST, MAX_M_COST
+        )));
+    }
+    if !(MIN_T_COST..=MAX_T_COST).contains(&envelope.kdf.t_cost) {
+        return Err(AppError::Validation(format!(
+            "argon2 t_cost {} out of bounds [{}, {}]",
+            envelope.kdf.t_cost, MIN_T_COST, MAX_T_COST
+        )));
+    }
+    if !(MIN_P_COST..=MAX_P_COST).contains(&envelope.kdf.p_cost) {
+        return Err(AppError::Validation(format!(
+            "argon2 p_cost {} out of bounds [{}, {}]",
+            envelope.kdf.p_cost, MIN_P_COST, MAX_P_COST
+        )));
+    }
+    if envelope.encryption.algorithm != "aes-256-gcm" {
+        return Err(AppError::Validation(format!(
+            "unsupported encryption algorithm: '{}' (only 'aes-256-gcm' is accepted)",
+            envelope.encryption.algorithm
+        )));
+    }
+
     let salt = BASE64
         .decode(&envelope.kdf.salt)
         .map_err(|e| AppError::Validation(format!("invalid salt: {e}")))?;
@@ -908,5 +965,58 @@ mod tests {
         let err = check_vta_did_compatibility(Some("did:key:z6MkRunning"), None)
             .expect_err("missing backup vta_did must be rejected when running has one");
         assert!(format!("{err}").contains("vta_did mismatch"), "got {err:?}");
+    }
+
+    // ── KDF parameter clamps on import ──────────────────────────────
+
+    fn make_envelope_with_kdf(m_cost: u32, t_cost: u32, p_cost: u32, alg: &str) -> BackupEnvelope {
+        // Build a real encrypted envelope, then mutate the KDF params.
+        // The ciphertext won't decrypt with the wrong params, but the
+        // bounds check fires before decrypt is attempted — that's the
+        // behaviour we're testing.
+        let payload = test_payload();
+        let config = test_config();
+        let mut env = encrypt_payload(&payload, "password-12!ok!a", false, &config).unwrap();
+        env.kdf.algorithm = alg.into();
+        env.kdf.m_cost = m_cost;
+        env.kdf.t_cost = t_cost;
+        env.kdf.p_cost = p_cost;
+        env
+    }
+
+    #[test]
+    fn kdf_m_cost_above_max_rejected() {
+        let env = make_envelope_with_kdf(MAX_M_COST + 1, ARGON2_T_COST, ARGON2_P_COST, "argon2id");
+        let err = decrypt_backup(&env, "anything").expect_err("must reject huge m_cost");
+        assert!(format!("{err}").contains("m_cost"), "got {err:?}");
+    }
+
+    #[test]
+    fn kdf_m_cost_below_min_rejected() {
+        let env = make_envelope_with_kdf(1, ARGON2_T_COST, ARGON2_P_COST, "argon2id");
+        let err = decrypt_backup(&env, "anything").expect_err("must reject m_cost = 1");
+        assert!(format!("{err}").contains("m_cost"), "got {err:?}");
+    }
+
+    #[test]
+    fn kdf_t_cost_zero_rejected() {
+        let env = make_envelope_with_kdf(ARGON2_M_COST, 0, ARGON2_P_COST, "argon2id");
+        let err = decrypt_backup(&env, "anything").expect_err("must reject t_cost = 0");
+        assert!(format!("{err}").contains("t_cost"), "got {err:?}");
+    }
+
+    #[test]
+    fn kdf_p_cost_above_max_rejected() {
+        let env = make_envelope_with_kdf(ARGON2_M_COST, ARGON2_T_COST, MAX_P_COST + 1, "argon2id");
+        let err = decrypt_backup(&env, "anything").expect_err("must reject huge p_cost");
+        assert!(format!("{err}").contains("p_cost"), "got {err:?}");
+    }
+
+    #[test]
+    fn kdf_unknown_algorithm_rejected() {
+        let env =
+            make_envelope_with_kdf(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST, "scrypt-custom");
+        let err = decrypt_backup(&env, "anything").expect_err("must reject non-argon2id KDF");
+        assert!(format!("{err}").contains("KDF algorithm"), "got {err:?}");
     }
 }

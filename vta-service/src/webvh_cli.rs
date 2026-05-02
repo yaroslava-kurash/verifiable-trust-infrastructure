@@ -141,6 +141,7 @@ pub async fn run_create_did(
     mediator_service: bool,
     services_json: Option<String>,
     pre_rotation: Option<u32>,
+    print_mnemonic: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(config_path.clone())?;
     let store = Store::open(&config.store)?;
@@ -207,7 +208,13 @@ pub async fn run_create_did(
     }
     eprintln!("  SCID:       {}", result.scid);
     if let Some(ref mnemonic) = result.mnemonic {
-        eprintln!("  Mnemonic:   {}", mnemonic);
+        if print_mnemonic {
+            eprintln!("  Mnemonic:   {mnemonic}");
+        } else {
+            eprintln!(
+                "  Mnemonic:   <redacted — re-run with `--print-mnemonic` if you really need it on stderr>"
+            );
+        }
     }
     eprintln!("  Portable:   {}", result.portable);
     eprintln!("  Signing:    {}", result.signing_key_id);

@@ -32,6 +32,13 @@ use crate::server::AppState;
 /// especially critical in TEE deployments where enclave memory is limited.
 const MAX_BODY_SIZE: usize = 1024 * 1024;
 
+/// Tighter body cap for unauthenticated endpoints that drive expensive
+/// crypto on attacker-controlled bytes (DIDComm `pack`/`unpack`,
+/// signature verify, sealed-transfer parse). Sized to fit a generous
+/// JWE / sealed-transfer payload but reject 1 MB blob floods that the
+/// rate limiter alone cannot starve out.
+const UNAUTH_BODY_SIZE: usize = 64 * 1024;
+
 /// Per-client-IP rate-limit budget for unauthenticated endpoints.
 ///
 /// 5 req/sec with a 10-request burst — loose enough that a legit operator
@@ -69,7 +76,12 @@ pub fn router() -> Router<AppState> {
         // Auth flow entry points
         .route("/auth/challenge", post(auth::challenge))
         .route("/auth/", post(auth::authenticate))
-        .route("/auth/refresh", post(auth::refresh));
+        .route("/auth/refresh", post(auth::refresh))
+        // Tighter body cap on unauth endpoints — see UNAUTH_BODY_SIZE.
+        // Layered on this sub-router (not the global one) so authenticated
+        // endpoints keep the regular MAX_BODY_SIZE budget needed for backup
+        // import etc.
+        .layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE));
     #[cfg(feature = "webvh")]
     let unauth = unauth
         // Public did.jsonl retrieval — matches webvh's world-readable

@@ -44,6 +44,8 @@ pub async fn challenge(
         created_at: now_epoch(),
         refresh_token: None,
         refresh_expires_at: None,
+        // VTC has no TEE attestation surface — always false here.
+        tee_attested: false,
     };
 
     let sessions = state.sessions_ks.clone();

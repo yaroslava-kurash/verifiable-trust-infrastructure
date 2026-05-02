@@ -185,6 +185,7 @@ impl TestContext {
             created_at: now_epoch(),
             refresh_token: None,
             refresh_expires_at: None,
+            tee_attested: false,
         };
         store_session(&self.sessions_ks, &session)
             .await

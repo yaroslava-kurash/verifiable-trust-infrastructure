@@ -79,22 +79,13 @@ pub async fn challenge(
         .insert_raw(format!("nonce:{challenge}"), session_id.as_bytes().to_vec())
         .await?;
 
-    let session = Session {
-        session_id: session_id.clone(),
-        did: req.did,
-        challenge: challenge.clone(),
-        state: SessionState::ChallengeSent,
-        created_at: now_epoch(),
-        refresh_token: None,
-        refresh_expires_at: None,
-    };
-
-    store_session(&state.sessions_ks, &session).await?;
-
-    // Optionally bind a TEE attestation report to the challenge nonce.
-    // This proves the challenge was generated inside a trusted execution environment.
+    // Build the attestation report (if any) before persisting the
+    // session so we can record on the session whether attestation
+    // actually succeeded for THIS challenge — not just whether the
+    // binary was compiled with the TEE feature. The eventual JWT's
+    // `tee_attested` claim is sourced from this per-session bit.
     #[cfg(feature = "tee")]
-    let tee_attestation = if let Some(ref tee) = state.tee {
+    let (tee_attestation, attestation_succeeded) = if let Some(ref tee) = state.tee {
         let config = state.config.read().await;
         let vta_did = config.vta_did.clone();
         drop(config);
@@ -105,9 +96,10 @@ pub async fn challenge(
         match tee.state.provider.attest(user_data, nonce_bytes) {
             Ok(mut report) => {
                 report.vta_did = vta_did;
-                Some(serde_json::to_value(&report).map_err(|e| {
+                let value = serde_json::to_value(&report).map_err(|e| {
                     AppError::Internal(format!("failed to serialize attestation report: {e}"))
-                })?)
+                })?;
+                (Some(value), true)
             }
             Err(e) => {
                 // In TEE required mode, attestation failure is a hard error.
@@ -122,14 +114,27 @@ pub async fn challenge(
                 warn!(
                     "TEE attestation failed (mode=optional) — challenge served without attestation: {e}"
                 );
-                None
+                (None, false)
             }
         }
     } else {
-        None
+        (None, false)
     };
     #[cfg(not(feature = "tee"))]
-    let tee_attestation = None;
+    let (tee_attestation, attestation_succeeded): (Option<serde_json::Value>, bool) = (None, false);
+
+    let session = Session {
+        session_id: session_id.clone(),
+        did: req.did,
+        challenge: challenge.clone(),
+        state: SessionState::ChallengeSent,
+        created_at: now_epoch(),
+        refresh_token: None,
+        refresh_expires_at: None,
+        tee_attested: attestation_succeeded,
+    };
+
+    store_session(&state.sessions_ks, &session).await?;
 
     info!(did = %session.did, session_id = %session.session_id, "auth challenge issued");
     audit!(
@@ -260,11 +265,11 @@ pub async fn authenticate(
     // Look up ACL entry to get role and allowed contexts for the token
     let (role, allowed_contexts) = check_acl_full(&state.acl_ks, &session.did).await?;
 
-    // Check if VTA is running in a TEE
-    #[cfg(feature = "tee")]
-    let tee_attested = state.tee.is_some();
-    #[cfg(not(feature = "tee"))]
-    let tee_attested = false;
+    // `tee_attested` is per-session, not per-binary: the session record
+    // captured whether the original `/auth/challenge` actually completed
+    // an attestation step. A TEE binary in `Optional` mode that fell
+    // through to an unattested challenge writes `false` here.
+    let tee_attested = session.tee_attested;
 
     let claims = jwt_keys.new_claims(
         session.did.clone(),
