@@ -41,6 +41,7 @@
 
 mod mint;
 mod preconditions;
+mod seal;
 mod templates;
 mod vta_keys;
 mod webvh;
@@ -60,7 +61,6 @@ use crate::config::AppConfig;
 use crate::didcomm_bridge::DIDCommBridge;
 use crate::error::AppError;
 use crate::keys::seed_store::SeedStore;
-use crate::sealed_nonce_store::PersistentNonceStore;
 use crate::server::AppState;
 use crate::store::KeyspaceHandle;
 use vta_sdk::provision_integration::{
@@ -68,7 +68,7 @@ use vta_sdk::provision_integration::{
     credential::{VtaAuthorizationParams, issue_vta_authorization_credential},
 };
 use vta_sdk::sealed_transfer::{
-    AssertionProof, ProducerAssertion, SealedPayloadV1, armor, bundle_digest, seal_payload,
+    SealedPayloadV1,
     template_bootstrap::{
         DidKeyMaterial, KeyPair, TemplateBootstrapConfig, TemplateBootstrapPayload, TemplateOutput,
     },
@@ -659,35 +659,15 @@ pub async fn provision_integration(
     };
 
     // ── 8. Seal ─────────────────────────────────────────────────────
-    let producer_assertion = match assertion_mode {
-        AssertionMode::DidSigned => {
-            let sealed_transfer_secret =
-                vta_keys::load_vta_sealed_transfer_secret(state, &vta_did).await?;
-            vta_keys::build_did_signed_assertion(
-                &sealed_transfer_secret,
-                &client_x25519_pub,
-                bundle_id,
-            )?
-        }
-        AssertionMode::PinnedOnly => ProducerAssertion {
-            producer_did: vta_did.clone(),
-            proof: AssertionProof::PinnedOnly,
-        },
-    };
-
-    let nonce_store = PersistentNonceStore::new(state.sealed_nonces_ks.clone());
-    let bundle = seal_payload(
-        &client_x25519_pub,
+    let seal::SealedProvisionBundle { armored, digest } = seal::seal_provision_payload(
+        state,
+        &vta_did,
+        assertion_mode,
         bundle_id,
-        producer_assertion,
-        &SealedPayloadV1::TemplateBootstrap(Box::new(payload)),
-        &nonce_store,
+        &client_x25519_pub,
+        SealedPayloadV1::TemplateBootstrap(Box::new(payload)),
     )
-    .await
-    .map_err(|e| AppError::Internal(format!("sealed-transfer seal failed: {e}")))?;
-
-    let armored = armor::encode(&bundle);
-    let digest = bundle_digest(&bundle);
+    .await?;
     let bundle_id_hex = hex_lower(&bundle_id);
 
     let admin_rolled_over = admin_template_ref.is_some();
@@ -837,35 +817,15 @@ async fn provision_admin_rotation(
     };
 
     // ── 7. Seal ─────────────────────────────────────────────────────
-    let producer_assertion = match assertion_mode {
-        AssertionMode::DidSigned => {
-            let sealed_transfer_secret =
-                vta_keys::load_vta_sealed_transfer_secret(state, &vta_did).await?;
-            vta_keys::build_did_signed_assertion(
-                &sealed_transfer_secret,
-                client_x25519_pub,
-                bundle_id,
-            )?
-        }
-        AssertionMode::PinnedOnly => ProducerAssertion {
-            producer_did: vta_did.clone(),
-            proof: AssertionProof::PinnedOnly,
-        },
-    };
-
-    let nonce_store = PersistentNonceStore::new(state.sealed_nonces_ks.clone());
-    let bundle = seal_payload(
-        client_x25519_pub,
+    let seal::SealedProvisionBundle { armored, digest } = seal::seal_provision_payload(
+        state,
+        &vta_did,
+        assertion_mode,
         bundle_id,
-        producer_assertion,
-        &SealedPayloadV1::AdminRotation(Box::new(payload)),
-        &nonce_store,
+        client_x25519_pub,
+        SealedPayloadV1::AdminRotation(Box::new(payload)),
     )
-    .await
-    .map_err(|e| AppError::Internal(format!("sealed-transfer seal failed: {e}")))?;
-
-    let armored = armor::encode(&bundle);
-    let digest = bundle_digest(&bundle);
+    .await?;
     let bundle_id_hex = hex_lower(&bundle_id);
 
     info!(
