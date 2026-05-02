@@ -148,10 +148,21 @@ windows-native-keyring-store = { workspace = true, optional = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 dbus-secret-service-keyring-store = { workspace = true, optional = true }
 
+[[example]]
+name = "sealed_transfer_round_trip"
+required-features = ["sealed-transfer"]
+
 [dev-dependencies]
 tokio = { workspace = true }
 tempfile = "3"
 wiremock = "0.6"
+# Examples need direct access to crypto primitives the SDK normally
+# encapsulates — pulled into dev-deps only so the published artifact
+# stays slim.
+ed25519-dalek = { workspace = true }
+affinidi-crypto = { workspace = true }
+getrandom = "0.4"
+base64 = { workspace = true }
 
 [lints]
 workspace = true
