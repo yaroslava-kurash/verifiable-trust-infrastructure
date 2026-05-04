@@ -7,38 +7,58 @@ those in addition to this file.
 ## Workspace layout
 
 Rust workspace (edition 2024, resolver 3, MSRV 1.94.0). Dependencies flow
-strictly downward — no cycles.
+strictly downward — no cycles. There are two leaf crates with no internal
+workspace deps (`vti-common`, `vta-sdk`); everything else depends on one
+or both of them, plus optionally on `vta-cli-common`.
 
 ```
-vti-common  ──┬──► vta-sdk ──┬──► vta-cli-common ──┬──► pnm-cli
-              │              │                      └──► cnm-cli
-              ├──► vta-service (library + local/dev binary)
-              │        └──► vta-enclave (Nitro Enclave binary)
-              └──► vtc-service
+Leaf crates:
+  vti-common   (no internal deps)
+  vta-sdk      (no internal deps)
+
+  vta-cli-common  → vta-sdk
+  vta-service     → vti-common, vta-sdk, vta-cli-common
+  vtc-service     → vti-common, vta-sdk
+  pnm-cli         → vta-sdk, vta-cli-common
+  cnm-cli         → vta-sdk, vta-cli-common
+  vta-enclave     → vta-service (consumed as a library)
 ```
 
 | Crate | Role |
 |---|---|
-| `vti-common` | Shared foundation: JWT, ACL, `Store`/`KeyspaceHandle` enum (local fjall + vsock), `AppError`, config types |
-| `vta-sdk` | Public SDK: types, HTTP + DIDComm client, `sealed_transfer`, `did_templates`, `provision_integration`, attestation |
-| `vta-service` | VTA logic (library) + local/dev binary. Exposes routes, operations, setup wizard |
-| `vta-enclave` | Nitro Enclave front-end. Depends on `vta-service` as a library, adds TEE bootstrap (KMS, vsock-store, attestation) |
+| `vti-common` | Shared foundation: JWT auth, ACL, `Store`/`KeyspaceHandle` enum (local fjall + vsock), `AppError`, config types, identifier validation (`identifier.rs`), pluggable telemetry sink (`telemetry::TelemetrySink`, default ring buffer) |
+| `vta-sdk` | Public SDK: types, REST + DIDComm client, `sealed_transfer`, `did_templates`, `provision_integration`, attestation verification, `protocol` (DIDComm protocol-management types) |
+| `vta-service` | VTA logic (library) + local/dev binary. Routes, operations (provision-integration, did-webvh, contexts, backup, **protocol management**), setup wizards (interactive + `--from <toml>`), DIDComm bridge + `messaging::*` (registry, drain store/sweeper, handshake, live prover, transient handshake) |
+| `vta-enclave` | Nitro Enclave front-end. Depends on `vta-service` as a library, adds TEE bootstrap (KMS, vsock-store, attestation). `publish = false` |
 | `vtc-service` | Verifiable Trust Community service (community lifecycle, separate JWT audience) |
 | `vta-cli-common` | Shared CLI command implementations — both CLIs are thin wrappers |
 | `pnm-cli` | Personal Network Manager (single-VTA operator) |
 | `cnm-cli` | Community Network Manager (multi-community operator) |
-| `didcomm-test` | Standalone DIDComm connectivity harness (test tool, not shipped) |
+| `didcomm-test` | Standalone DIDComm connectivity harness (test tool, `publish = false`) |
 
-Hot spots to know about:
-- `vta-service/src/operations/provision_integration.rs` (1.9k lines) —
-  orchestrates template render → key mint → ACL wire-up → VC issue → seal.
-- `vta-service/src/operations/did_webvh.rs` (1.4k lines) — WebVH DID
-  lifecycle + `did.jsonl` publication.
-- `vta-service/src/tee/kms_bootstrap.rs` — KMS attest/decrypt, JWT
-  fingerprint check, storage-key derivation.
-- `vta-sdk/src/sealed_transfer/` — HPKE seal/open, armor, assertions.
-- `vti-common/src/store/vsock.rs` — enclave-side store proxy; semantic
-  parity with local fjall is asserted but under-tested.
+Hot spots to know about (file size in source lines, sorted descending):
+- `vta-service/src/operations/provision_integration/mod.rs` (~1.8k lines)
+  — orchestrates template render → key mint → ACL wire-up → VC issue
+  → seal. Split into a module directory; the seal helper extracted to
+  `seal.rs` is the canonical place for new payload variants.
+- `vta-service/src/tee/kms_bootstrap.rs` (~1.65k lines) — KMS attest/
+  decrypt, JWT fingerprint check, storage-key derivation, MODE_B_LOCK
+  carve-out gating.
+- `vta-service/src/messaging/registry.rs` (~1.3k lines) — the
+  `MediatorListenerRegistry`: active-mediator membership, drain
+  windows, sticky outbound routing, telemetry emission. Load-bearing
+  for the protocol-management surface.
+- `vta-service/src/operations/did_webvh/mod.rs` (~1.15k lines) —
+  WebVH DID lifecycle + `did.jsonl` publication, used by every
+  protocol-management operation that mutates the VTA's own DID.
+- `vta-sdk/src/sealed_transfer/` — HPKE seal/open, armor, assertions
+  (`DidSigned`, `Attested`, `PinnedOnly`).
+- `vta-service/src/messaging/{drain_store,drain_sweeper,handshake,live_prover,transient_handshake}.rs`
+  — protocol-management plumbing. Smaller individually (~120–420
+  lines) but tightly coupled; touch one and you usually touch
+  several.
+- `vti-common/src/store/vsock.rs` — enclave-side store proxy;
+  semantic parity with local fjall is asserted but under-tested.
 
 ## Default to DIDs wherever we handle public keys
 
@@ -86,8 +106,8 @@ DID shape for every consumer, no redeploy.
 The noun for "a thing a template provisions" is **integration** (not
 "agent" — that word collides with VTA = Verifiable Trust *Agent*). CLI
 reads "provision-integration"; docs talk about "integration kinds"
-(mediator, webvh-hosting, etc.); each template declares its kind in the
-`kind` field.
+(mediator, webvh-control, webvh-daemon, webvh-server, app, etc.); each
+template declares its kind in the `kind` field.
 
 ## Authorization claims between VTA and integrations use VC/VP format
 
@@ -145,13 +165,21 @@ Apply to any wire form where "this came from a trusted source" is a
 precondition for subsequent work. Don't paper over with a `verified:
 bool` field; use the type system.
 
-Reference implementation: `verify_producer_assertion_with_pubkey`
-(`vta-sdk/src/sealed_transfer/verify.rs`) returns
-`Result<VerifiedAssertion<'a>, _>` with `DidSignedVerified`,
-`PinnedOnlyAcknowledged`, and `AttestedNeedsNitroCheck` variants.
-Callers must match exhaustively, and the `Attested` arm explicitly
-demands a follow-up `verify_nitro_assertion` call. Use this shape when
-fixing the offenders above.
+Reference implementations:
+- `verify_producer_assertion_with_pubkey`
+  (`vta-sdk/src/sealed_transfer/verify.rs`) returns
+  `Result<VerifiedAssertion<'a>, _>` with `DidSignedVerified`,
+  `PinnedOnlyAcknowledged`, and `AttestedNeedsNitroCheck` variants.
+  Callers must match exhaustively, and the `Attested` arm
+  explicitly demands a follow-up `verify_nitro_assertion` call.
+- `verify_vta_authorization_credential`
+  (`vta-sdk/src/provision_integration/`) returns
+  `Result<VerifiedAuthorizationCredential, _>`. The verified type
+  carries the eagerly-parsed claim — forgetting to read the claim
+  no longer means re-running verification, and forgetting to verify
+  before reading is a compile error.
+
+Use these shapes when adding new wire forms.
 
 ## Sealed-transfer is the only secret-bearing wire format
 
@@ -212,6 +240,20 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **Code**: `pnm-cli/src/setup.rs`, `vta-service/src/main.rs` (`import-did`).
 - **Docs**: `docs/02-operating/cold-start.md` §3–6.
 
+### Deferred VTA-DID setup (non-TEE)
+- **What**: Mint the PNM admin `did:key` *before* the VTA exists, so
+  Terraform / scripted provisioners can bake the admin DID into the
+  VTA's `admin_did` field before booting it.
+- **Flow**: `pnm setup --name <slug>` phase 1 emits the temp DID to
+  stdout (interactive) or as JSON (non-interactive) and persists the
+  ephemeral seed under `~/.config/{pnm,cnm}/pending-vtas/<slug>/` →
+  operator pastes that DID into the VTA's `admin_did` and boots →
+  `pnm setup continue <slug> --vta-did <did>` finishes the handshake
+  using the same ephemeral key. Multiple concurrent pending VTAs are
+  allowed (distinct slugs).
+- **Code**: `pnm-cli/src/setup.rs` (phase 1 + `continue` subcommand).
+- **Docs**: `docs/05-design-notes/pnm-setup-deferred-vta-did.md`.
+
 ### TEE Mode B bootstrap (attested first-boot)
 - **What**: One-command admin provisioning against a fresh Nitro-Enclave VTA.
 - **Entry point**: `pnm bootstrap connect --vta-url <url>`.
@@ -263,6 +305,47 @@ new flow, update both this section and the relevant `docs/*.md`.
   `vta-sdk/src/provision_integration/`,
   `vta-service/src/routes/bootstrap.rs:provision_integration`.
 - **Docs**: `docs/03-integrating/provision-integration.md`.
+
+### DIDComm protocol management
+- **What**: Enable, disable, or migrate the DIDComm protocol surface
+  on a *running* VTA without rebuilding it, re-issuing admin
+  credentials, or rotating verification keys. Each operation
+  publishes a new WebVH LogEntry; `verificationMethod` stays
+  byte-identical before and after.
+- **Operator commands**:
+  - `pnm services {enable,disable} didcomm` — flip the protocol
+    surface on/off (REST-only; `enable` needs the operator to
+    declare the mediator DID).
+  - `pnm mediator {migrate,rollback,drain cancel,report}` — change
+    or roll back the active mediator; cancel an in-progress drain;
+    pull the per-mediator inbound counts + per-sender last-seen
+    mediator from the telemetry sink.
+- **Drain mechanics**: mediator changes go through a fjall-persisted
+  drain set with a 30-day TTL cap. In-flight messages from senders
+  with stale DID-doc caches keep landing while the new mediator
+  picks up traffic. State is restart-resilient — boot replays
+  outstanding drain timers via `DrainSweeper`.
+- **Handshake**: `migrate`/`rollback` use a *live*
+  `DIDCommServiceProver` against the running service; first-enable
+  spins up a transient `DIDCommService` just for the round-trip and
+  tears it down regardless of outcome (`messaging::transient_handshake`).
+- **Telemetry**: pluggable `vti_common::telemetry::TelemetrySink`
+  trait; default impl is a 10k-event ring buffer
+  (`RingBufferTelemetry`). The swappability test in
+  `vti-common/src/telemetry/mod.rs::swappability_tests` defines the
+  contract for alternate impls.
+- **Transport**: all five admin operations are available over both
+  REST and DIDComm (`enable_didcomm` is REST-only by nature). DIDComm
+  message types live at
+  `vta_sdk::protocols::protocol_management`; route handlers at
+  `vta-service/src/messaging/handlers_protocol.rs`.
+- **Code**: `vta-service/src/operations/protocol/*`,
+  `vta-service/src/messaging/{registry,drain_store,drain_sweeper,handshake,live_prover,transient_handshake}.rs`,
+  `vta-service/src/routes/protocol.rs`,
+  `vta_sdk::protocol`, `vta_cli_common::commands::{services,mediator}`.
+- **Docs**: `docs/03-integrating/didcomm-protocol-management.md`
+  (operator guide), `docs/05-design-notes/didcomm-protocol-management.md`
+  (design notes).
 
 ### Sealed-transfer envelope format
 - **Inner**: CBOR-serialized `SealedPayloadV1` enum variant.
@@ -335,8 +418,10 @@ These are load-bearing — know they exist before adjusting nearby code.
 When bumping crate versions in this Rust workspace, always check and bump
 dependent sub-crate versions too. Use `major.minor` version pinning (not
 `major.minor.patch`) for internal dependencies. Exception: crypto deps
-(`ed25519-dalek`, `hpke`, `jsonwebtoken`, `rsa`, `aes-gcm`) should pin to
-a minimum patch to avoid silent regressions when a CVE lands.
+(`ed25519-dalek`, `hpke`, `jsonwebtoken`, `aes-gcm`, `aws-lc-rs`) should
+pin to a minimum patch to avoid silent regressions when a CVE lands.
+The legacy `rsa` crate was replaced with `aws-lc-rs` in 0.5 for KMS CMS
+unwrap (drops RUSTSEC-2023-0071 exposure); don't reintroduce `rsa`.
 
 ## Commit hygiene
 
