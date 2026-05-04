@@ -8,21 +8,24 @@
 //! 1. Precondition checks — caller is admin of the target context;
 //!    context exists; template registered.
 //! 2. Orchestrate key minting + template rendering via
-//!    [`super::did_webvh::create_did_webvh`] — it already handles the
+//!    `super::did_webvh::create_did_webvh` — it already handles the
 //!    mint-keys, render-template, build-log, publish-if-not-serverless
 //!    flow end-to-end.
 //! 3. Read back the minted private key material via
-//!    [`super::keys::get_key_secret`] for inclusion in the sealed bundle.
+//!    `super::keys::get_key_secret` for inclusion in the sealed bundle.
 //! 4. Register the holder (`client_did`) as admin of the target context
-//!    via [`super::acl::create_acl`].
-//! 5. Build + sign a [`VtaAuthorizationCredential`] using the VTA's
-//!    `{vta_did}#key-0` signing key (see [`load_vta_vc_issuance_secret`]).
-//! 6. Assemble the [`TemplateBootstrapPayload`] and seal it to the
-//!    holder's X25519 (derived from `client_did`) via
-//!    `sealed_transfer::seal_payload`. Producer assertion is
+//!    via `super::acl::create_acl`.
+//! 5. Build + sign a `VtaAuthorizationCredential` (the VC type tag the
+//!    VTA issues; see [`vta_sdk::provision_integration::credential`])
+//!    using the VTA's `{vta_did}#key-0` signing key (see
+//!    `vta_keys::load_vta_vc_issuance_secret`).
+//! 6. Assemble the [`TemplateBootstrapPayload`](vta_sdk::provision_integration::TemplateBootstrapPayload)
+//!    and seal it to the holder's X25519 (derived from `client_did`)
+//!    via `sealed_transfer::seal_payload`. Producer assertion is
 //!    `DidSigned` by `{vta_did}#sealed-transfer-0` (a purpose-specific
 //!    key, distinct from `#key-0`) unless the caller overrides to
-//!    `PinnedOnly` via [`AssertionMode`] (dev-only escape hatch).
+//!    `PinnedOnly` via [`AssertionMode`](crate::operations::provision_integration::AssertionMode)
+//!    (dev-only escape hatch).
 //! 7. Armor and return, plus a summary for the CLI/HTTP response.
 //!
 //! Everything persistent (admin ACL row, minted key records, webvh log
@@ -80,7 +83,8 @@ use vta_sdk::sealed_transfer::{
 pub enum AssertionMode {
     /// Sign the producer assertion with the VTA's purpose-specific
     /// `{vta_did}#sealed-transfer-0` key. Default for production.
-    /// See [`load_vta_sealed_transfer_secret`].
+    /// See `vta_keys::load_vta_sealed_transfer_secret` (private to the
+    /// `provision_integration` module).
     #[default]
     DidSigned,
     /// No in-band signature — consumer relies purely on the out-of-band
@@ -144,7 +148,7 @@ pub struct ProvisionIntegrationParams {
     /// See [`AssertionMode`].
     pub assertion_mode: AssertionMode,
     /// Override for the VC's `validUntil` window. Defaults to 1 hour
-    /// per [`DEFAULT_VALIDITY`].
+    /// per [`vta_sdk::provision_integration::credential::DEFAULT_VALIDITY`].
     pub vc_validity: Option<Duration>,
 }
 

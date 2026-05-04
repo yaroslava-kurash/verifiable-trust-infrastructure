@@ -5,9 +5,10 @@
 //! may then import a private key via one of two paths:
 //!
 //! - **Sealed transfer (preferred)** — client seals a
-//!   [`SealedPayloadV1::RawPrivateKey`] to the wrapping pubkey using HPKE
-//!   via `vta_sdk::sealed_transfer`, sends the armored bundle. Server opens
-//!   it with [`WrappingKeyCache::unwrap_sealed`].
+//!   [`SealedPayloadV1::RawPrivateKey`](vta_sdk::sealed_transfer::SealedPayloadV1)
+//!   to the wrapping pubkey using HPKE via `vta_sdk::sealed_transfer`, sends
+//!   the armored bundle. Server opens it with
+//!   [`WrappingKeyCache::unwrap_sealed`].
 //! - **Legacy JWE** — historical compact ECDH-ES + AES-GCM format. Retained
 //!   only so in-flight clients keep working; new code should use the
 //!   sealed-transfer path.

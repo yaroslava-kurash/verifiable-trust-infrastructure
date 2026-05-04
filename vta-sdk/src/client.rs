@@ -1260,7 +1260,8 @@ impl VtaClient {
         Ok(secrets)
     }
 
-    /// Fetch all secrets for a context as a portable [`DidSecretsBundle`].
+    /// Fetch all secrets for a context as a portable
+    /// [`DidSecretsBundle`](crate::did_secrets::DidSecretsBundle).
     ///
     /// Resolves the context DID, paginates through all active keys,
     /// fetches each secret, and returns a bundle ready for encoding/transport.

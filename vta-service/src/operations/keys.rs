@@ -622,8 +622,9 @@ pub async fn get_key_secret(
 /// The user-facing caller has already been authorised upstream as a
 /// context admin at precondition time.
 ///
-/// Construction of [`InternalAuthority`] is `pub(super)` to the
-/// `operations` module — route handlers cannot reach it. Each elevation
+/// Construction of [`InternalAuthority`](super::internal_authority::InternalAuthority)
+/// is `pub(super)` to the `operations` module — route handlers cannot
+/// reach it. Each elevation
 /// thus has to come from the operations layer with an explicit purpose
 /// tag, which is logged as the audit actor.
 pub async fn get_key_secret_internal(

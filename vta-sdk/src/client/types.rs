@@ -134,7 +134,7 @@ pub struct WrappingKeyResponse {
 
 // ── Context types ───────────────────────────────────────────────────
 
-/// Request body for [`VtaClient::create_context`].
+/// Request body for [`super::VtaClient::create_context`].
 ///
 /// This is the ergonomic **client-side** shape — use the `.new(id, name)`
 /// constructor plus the `.description(...)` builder for the common case.

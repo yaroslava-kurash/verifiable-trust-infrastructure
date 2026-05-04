@@ -20,7 +20,7 @@
 //!    every `_super_admin` call to confirm intent.
 //!
 //! [`InternalAuthority`] replaces that pattern with a sealed marker
-//! type. The constructor [`InternalAuthority::new`] is `pub(super)`, so
+//! type. The constructor `InternalAuthority::new` is `pub(super)`, so
 //! only sibling modules under `crate::operations::*` can construct one.
 //! Route handlers (`crate::routes::*`) cannot. Operations that previously
 //! took `&AuthClaims` and synthesised a super-admin claim now take an
@@ -29,7 +29,7 @@
 
 /// Marker type proving the caller is an operations-layer internal step.
 ///
-/// Construct via [`InternalAuthority::new`], which is `pub(super)` so
+/// Construct via `InternalAuthority::new`, which is `pub(super)` so
 /// only `crate::operations::*` siblings can instantiate. Carries a
 /// purpose tag for audit logging.
 ///

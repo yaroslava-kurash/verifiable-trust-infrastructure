@@ -73,7 +73,7 @@
 //! * [`session`] — credential storage, login, refresh-token rotation
 //! * [`sealed_transfer`] — HPKE envelope (seal/open/armor/verify)
 //! * [`provision_integration`] — VP/VC bootstrap flow + typestate verifier
-//! * [`integration`] — service-startup pull pattern with offline-cache resilience
+//! * `integration` (feature-gated) — service-startup pull pattern with offline-cache resilience
 //! * [`did_templates`] — render-side helpers for the VTA's template registry
 //! * [`error`] — [`error::VtaError`] (typed, HTTP-aware, DIDComm-aware)
 

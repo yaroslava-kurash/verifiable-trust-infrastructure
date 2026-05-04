@@ -477,7 +477,7 @@ enum BackupCommands {
         /// Include audit logs in the backup
         #[arg(long)]
         include_audit: bool,
-        /// Output file path (default: vta-backup-<timestamp>.vtabak)
+        /// Output file path (default: `vta-backup-<timestamp>.vtabak`)
         #[arg(short, long)]
         output: Option<std::path::PathBuf>,
     },

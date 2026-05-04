@@ -92,13 +92,13 @@ pub fn verify_did_signed_assertion_with_pubkey(
 /// [`verify_producer_assertion_with_pubkey`], so holding one is
 /// evidence of (at least) a successful dispatch.
 ///
-/// [`DidSignedVerified`] carries a fully-verified Ed25519 signature.
-/// [`PinnedOnlyAcknowledged`] is a receipt that the caller accepted a
-/// bundle whose only integrity anchor is the out-of-band digest —
+/// [`Self::DidSignedVerified`] carries a fully-verified Ed25519 signature.
+/// [`Self::PinnedOnlyAcknowledged`] is a receipt that the caller accepted
+/// a bundle whose only integrity anchor is the out-of-band digest —
 /// they must have verified that digest separately; this type does not
 /// prove it.
-/// [`AttestedNeedsNitroCheck`] is an explicit demand on the caller to
-/// invoke Nitro attestation verification (see
+/// [`Self::AttestedNeedsNitroCheck`] is an explicit demand on the caller
+/// to invoke Nitro attestation verification (see
 /// [`crate::attestation::verify_nitro_assertion`] under the
 /// `attest-verify` feature). It is **not** a verification success.
 #[derive(Debug)]

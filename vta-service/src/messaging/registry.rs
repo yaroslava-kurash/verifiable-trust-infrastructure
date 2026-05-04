@@ -35,12 +35,13 @@
 //! Responses to inbound requests are sent back through the listener
 //! they arrived on (the upstream library does this naturally for
 //! handler-returned responses). For VTA-initiated outbound calls,
-//! [`Self::active_listener_id`] returns the active mediator DID.
+//! [`MediatorListenerRegistry::active_listener_id`] returns the
+//! active mediator DID.
 //!
 //! When the active mediator is momentarily disconnected, callers
-//! enqueue via [`Self::buffer_outbound`]; the registry retries on
-//! reconnect, bounded by the mediator's drain deadline. On overflow
-//! or expiry, the response is dropped and a
+//! enqueue via [`MediatorListenerRegistry::buffer_outbound`]; the
+//! registry retries on reconnect, bounded by the mediator's drain
+//! deadline. On overflow or expiry, the response is dropped and a
 //! [`TelemetryKind::DidcommResponseDropped`] event is recorded.
 
 use std::collections::{HashMap, VecDeque};

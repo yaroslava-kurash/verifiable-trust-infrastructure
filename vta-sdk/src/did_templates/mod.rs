@@ -15,7 +15,7 @@
 //! Templates live in one of three scopes:
 //!
 //! - **Built-in** — embedded in this crate at compile time. Always available.
-//!   Load via [`DidTemplate::load_embedded`].
+//!   Load via [`builtin::load_embedded`].
 //! - **Global** (VTA-stored) — super-admin-managed, visible across all
 //!   contexts on a given VTA. Managed via REST routes in Phase 2.
 //! - **Context** (VTA-stored) — context-admin-managed, visible only within
@@ -155,7 +155,7 @@ impl DidTemplate {
         render::render(self, vars)
     }
 
-    /// Structural + semantic lint. Called automatically by [`from_json`].
+    /// Structural + semantic lint. Called automatically by [`Self::from_json`].
     pub fn validate(&self) -> Result<(), TemplateError> {
         validate::validate(self)
     }

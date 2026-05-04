@@ -6,9 +6,11 @@
 //! work end-to-end with the current crate versions.
 //!
 //! Usage:
-//!   cargo run --package didcomm-test -- --mediator-did <DID>
-//!   cargo run --package didcomm-test -- --mediator-did <DID> --resolver-url ws://localhost:4445/did/v1/ws
-//!   cargo run --package didcomm-test -- --mediator-did <DID> --seed-hex <64-hex-chars>
+//! ```text
+//! cargo run --package didcomm-test -- --mediator-did <DID>
+//! cargo run --package didcomm-test -- --mediator-did <DID> --resolver-url ws://localhost:4445/did/v1/ws
+//! cargo run --package didcomm-test -- --mediator-did <DID> --seed-hex <64-hex-chars>
+//! ```
 
 use std::sync::Arc;
 use std::time::Duration;

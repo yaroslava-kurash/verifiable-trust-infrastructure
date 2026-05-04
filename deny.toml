@@ -45,6 +45,46 @@ ignore = [
 
   Drop when AWS SDK retires the rustls 0.21 code path.
   """ },
+
+  { id = "RUSTSEC-2023-0071", reason = """
+  rsa 0.9.x: Marvin Attack — potential key recovery through timing
+  sidechannels in RSA decryption. Pulled transitively by
+  jsonwebtoken 10.3.0; no other path through our graph.
+
+  Not exploitable in our code. JWT verification only checks
+  signatures, never decrypts. Our access tokens use EdDSA
+  (Ed25519), not RSA — the rsa code path is dead in our build.
+  Our only RSA decryption is the KMS CMS unwrap on the Nitro
+  attested bootstrap path, which we deliberately migrated to
+  `aws-lc-rs` in 0.5 specifically to drop this exposure.
+
+  Drop when jsonwebtoken stops depending on `rsa`, or when the
+  `rsa` crate ships a constant-time implementation.
+  """ },
+
+  { id = "RUSTSEC-2024-0370", reason = """
+  proc-macro-error 1.0.4 is unmaintained. Build-time-only proc
+  macro library; no runtime presence. Pulled transitively via
+  linked-data-derive → linked-data → json-ld → ssi-json-ld →
+  ssi-claims-core → ssi-dids-core → affinidi-did-resolver-cache-sdk.
+  We do not execute proc-macro-error code at runtime; the lint is
+  for code-hygiene, not a vulnerability.
+
+  Drop when the upstream ssi-* / json-ld stack migrates to
+  proc-macro-error2 or syn 2 native error handling.
+  """ },
+
+  { id = "RUSTSEC-2021-0127", reason = """
+  serde_cbor 0.11.x is unmaintained. Used only by
+  aws-nitro-enclaves-nsm-api for parsing Nitro attestation
+  documents (COSE_Sign1 envelope). The attestation parser is
+  read-only against quotes signed by the AWS Nitro PKI; the
+  attack surface is "AWS infrastructure produces a malicious
+  CBOR quote", which is well outside our threat model.
+
+  Drop when aws-nitro-enclaves-nsm-api migrates to ciborium (or
+  a maintained CBOR library).
+  """ },
 ]
 
 # License policy. Allow-list is derived from the actual licenses present

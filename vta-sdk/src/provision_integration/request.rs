@@ -87,7 +87,8 @@ pub enum BootstrapAsk {
     /// integration DID via `template`, optionally rotates the admin DID
     /// to a fresh `admin_template`-derived identity, and ships both
     /// (plus the integration DID's keys, did.jsonl, VC, trust bundle)
-    /// in a [`SealedPayloadV1::TemplateBootstrap`] bundle.
+    /// in a [`SealedPayloadV1::TemplateBootstrap`](crate::sealed_transfer::SealedPayloadV1)
+    /// bundle.
     TemplateBootstrap(TemplateBootstrapAsk),
     /// Admin-DID rotation only — no integration DID minted. The VTA
     /// renders `admin_template`, mints a fresh long-term admin DID,
@@ -635,7 +636,8 @@ impl ProvisionRequestBuilder {
     /// (addressed by `bundle_id`) somewhere retrievable at bundle-open
     /// time.
     ///
-    /// The HPKE recipient secret used by [`sealed_transfer::open_bundle`]
+    /// The HPKE recipient secret used by
+    /// [`sealed_transfer::open_bundle`](crate::sealed_transfer::open_bundle)
     /// derives from this seed via
     /// [`sealed_transfer::ed25519_seed_to_x25519_secret`][crate::sealed_transfer::ed25519_seed_to_x25519_secret].
     pub async fn sign_ephemeral(self) -> Result<SignedEphemeralRequest, ProvisionIntegrationError> {

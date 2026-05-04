@@ -445,7 +445,7 @@ impl SessionStore {
     /// successful challenge-response triggers an automatic key roll:
     /// a fresh did:key is minted, the VTA ACL entry for the temp DID is
     /// mirrored onto the new DID, the temp DID is removed from the ACL,
-    /// and the session is updated in place. See [`Self::rotate_key`].
+    /// and the session is updated in place. See `rotate_key`.
     pub async fn ensure_authenticated(
         &self,
         base_url: &str,

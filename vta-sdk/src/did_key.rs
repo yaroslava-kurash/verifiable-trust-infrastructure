@@ -114,7 +114,7 @@ impl std::fmt::Display for DidKeyError {
 impl std::error::Error for DidKeyError {}
 
 /// Convert a [`GetKeySecretResponse`](crate::client::GetKeySecretResponse) into
-/// an `affinidi_tdk` [`Secret`].
+/// an `affinidi_tdk` [`Secret`](affinidi_tdk::secrets_resolver::secrets::Secret).
 ///
 /// The response's `private_key_multibase` is a multicodec-prefixed multibase
 /// string (e.g. ed25519-priv `0x8026`). `Secret::from_multibase` handles the

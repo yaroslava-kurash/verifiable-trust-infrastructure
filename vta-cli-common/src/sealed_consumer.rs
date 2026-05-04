@@ -121,7 +121,7 @@ pub fn zero_overwrite_and_remove(path: &Path) -> std::io::Result<()> {
 }
 
 /// The outcome of [`create_bootstrap_request`]: the serialized request body
-/// and the bundle id (for the "secret stored at <path>" banner).
+/// and the bundle id (for the `secret stored at <path>` banner).
 pub struct CreatedRequest {
     pub request: BootstrapRequest,
     pub bundle_id_hex: String,
