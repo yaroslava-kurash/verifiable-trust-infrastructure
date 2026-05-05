@@ -156,43 +156,6 @@ apple-native-keyring-store = { version = "1", default-features = false, features
 windows-native-keyring-store = "1"
 dbus-secret-service-keyring-store = { version = "1", default-features = false, features = ["crypto-rust"] }
 
-
-# DEV: route the published `affinidi-*` crates through the public
-# `affinidi-tdk-rs` repo at a pinned rev, so the e2e test crate
-# (`tests/e2e`) can consume the unpublished
-# `affinidi-messaging-test-mediator` and have its types unify with the
-# rest of our dep graph. The tdk-rs workspace has its own
-# `[patch.crates-io]` table, which Cargo does NOT honor when its crates
-# are consumed from outside — we have to replicate the redirects here.
-#
-# `vta-sdk` is patched to the in-workspace copy because the mediator at
-# this rev pins `vta-sdk = "0.5"`; routing it back to our path makes
-# both copies identify, so types pass through cleanly.
-#
-# Bump `rev` together when the upstream test-mediator API changes.
-# Once `affinidi-messaging-test-mediator` is published to crates.io,
-# this whole block (and the matching `--cfg tracing_unstable` in
-# `.cargo/config.toml`) goes away.
-[patch.crates-io]
-affinidi-crypto = { git = "https://github.com/affinidi/affinidi-tdk-rs.git", rev = "df6b230" }
-affinidi-encoding = { git = "https://github.com/affinidi/affinidi-tdk-rs.git", rev = "df6b230" }
-affinidi-secrets-resolver = { git = "https://github.com/affinidi/affinidi-tdk-rs.git", rev = "df6b230" }
-affinidi-data-integrity = { git = "https://github.com/affinidi/affinidi-tdk-rs.git", rev = "df6b230" }
-affinidi-did-authentication = { git = "https://github.com/affinidi/affinidi-tdk-rs.git", rev = "df6b230" }
-affinidi-did-common = { git = "https://github.com/affinidi/affinidi-tdk-rs.git", rev = "df6b230" }
-affinidi-did-resolver-cache-sdk = { git = "https://github.com/affinidi/affinidi-tdk-rs.git", rev = "df6b230" }
-affinidi-did-web = { git = "https://github.com/affinidi/affinidi-tdk-rs.git", rev = "df6b230" }
-did-scid = { git = "https://github.com/affinidi/affinidi-tdk-rs.git", rev = "df6b230" }
-affinidi-messaging-didcomm = { git = "https://github.com/affinidi/affinidi-tdk-rs.git", rev = "df6b230" }
-affinidi-messaging-didcomm-service = { git = "https://github.com/affinidi/affinidi-tdk-rs.git", rev = "df6b230" }
-affinidi-messaging-mediator = { git = "https://github.com/affinidi/affinidi-tdk-rs.git", rev = "df6b230" }
-affinidi-messaging-mediator-common = { git = "https://github.com/affinidi/affinidi-tdk-rs.git", rev = "df6b230" }
-affinidi-messaging-sdk = { git = "https://github.com/affinidi/affinidi-tdk-rs.git", rev = "df6b230" }
-affinidi-tdk = { git = "https://github.com/affinidi/affinidi-tdk-rs.git", rev = "df6b230" }
-affinidi-tdk-common = { git = "https://github.com/affinidi/affinidi-tdk-rs.git", rev = "df6b230" }
-affinidi-meeting-place = { git = "https://github.com/affinidi/affinidi-tdk-rs.git", rev = "df6b230" }
-vta-sdk = { path = "vta-sdk" }
-
 [profile.release]
 lto = "thin"
 codegen-units = 1
