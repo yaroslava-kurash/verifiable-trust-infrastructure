@@ -327,3 +327,47 @@ pub async fn run_did_log(
     }
     Ok(())
 }
+
+/// Offline equivalent of `pnm webvh register-did` — promote a
+/// serverless WebVH DID to a server-managed one. Operates directly
+/// on the local fjall keystore. The VTA daemon must be stopped
+/// (fjall holds an exclusive lock when the daemon is running).
+pub async fn run_register_did(
+    config_path: Option<PathBuf>,
+    did: String,
+    server: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config = AppConfig::load(config_path)?;
+    let store = Store::open(&config.store)?;
+    let webvh_ks = store.keyspace("webvh")?;
+    let audit_ks = store.keyspace("audit")?;
+    let did_resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build()).await?;
+    let didcomm_bridge: Arc<DIDCommBridge> = Arc::new(DIDCommBridge::placeholder());
+
+    let auth = cli_super_admin();
+    let result = operations::did_webvh::register_did_with_server(
+        &webvh_ks,
+        &audit_ks,
+        &auth,
+        &did_resolver,
+        &didcomm_bridge,
+        operations::did_webvh::RegisterDidWithServerParams {
+            did,
+            server_id: server,
+        },
+        "vta-cli-offline",
+    )
+    .await?;
+    store.persist().await?;
+
+    eprintln!("DID registered with WebVH server.");
+    eprintln!("  DID:         {}", result.did);
+    eprintln!("  Server:      {}", result.server_id);
+    eprintln!("  Log entries: {}", result.log_entry_count);
+    eprintln!();
+    eprintln!(
+        "Future `pnm services …` mutations will auto-publish to `{}`.",
+        result.server_id
+    );
+    Ok(())
+}

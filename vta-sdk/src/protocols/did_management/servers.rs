@@ -39,3 +39,21 @@ pub struct RemoveWebvhServerResultBody {
     pub id: String,
     pub removed: bool,
 }
+
+/// Promote a serverless WebVH DID to a server-managed one. The
+/// target server must already be registered via
+/// [`AddWebvhServerBody`]; the DID's local `did.jsonl` is pushed
+/// to the host and the local record's `server_id` flips from
+/// `"serverless"` to `server_id` so future updates auto-publish.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterDidWithServerBody {
+    pub did: String,
+    pub server_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterDidWithServerResultBody {
+    pub did: String,
+    pub server_id: String,
+    pub log_entry_count: u32,
+}

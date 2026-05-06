@@ -8,6 +8,7 @@
 
 mod document;
 mod lifecycle;
+mod register_server;
 mod servers;
 mod update;
 mod webvh_keys;
@@ -15,6 +16,10 @@ mod webvh_keys;
 pub(crate) use document::build_did_document_with_options;
 pub use document::{build_did_document, build_vta_did_document_with_sealed_transfer};
 pub use lifecycle::{GetDidWebvhLogResult, get_did_webvh, get_did_webvh_log, list_dids_webvh};
+pub use register_server::{
+    RegisterDidWithServerError, RegisterDidWithServerParams, RegisterDidWithServerResult,
+    register_did_with_server,
+};
 pub use servers::{add_webvh_server, list_webvh_servers, remove_webvh_server, update_webvh_server};
 pub use update::{
     RotateDidWebvhKeysOptions, UpdateDidWebvhError, UpdateDidWebvhOptions, UpdateDidWebvhResult,

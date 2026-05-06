@@ -299,6 +299,61 @@ pnm services rest rollback
 #   Effective at:   2026-05-07T15:31:00Z
 ```
 
+## Walkthrough: register a serverless DID with a webvh host
+
+Use case: the VTA was set up serverless (no webvh host configured
+at setup time), so it has a complete `did.jsonl` locally but
+nothing is publishing it. A webvh hosting server has now come
+online and you want the VTA's DID to be served by it without
+re-issuing the DID identifier.
+
+```bash
+# 1. Register the host with the VTA. This validates the host's DID
+#    resolves and advertises a `WebVHHostingService` or
+#    `DIDCommMessaging` endpoint.
+pnm webvh add-server \
+  --id primary \
+  --did did:web:webvh.example.com \
+  --label "primary host"
+
+# 2. Promote the VTA's DID. Pushes the local did.jsonl to the host
+#    and flips `server_id` from "serverless" to "primary".
+pnm webvh register-did \
+  --did did:webvh:abcd1234:webvh.example.com:vta \
+  --server primary
+# DID registered with WebVH server.
+#   DID:        did:webvh:abcd1234:webvh.example.com:vta
+#   Server:     primary
+#   Log entries: 4
+#
+# Future `pnm services …` mutations will auto-publish to `primary`.
+
+# 3. Verify by running any subsequent `services` change — it now
+#    publishes to the host as part of the same operation.
+pnm services rest update --url https://vta.example.com
+# REST URL updated.
+#   New version ID: 5-zQm…
+#   Effective at:   2026-05-07T17:14:00Z
+```
+
+**Refused if already server-managed.** Re-pointing a hosted DID at
+a different host is a separate operation (would need coordinated
+teardown on the old host) and is out of scope for this command.
+
+**Offline equivalent.** When the VTA daemon is stopped, the same
+operation is available on the local binary:
+
+```bash
+vta webvh register-did \
+  --did did:webvh:abcd1234:webvh.example.com:vta \
+  --server primary
+```
+
+The fjall lock applies — fails fast if the daemon is running. TEE
+deployments must use `pnm webvh register-did` against the running
+enclave (the offline path can't reach the vsock store on the
+parent host).
+
 ## Walkthrough: brick-prevention in action
 
 ```bash

@@ -1008,6 +1008,43 @@ impl VtaClient {
         .await
     }
 
+    /// Promote a serverless WebVH DID to a server-managed one.
+    ///
+    /// The target server must already be registered via
+    /// [`Self::add_webvh_server`]. The DID's local `did.jsonl` is
+    /// pushed to the host and the local record's `server_id` flips
+    /// to `server_id` so subsequent `update_did_webvh` calls
+    /// (including the runtime `services` mutations) auto-publish
+    /// there.
+    ///
+    /// Refused if the DID is already server-managed — re-pointing a
+    /// hosted DID at a different server is a separate operation.
+    pub async fn register_did_with_server(
+        &self,
+        did: &str,
+        server_id: &str,
+    ) -> Result<crate::protocols::did_management::servers::RegisterDidWithServerResultBody, VtaError>
+    {
+        let body = crate::protocols::did_management::servers::RegisterDidWithServerBody {
+            did: did.to_string(),
+            server_id: server_id.to_string(),
+        };
+        self.rpc(
+            did_management::REGISTER_DID_WITH_SERVER,
+            serde_json::to_value(&body)?,
+            did_management::REGISTER_DID_WITH_SERVER_RESULT,
+            60,
+            |c, url| {
+                c.post(format!(
+                    "{url}/webvh/dids/{}/register-server",
+                    encode_path_segment(did)
+                ))
+                .json(&body)
+            },
+        )
+        .await
+    }
+
     // ── WebVH DID methods ──────────────────────────────────────────
 
     pub async fn create_did_webvh(

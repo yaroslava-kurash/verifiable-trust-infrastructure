@@ -129,6 +129,31 @@ pub async fn cmd_webvh_server_remove(
     Ok(())
 }
 
+/// `pnm webvh register-did --did <did> --server <id>` —
+/// promote a serverless WebVH DID to a server-managed one.
+///
+/// Pushes the local `did.jsonl` to the host and flips the local
+/// record's `server_id` so future `pnm services …` mutations
+/// auto-publish there. Refused if the DID is already
+/// server-managed (re-pointing a hosted DID is out of scope).
+pub async fn cmd_webvh_did_register_server(
+    client: &VtaClient,
+    did: &str,
+    server_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let result = client.register_did_with_server(did, server_id).await?;
+    println!("DID registered with WebVH server.");
+    println!("  DID:        {}", result.did);
+    println!("  Server:     {}", result.server_id);
+    println!("  Log entries: {}", result.log_entry_count);
+    println!();
+    println!(
+        "Future `pnm services …` mutations will auto-publish to `{}`.",
+        result.server_id
+    );
+    Ok(())
+}
+
 // ── DID commands ────────────────────────────────────────────────────
 
 pub async fn cmd_webvh_did_create(

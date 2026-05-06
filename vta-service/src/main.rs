@@ -640,6 +640,22 @@ enum WebvhCommands {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Register an existing serverless WebVH DID with a registered
+    /// hosting server. Pushes the local `did.jsonl` to the host and
+    /// flips the DID's `server_id` so future updates auto-publish.
+    ///
+    /// Offline equivalent of `pnm webvh register-did`. Operates
+    /// directly on the local fjall keystore — VTA daemon must be
+    /// stopped (fjall holds an exclusive lock when the daemon is
+    /// running).
+    RegisterDid {
+        /// The serverless WebVH DID to promote.
+        #[arg(long)]
+        did: String,
+        /// Registered server id (from `vta webvh add-server`).
+        #[arg(long)]
+        server: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1118,6 +1134,9 @@ async fn main() {
                 }
                 WebvhCommands::DidLog { did, out } => {
                     webvh_cli::run_did_log(cli.config, did, out).await
+                }
+                WebvhCommands::RegisterDid { did, server } => {
+                    webvh_cli::run_register_did(cli.config, did, server).await
                 }
             };
             if let Err(e) = result {
