@@ -412,6 +412,26 @@ new flow, update both this section and the relevant `docs/*.md`.
   doesn't match. Tested at `backup.rs:867-911`.
 - **Code**: `vta-service/src/operations/backup.rs`.
 
+### Promote a serverless DID to a server-managed one
+- **What**: An operator who set up the VTA serverless (no webvh
+  host configured at setup time) decides later they want their
+  DID published to a host. This op pushes the existing local
+  `did.jsonl` to the host and flips the local record's
+  `server_id` from `"serverless"` to the registered server id —
+  the DID identifier is unchanged, so every existing integration
+  keeps working.
+- **Refused if** the DID is already server-managed (re-pointing
+  a hosted DID at a different host needs coordinated teardown on
+  the old host and is out of scope for this op).
+- **CLI**: `pnm webvh register-did --did <did> --server <id>`
+  (online, REST). `vta webvh register-did …` (offline; daemon
+  must be stopped, fjall lock; not available in TEE).
+- **Code**: `vta-service/src/operations/did_webvh/register_server.rs`,
+  `vta-service/src/routes/did_webvh.rs::register_did_with_server_handler`,
+  `vta_sdk::client::VtaClient::register_did_with_server`.
+- **Docs**: `docs/03-integrating/runtime-service-management.md`
+  (walkthrough section).
+
 ### DID template management
 - **Offline**: `pnm did-templates init <kind>`, `validate`, `list-builtins`.
 - **Online**: `pnm did-templates list/show/create/update/delete` →

@@ -1,5 +1,62 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Runtime service management** — operators can now enable, update,
+  disable, or roll back the VTA's advertised REST and DIDComm
+  service entries on a running VTA without rebuilding. Twelve
+  commands across two transport kinds (`pnm services {rest,didcomm}
+  {enable,update,disable,rollback}` plus `pnm services list`,
+  `pnm services didcomm drain {list,cancel}`, `pnm services
+  report`). Each mutation publishes a new WebVH LogEntry;
+  `verificationMethod` is byte-identical before and after. At least
+  one transport must remain advertised at all times — disabling
+  the last one is refused with `LastServiceRefused`, no `--force`.
+  Rollback is fail-forward (appends a new LogEntry that re-applies
+  the prior config; never rewinds the chain). Default drain TTL
+  raised from 1h to 24h, hard cap 30d, 1h floor over DIDComm
+  transport. Reachable from both `pnm` (over REST or DIDComm) and
+  the offline `vta services …` binary on a stopped VTA.
+  See `docs/03-integrating/runtime-service-management.md` for the
+  operator guide and
+  `docs/05-design-notes/runtime-service-management.md` for the
+  spec.
+- **Promote a serverless WebVH DID to a server-managed one** —
+  `pnm webvh register-did --did <did> --server <server-id>` (and
+  the offline `vta webvh register-did …`) push an existing local
+  `did.jsonl` to a registered host and flip `server_id` so future
+  `pnm services …` mutations auto-publish there. Use this when a
+  VTA was set up serverless and a webvh host became available
+  later — the DID identifier is unchanged so existing integrations
+  keep working. Refused if the DID is already server-managed
+  (re-pointing a hosted DID at a different host is a separate
+  operation, out of scope).
+
+### Breaking
+
+- **`pnm mediator …` subcommand surface retired** in favour of
+  the unified `pnm services …` tree. Calling `pnm mediator
+  migrate|rollback|drain|report` prints a copy-pasteable redirect
+  to the equivalent `pnm services …` command and exits 2.
+  Migration map: `pnm mediator migrate --to X` → `pnm services
+  didcomm update --mediator-did X`; `pnm mediator rollback` →
+  `pnm services didcomm rollback`; `pnm mediator drain cancel
+  --mediator-did X` → `pnm services didcomm drain cancel
+  --mediator-did X`; `pnm mediator report` → `pnm services
+  report`. Likewise `pnm services {enable,disable} didcomm` →
+  `pnm services didcomm {enable,disable}`. The `--to` muscle
+  memory is preserved as a clap `visible_alias` on `update`.
+- **DIDComm message-type rename for symmetry**:
+  `services-management/1.0/disable` → `services-management/1.0/
+  didcomm-disable`. Other DIDComm-side ops already followed the
+  `didcomm-{verb}` shape; this aligns the laggard.
+- **Default drain TTL raised from 1h to 24h** when the operator
+  omits `--drain-ttl`. The 1h floor over DIDComm transport is
+  unchanged. Operators who relied on the prior default need to
+  pass `--drain-ttl 3600` explicitly.
+
 ## vta-service 0.5.1 — 2026-05-05
 
 ### Fixed
