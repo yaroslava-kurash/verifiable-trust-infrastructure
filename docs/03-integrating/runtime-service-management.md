@@ -360,6 +360,51 @@ should suggest the fix":
 | `DrainTtlOutOfBounds` | 400 | "Pick a value within [3600s, 30 days]." |
 | `NoPriorMutation` | 409 | "No prior mutation to roll back; use the direct command instead." |
 
+## Offline `vta services …` — operator-host alternative
+
+Every command above has an offline counterpart on the local
+`vta` binary. The shape is identical (`vta services list`,
+`vta services rest enable --url …`, `vta services didcomm
+update --to <did>`, etc.) but the execution model differs:
+
+- **No HTTP**, no operator authentication ceremony.
+- **Direct fjall access** — opens the local data directory and
+  calls the operation functions in-process.
+- **Filesystem access is the security boundary** — same model
+  as `vta acl …`, `vta keys …`, `vta contexts …`. Anyone with
+  read/write access to the data dir can run these.
+
+### Don't run while the VTA daemon is running
+
+fjall takes an exclusive file lock when the running VTA opens
+its data directory. Offline `vta services` will fail to open
+the store with a clear error pointing the operator at `pnm
+services` against the live VTA. This protects against
+split-brain corruption on disk; the cost is that `vta services`
+mutations require stopping the daemon first (which most
+operators won't want to do — `pnm services` is the canonical
+path for live-VTA changes).
+
+### Not for TEE deployments
+
+Inside a Nitro Enclave the VTA's fjall store lives behind a
+vsock proxy; the offline `vta` binary on the parent host has no
+access to it. Same constraint applies to every other `vta`
+offline command (acl, keys, contexts, webvh) — operators
+running TEE always use `pnm services …` against the VTA's
+HTTPS endpoint.
+
+### When `vta services` is useful
+
+- Cold-start setup before the daemon ever runs (e.g. publishing
+  a REST URL for an air-gapped VTA before it boots).
+- Recovery / forensics on a stopped VTA.
+- Test environments where spinning up the full daemon is
+  overkill.
+
+For day-to-day service management against a running VTA, prefer
+`pnm services …`.
+
 ## Spec references
 
 - §3.2 — at-least-one-service brick-prevention invariant

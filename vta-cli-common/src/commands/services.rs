@@ -25,7 +25,7 @@ use vta_sdk::protocol::{DisableDidcommRequest, EnableDidcommRequest, UpdateDidco
 
 /// `pnm services list` — show current REST + DIDComm advertisements.
 pub async fn cmd_services_list(client: &VtaClient) -> Result<(), Box<dyn std::error::Error>> {
-    let response = client.list_services().await.map_err(|e| format!("{e}"))?;
+    let response = client.list_services().await?;
 
     println!("Services advertised on this VTA's DID document:");
     println!();
@@ -64,7 +64,7 @@ pub async fn cmd_services_rest_enable(
     url: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let req = EnableRestRequest::new(url);
-    let resp = client.enable_rest(req).await.map_err(|e| format!("{e}"))?;
+    let resp = client.enable_rest(req).await?;
     println!("REST enabled.");
     println!("  New version ID: {}", resp.log_entry_version_id);
     println!("  Effective at:   {}", resp.effective_at);
@@ -76,7 +76,7 @@ pub async fn cmd_services_rest_update(
     url: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let req = UpdateRestRequest::new(url);
-    let resp = client.update_rest(req).await.map_err(|e| format!("{e}"))?;
+    let resp = client.update_rest(req).await?;
     println!("REST URL updated.");
     println!("  New version ID: {}", resp.log_entry_version_id);
     println!("  Effective at:   {}", resp.effective_at);
@@ -86,10 +86,7 @@ pub async fn cmd_services_rest_update(
 pub async fn cmd_services_rest_disable(
     client: &VtaClient,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let resp = client
-        .disable_rest(DisableRestRequest::default())
-        .await
-        .map_err(|e| format!("{e}"))?;
+    let resp = client.disable_rest(DisableRestRequest::default()).await?;
     println!("REST disabled.");
     println!("  New version ID: {}", resp.log_entry_version_id);
     println!("  Effective at:   {}", resp.effective_at);
@@ -99,10 +96,7 @@ pub async fn cmd_services_rest_disable(
 pub async fn cmd_services_rest_rollback(
     client: &VtaClient,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let resp = client
-        .rollback_rest(RollbackRestRequest::default())
-        .await
-        .map_err(|e| format!("{e}"))?;
+    let resp = client.rollback_rest(RollbackRestRequest::default()).await?;
     print_rollback_result("REST", &resp);
     Ok(())
 }
@@ -118,10 +112,7 @@ pub async fn cmd_services_didcomm_enable(
     let mut req = EnableDidcommRequest::new(&mediator_did);
     req.force = force;
     req.handshake_timeout_secs = handshake_timeout_secs;
-    let resp = client
-        .enable_didcomm(req)
-        .await
-        .map_err(|e| format!("{e}"))?;
+    let resp = client.enable_didcomm(req).await?;
     println!("DIDComm enabled.");
     println!("  Mediator DID:   {}", resp.mediator_did);
     if !resp.mediator_endpoint.is_empty() {
@@ -145,10 +136,7 @@ pub async fn cmd_services_didcomm_update(
     let mut req = UpdateDidcommRequest::new(&new_mediator_did, drain_ttl_secs);
     req.force = force;
     req.handshake_timeout_secs = handshake_timeout_secs;
-    let resp = client
-        .update_didcomm(req)
-        .await
-        .map_err(|e| format!("{e}"))?;
+    let resp = client.update_didcomm(req).await?;
     println!("DIDComm mediator updated.");
     println!("  Prior mediator:  {}", resp.prior_mediator_did);
     println!("  Active mediator: {}", resp.active_mediator_did);
@@ -168,10 +156,7 @@ pub async fn cmd_services_didcomm_disable(
     drain_ttl_secs: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let req = DisableDidcommRequest::new(drain_ttl_secs);
-    let resp = client
-        .disable_didcomm(req)
-        .await
-        .map_err(|e| format!("{e}"))?;
+    let resp = client.disable_didcomm(req).await?;
     println!("DIDComm disabled.");
     println!("  Prior mediator: {}", resp.prior_mediator_did);
     println!("  New version ID: {}", resp.new_version_id);
@@ -195,10 +180,7 @@ pub async fn cmd_services_didcomm_rollback(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut req = RollbackDidcommRequest::default();
     req.drain_ttl_secs = drain_ttl_secs;
-    let resp = client
-        .rollback_didcomm(req)
-        .await
-        .map_err(|e| format!("{e}"))?;
+    let resp = client.rollback_didcomm(req).await?;
     print_rollback_result("DIDComm", &resp);
     Ok(())
 }
@@ -208,7 +190,7 @@ pub async fn cmd_services_didcomm_rollback(
 pub async fn cmd_services_didcomm_drain_list(
     client: &VtaClient,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let resp = client.list_drain().await.map_err(|e| format!("{e}"))?;
+    let resp = client.list_drain().await?;
     if resp.entries.is_empty() {
         println!("No mediators currently in drain.");
         return Ok(());
@@ -233,7 +215,7 @@ pub async fn cmd_services_didcomm_drain_cancel(
     mediator_did: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let req = vta_sdk::protocol::DrainCancelRequest { mediator_did };
-    let resp = client.drain_cancel(req).await.map_err(|e| format!("{e}"))?;
+    let resp = client.drain_cancel(req).await?;
     println!("Drain cancelled for {}.", resp.mediator_did);
     println!("  Listener was torn down immediately.");
     Ok(())
@@ -249,8 +231,7 @@ pub async fn cmd_services_report(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let report = client
         .mediator_report(since.as_deref(), until.as_deref())
-        .await
-        .map_err(|e| format!("{e}"))?;
+        .await?;
 
     match format {
         ReportFormat::Json => {

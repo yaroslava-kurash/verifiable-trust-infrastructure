@@ -372,7 +372,10 @@ new flow, update both this section and the relevant `docs/*.md`.
   `vta-service/src/routes/protocol.rs`,
   `vta_sdk::protocol::{mod,services}`,
   `vta_cli_common::commands::services` (the `mediator`
-  submodule was deleted in P5).
+  submodule was deleted in P5),
+  `vta-service/src/services_cli.rs` (the offline
+  `vta services …` surface — direct fjall access, no auth
+  ceremony, not for TEE deployments).
 - **Docs**: `docs/03-integrating/runtime-service-management.md`
   (operator guide), `docs/05-design-notes/runtime-service-management.md`
   (spec). The earlier `didcomm-protocol-management.md` docs in

@@ -6,6 +6,7 @@ mod did_key;
 mod did_webvh;
 mod import_did;
 mod keys_cli;
+mod services_cli;
 #[cfg(feature = "setup")]
 mod setup;
 #[cfg(feature = "webvh")]
@@ -157,6 +158,29 @@ enum Commands {
     Bootstrap {
         #[command(subcommand)]
         command: BootstrapCommands,
+    },
+    /// Manage the VTA's advertised transport services offline.
+    ///
+    /// Mirrors the `pnm services …` surface but operates directly
+    /// on the local fjall keystore — no HTTP, no auth ceremony,
+    /// no running VTA required. Filesystem access to the data
+    /// directory is the security boundary (same model as
+    /// `vta acl …`, `vta keys …`, etc.).
+    ///
+    /// **Not for TEE deployments.** Inside a Nitro Enclave the VTA's
+    /// fjall store lives behind a vsock proxy; the offline `vta`
+    /// binary on the parent has no access. Use `pnm services …`
+    /// against the running VTA instead.
+    ///
+    /// **Don't run while the VTA daemon is running.** fjall's file
+    /// lock will reject the open if the daemon holds it, so
+    /// concurrent corruption is impossible — but offline writes
+    /// won't be picked up until the daemon restarts. Prefer
+    /// `pnm services` against the live VTA when both are available.
+    #[cfg(feature = "webvh")]
+    Services {
+        #[command(subcommand)]
+        command: ServicesCommands,
     },
 }
 
@@ -668,6 +692,98 @@ enum AclCommands {
     },
 }
 
+// ── `vta services …` offline subcommand surface (mirrors `pnm
+//    services …` from spec §5.1) ────────────────────────────────
+
+#[cfg(feature = "webvh")]
+#[derive(Subcommand)]
+enum ServicesCommands {
+    /// Show currently-advertised transport services.
+    List,
+    /// Manage REST advertisement.
+    Rest {
+        #[command(subcommand)]
+        command: RestCommands,
+    },
+    /// Manage DIDComm advertisement.
+    Didcomm {
+        #[command(subcommand)]
+        command: DidcommCommands,
+    },
+    /// Show inbound-message attribution by mediator and sender.
+    /// Note: the offline binary's telemetry sink is fresh per
+    /// invocation, so the report is empty by design — for the
+    /// running VTA's full record use `pnm services report`.
+    Report {
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long)]
+        until: Option<String>,
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
+}
+
+#[cfg(feature = "webvh")]
+#[derive(Subcommand)]
+enum RestCommands {
+    Enable {
+        #[arg(long)]
+        url: String,
+    },
+    Update {
+        #[arg(long)]
+        url: String,
+    },
+    Disable,
+    Rollback,
+}
+
+#[cfg(feature = "webvh")]
+#[derive(Subcommand)]
+enum DidcommCommands {
+    Enable {
+        #[arg(long)]
+        mediator_did: String,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        handshake_timeout: Option<u64>,
+    },
+    Update {
+        #[arg(long = "mediator-did", visible_alias = "to")]
+        new_mediator_did: String,
+        #[arg(long, default_value_t = 86_400)]
+        drain_ttl: u64,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        handshake_timeout: Option<u64>,
+    },
+    Disable {
+        #[arg(long, default_value_t = 86_400)]
+        drain_ttl: u64,
+    },
+    Rollback {
+        #[arg(long)]
+        drain_ttl: Option<u64>,
+    },
+    Drain {
+        #[command(subcommand)]
+        command: DrainCommands,
+    },
+}
+
+#[cfg(feature = "webvh")]
+#[derive(Subcommand)]
+enum DrainCommands {
+    List,
+    Cancel {
+        #[arg(long)]
+        mediator_did: String,
+    },
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -1082,6 +1198,105 @@ async fn main() {
             };
             if let Err(e) = result {
                 eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        #[cfg(feature = "webvh")]
+        Some(Commands::Services { command }) => {
+            // SEALED CHECK: every service mutation modifies the
+            // VTA's state on disk + publishes a new LogEntry.
+            // List/report/drain-list are read-only and skip the
+            // check.
+            match &command {
+                ServicesCommands::List
+                | ServicesCommands::Report { .. }
+                | ServicesCommands::Didcomm {
+                    command:
+                        DidcommCommands::Drain {
+                            command: DrainCommands::List,
+                        },
+                } => {}
+                _ => check_seal(&cli.config).await,
+            }
+            let result = match command {
+                ServicesCommands::List => services_cli::run_services_list(cli.config).await,
+                ServicesCommands::Rest { command } => match command {
+                    RestCommands::Enable { url } => {
+                        services_cli::run_services_rest_enable(cli.config, url).await
+                    }
+                    RestCommands::Update { url } => {
+                        services_cli::run_services_rest_update(cli.config, url).await
+                    }
+                    RestCommands::Disable => {
+                        services_cli::run_services_rest_disable(cli.config).await
+                    }
+                    RestCommands::Rollback => {
+                        services_cli::run_services_rest_rollback(cli.config).await
+                    }
+                },
+                ServicesCommands::Didcomm { command } => match command {
+                    DidcommCommands::Enable {
+                        mediator_did,
+                        force,
+                        handshake_timeout,
+                    } => {
+                        services_cli::run_services_didcomm_enable(
+                            cli.config,
+                            mediator_did,
+                            force,
+                            handshake_timeout,
+                        )
+                        .await
+                    }
+                    DidcommCommands::Update {
+                        new_mediator_did,
+                        drain_ttl,
+                        force,
+                        handshake_timeout,
+                    } => {
+                        services_cli::run_services_didcomm_update(
+                            cli.config,
+                            new_mediator_did,
+                            drain_ttl,
+                            force,
+                            handshake_timeout,
+                        )
+                        .await
+                    }
+                    DidcommCommands::Disable { drain_ttl } => {
+                        services_cli::run_services_didcomm_disable(cli.config, drain_ttl).await
+                    }
+                    DidcommCommands::Rollback { drain_ttl } => {
+                        services_cli::run_services_didcomm_rollback(cli.config, drain_ttl).await
+                    }
+                    DidcommCommands::Drain { command } => match command {
+                        DrainCommands::List => {
+                            services_cli::run_services_didcomm_drain_list(cli.config).await
+                        }
+                        DrainCommands::Cancel { mediator_did } => {
+                            services_cli::run_services_didcomm_drain_cancel(
+                                cli.config,
+                                mediator_did,
+                            )
+                            .await
+                        }
+                    },
+                },
+                ServicesCommands::Report {
+                    since,
+                    until,
+                    format,
+                } => services_cli::run_services_report(cli.config, since, until, format).await,
+            };
+            if let Err(e) = result {
+                // services_cli already prints typed VtaError via
+                // print_cli_error and surfaces a SilentExit so we
+                // don't double-print. Other error kinds get a
+                // simple format here.
+                let s = e.to_string();
+                if !s.is_empty() {
+                    eprintln!("Error: {s}");
+                }
                 std::process::exit(1);
             }
         }
