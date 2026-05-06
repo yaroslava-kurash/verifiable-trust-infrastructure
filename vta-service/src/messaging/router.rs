@@ -58,6 +58,11 @@ pub struct VtaState {
     /// the REST path.
     #[cfg(feature = "webvh")]
     pub drains_ks: KeyspaceHandle,
+    /// Per-kind previous-config snapshot store for fail-forward
+    /// rollback (spec §3.5a). Mirrored from `AppState` so REST and
+    /// DIDComm transport handlers feed the same snapshot.
+    #[cfg(feature = "webvh")]
+    pub snapshot_ks: KeyspaceHandle,
     /// In-process registry of active + draining mediator listeners.
     #[cfg(feature = "webvh")]
     pub mediator_registry: Arc<crate::messaging::registry::MediatorListenerRegistry>,
@@ -350,6 +355,18 @@ pub fn build_handler(
             .route(
                 protocol_management::DISABLE_DIDCOMM,
                 handler_fn(super::handlers_protocol::handle_disable_didcomm),
+            )?
+            .route(
+                protocol_management::ENABLE_REST,
+                handler_fn(super::handlers_protocol::handle_enable_rest),
+            )?
+            .route(
+                protocol_management::UPDATE_REST,
+                handler_fn(super::handlers_protocol::handle_update_rest),
+            )?
+            .route(
+                protocol_management::DISABLE_REST,
+                handler_fn(super::handlers_protocol::handle_disable_rest),
             )?
             .route(
                 protocol_management::MIGRATE_MEDIATOR,

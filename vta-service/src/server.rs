@@ -430,6 +430,8 @@ pub async fn run(
                 #[cfg(feature = "webvh")]
                 drains_ks: drains_ks.clone(),
                 #[cfg(feature = "webvh")]
+                snapshot_ks: snapshot_ks.clone(),
+                #[cfg(feature = "webvh")]
                 mediator_registry: Arc::clone(&mediator_registry),
                 #[cfg(feature = "webvh")]
                 drain_sweeper: Arc::clone(&drain_sweeper),
