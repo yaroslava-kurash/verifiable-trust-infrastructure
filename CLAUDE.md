@@ -306,46 +306,77 @@ new flow, update both this section and the relevant `docs/*.md`.
   `vta-service/src/routes/bootstrap.rs:provision_integration`.
 - **Docs**: `docs/03-integrating/provision-integration.md`.
 
-### DIDComm protocol management
-- **What**: Enable, disable, or migrate the DIDComm protocol surface
-  on a *running* VTA without rebuilding it, re-issuing admin
-  credentials, or rotating verification keys. Each operation
+### Runtime service management
+- **What**: Add, update, remove, or roll back the VTA's
+  advertised transport services (REST + DIDComm) on a *running*
+  VTA without rebuilding it, re-issuing admin credentials, or
+  rotating verification keys. Generalises the earlier
+  DIDComm-only protocol-management surface — both transports get
+  the same `services {kind} {verb}` operations. Each mutation
   publishes a new WebVH LogEntry; `verificationMethod` stays
   byte-identical before and after.
-- **Operator commands**:
-  - `pnm services {enable,disable} didcomm` — flip the protocol
-    surface on/off (REST-only; `enable` needs the operator to
-    declare the mediator DID).
-  - `pnm mediator {migrate,rollback,drain cancel,report}` — change
-    or roll back the active mediator; cancel an in-progress drain;
-    pull the per-mediator inbound counts + per-sender last-seen
-    mediator from the telemetry sink.
-- **Drain mechanics**: mediator changes go through a fjall-persisted
-  drain set with a 30-day TTL cap. In-flight messages from senders
-  with stale DID-doc caches keep landing while the new mediator
-  picks up traffic. State is restart-resilient — boot replays
-  outstanding drain timers via `DrainSweeper`.
-- **Handshake**: `migrate`/`rollback` use a *live*
+- **Operator commands** (spec §5.1):
+  - `pnm services list` — show currently-advertised services.
+  - `pnm services rest {enable,update,disable,rollback}` — manage
+    REST advertisement (`#vta-rest` service entry).
+  - `pnm services didcomm {enable,update,disable,rollback}` —
+    manage DIDComm mediator advertisement (`#vta-didcomm`).
+  - `pnm services didcomm drain {list,cancel}` — inspect or cancel
+    drain entries.
+  - `pnm services report` — per-mediator inbound counts +
+    per-sender last-seen mediator from the telemetry sink.
+- **Brick-prevention** (§3.2): at least one transport must remain
+  advertised at all times. Single source of truth in
+  `protocol::invariant::would_violate_last_service`; no `--force`
+  escape hatch. Disable / rollback paths consult it before any
+  I/O.
+- **Fail-forward rollback** (§3.5a): WebVH is append-only;
+  rollback never rewinds the chain. Reads the per-kind snapshot
+  store (`protocol::snapshot`, fjall keyspace
+  `service_prev_config`) and dispatches into the equivalent
+  forward op (e.g. `enable` rolls back via `disable`).
+  Single-step per kind; REST and DIDComm rollback are independent.
+- **Drain mechanics** (DIDComm only): mediator changes go through
+  a fjall-persisted drain set with a 30-day TTL cap and a 24h
+  default. In-flight messages from senders with stale DID-doc
+  caches keep landing while the new mediator picks up traffic.
+  State is restart-resilient — boot replays outstanding drain
+  timers via `DrainSweeper`. REST has no drain semantics.
+- **Service[] ordering** (§3.3): when both transports are
+  advertised, DIDComm comes first. Encoded via array order, not
+  DIDComm v2's `priority` key — DID-Core resolvers walking the
+  array pick DIDComm first. Enforced in
+  `protocol::document::sort_services_canonical` at the end of
+  every `with_*_service` patcher.
+- **Handshake**: `update`/`rollback`-into-update uses a *live*
   `DIDCommServiceProver` against the running service; first-enable
-  spins up a transient `DIDCommService` just for the round-trip and
-  tears it down regardless of outcome (`messaging::transient_handshake`).
+  spins up a transient `DIDCommService` just for the round-trip
+  (`messaging::transient_handshake`).
 - **Telemetry**: pluggable `vti_common::telemetry::TelemetrySink`
-  trait; default impl is a 10k-event ring buffer
-  (`RingBufferTelemetry`). The swappability test in
-  `vti-common/src/telemetry/mod.rs::swappability_tests` defines the
-  contract for alternate impls.
-- **Transport**: all five admin operations are available over both
-  REST and DIDComm (`enable_didcomm` is REST-only by nature). DIDComm
-  message types live at
-  `vta_sdk::protocols::protocol_management`; route handlers at
-  `vta-service/src/messaging/handlers_protocol.rs`.
-- **Code**: `vta-service/src/operations/protocol/*`,
-  `vta-service/src/messaging/{registry,drain_store,drain_sweeper,handshake,live_prover,transient_handshake}.rs`,
+  trait; default impl is a ring buffer (`RingBufferTelemetry`).
+  Forward operations carry an `OpContext::{Direct,Rollback}`
+  parameter — rollback-dispatched ops emit
+  `triggered_by: "rollback"` on their telemetry event.
+- **Transport**: all operations except `services didcomm enable`
+  are reachable over both REST and DIDComm. `enable_didcomm` is
+  REST-only by nature (DIDComm isn't running yet). Wire types
+  live in `vta_sdk::protocol::services`; DIDComm message types
+  in `vta_sdk::protocols::protocol_management` under
+  `services-management/1.0/`.
+- **Code**: `vta-service/src/operations/protocol/{enable_rest,
+  update_rest,disable_rest,rollback_rest,enable_didcomm,
+  update_didcomm,disable_didcomm,rollback_didcomm,list,
+  list_drain,snapshot,invariant,document}.rs`,
+  `vta-service/src/messaging/{registry,drain_store,drain_sweeper,
+  handshake,live_prover,transient_handshake}.rs`,
   `vta-service/src/routes/protocol.rs`,
-  `vta_sdk::protocol`, `vta_cli_common::commands::{services,mediator}`.
-- **Docs**: `docs/03-integrating/didcomm-protocol-management.md`
-  (operator guide), `docs/05-design-notes/didcomm-protocol-management.md`
-  (design notes).
+  `vta_sdk::protocol::{mod,services}`,
+  `vta_cli_common::commands::services` (the `mediator`
+  submodule was deleted in P5).
+- **Docs**: `docs/03-integrating/runtime-service-management.md`
+  (operator guide), `docs/05-design-notes/runtime-service-management.md`
+  (spec). The earlier `didcomm-protocol-management.md` docs in
+  both directories are superseded redirects.
 
 ### Sealed-transfer envelope format
 - **Inner**: CBOR-serialized `SealedPayloadV1` enum variant.
