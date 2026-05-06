@@ -29,6 +29,7 @@ use vta_sdk::protocols::protocol_management;
 use super::router::VtaState;
 use crate::messaging::auth::auth_from_message;
 use crate::messaging::handshake::AlwaysOkProver;
+use crate::operations::protocol::OpContext;
 use crate::operations::protocol::disable_didcomm::{
     DisableDidcommParams, DisableTransport, disable_didcomm,
 };
@@ -112,6 +113,7 @@ pub async fn handle_disable_didcomm(
             // 1h-min-TTL guard fires (spec criterion #12).
             transport: DisableTransport::Didcomm,
         },
+        OpContext::Direct,
         "didcomm",
     )
     .await;
@@ -207,6 +209,7 @@ pub async fn handle_update_didcomm(
             handshake_timeout: timeout,
             audit_kind,
         },
+        OpContext::Direct,
         "didcomm",
     )
     .await;
@@ -376,6 +379,7 @@ pub async fn handle_enable_rest(
         &state.telemetry,
         &auth,
         EnableRestParams { url },
+        OpContext::Direct,
         "didcomm",
     )
     .await;
@@ -427,6 +431,7 @@ pub async fn handle_update_rest(
         &state.telemetry,
         &auth,
         UpdateRestParams { url },
+        OpContext::Direct,
         "didcomm",
     )
     .await;
@@ -477,6 +482,7 @@ pub async fn handle_disable_rest(
         &state.telemetry,
         &auth,
         DisableRestParams,
+        OpContext::Direct,
         "didcomm",
     )
     .await;

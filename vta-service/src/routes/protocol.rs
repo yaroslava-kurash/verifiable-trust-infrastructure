@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::SuperAdminAuth;
 use crate::messaging::handshake::{AlwaysOkProver, HandshakeError, HandshakeStage};
+use crate::operations::protocol::OpContext;
 use crate::operations::protocol::disable_didcomm::{
     DisableDidcommError, DisableDidcommParams, DisableTransport, disable_didcomm,
 };
@@ -127,6 +128,7 @@ pub async fn enable_didcomm_handler(
             force: req.force,
             handshake_timeout: timeout,
         },
+        OpContext::Direct,
         "rest",
     )
     .await?;
@@ -372,6 +374,7 @@ pub async fn disable_didcomm_handler(
             drain_ttl: Duration::from_secs(req.drain_ttl_secs),
             transport: DisableTransport::Rest,
         },
+        OpContext::Direct,
         "rest",
     )
     .await?;
@@ -642,6 +645,7 @@ pub async fn update_didcomm_handler(
             handshake_timeout: timeout,
             audit_kind,
         },
+        OpContext::Direct,
         "rest",
     )
     .await?;
@@ -1193,6 +1197,7 @@ pub async fn enable_rest_handler(
         &state.telemetry,
         &auth.0,
         EnableRestParams { url: req.url },
+        OpContext::Direct,
         "rest",
     )
     .await?;
@@ -1231,6 +1236,7 @@ pub async fn update_rest_handler(
         &state.telemetry,
         &auth.0,
         UpdateRestParams { url: req.url },
+        OpContext::Direct,
         "rest",
     )
     .await?;
@@ -1269,6 +1275,7 @@ pub async fn disable_rest_handler(
         &state.telemetry,
         &auth.0,
         DisableRestParams,
+        OpContext::Direct,
         "rest",
     )
     .await?;
