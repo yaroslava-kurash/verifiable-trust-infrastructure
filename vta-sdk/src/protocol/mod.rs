@@ -267,6 +267,18 @@ impl VtaClient {
         )
         .await
     }
+
+    /// List currently-draining mediators. Empty list is normal.
+    pub async fn list_drain(&self) -> Result<services::DrainListResponse, VtaError> {
+        self.rpc(
+            protocol_management::LIST_DRAIN,
+            serde_json::Value::Null,
+            protocol_management::LIST_DRAIN_RESULT,
+            30,
+            |c, url| c.get(format!("{url}/services/didcomm/drain")),
+        )
+        .await
+    }
 }
 
 /// Request body for `POST /services/didcomm/update`.

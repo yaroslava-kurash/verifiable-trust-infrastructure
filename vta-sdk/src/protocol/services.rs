@@ -168,6 +168,21 @@ impl RollbackDidcommRequest {
     }
 }
 
+/// Response body for `GET /services/didcomm/drain` — the list of
+/// mediators currently in drain state. Empty list is normal.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DrainListResponse {
+    pub entries: Vec<DrainEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DrainEntry {
+    pub mediator_did: String,
+    pub endpoint: String,
+    /// Drain deadline (RFC 3339).
+    pub drains_until: String,
+}
+
 /// Response body for the rollback handlers. Wider than
 /// [`ServiceMutationResponse`] — adds `kind` and
 /// `draining_mediator` fields that downstream consumers need to

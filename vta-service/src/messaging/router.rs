@@ -385,6 +385,10 @@ pub fn build_handler(
                 handler_fn(super::handlers_protocol::handle_list_services),
             )?
             .route(
+                protocol_management::LIST_DRAIN,
+                handler_fn(super::handlers_protocol::handle_list_drain),
+            )?
+            .route(
                 protocol_management::DRAIN_CANCEL,
                 handler_fn(super::handlers_protocol::handle_drain_cancel),
             )?

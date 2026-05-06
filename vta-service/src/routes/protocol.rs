@@ -1847,3 +1847,52 @@ impl IntoResponse for ListServicesHttpError {
         (status, Json(body)).into_response()
     }
 }
+
+// ── List drain handler (T5/list_drain) ────────────────────────────
+
+use crate::operations::protocol::list_drain::{ListDrainError, list_drain};
+
+pub async fn list_drain_handler(
+    auth: SuperAdminAuth,
+    State(state): State<AppState>,
+) -> Result<Json<vta_sdk::protocol::services::DrainListResponse>, ListDrainHttpError> {
+    let response = list_drain(&state.config, &state.drains_ks, &auth.0).await?;
+    Ok(Json(response))
+}
+
+#[derive(Debug)]
+pub enum ListDrainHttpError {
+    Op(ListDrainError),
+}
+
+impl From<ListDrainError> for ListDrainHttpError {
+    fn from(value: ListDrainError) -> Self {
+        Self::Op(value)
+    }
+}
+
+impl IntoResponse for ListDrainHttpError {
+    fn into_response(self) -> Response {
+        let (status, body) = match self {
+            Self::Op(ListDrainError::Auth(msg)) => (
+                StatusCode::FORBIDDEN,
+                ErrorBody {
+                    error: "auth",
+                    message: msg,
+                    suggested_fix: Some("Super-admin role required for service inspection.".into()),
+                    stage: None,
+                },
+            ),
+            Self::Op(other) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                ErrorBody {
+                    error: "list_drain_failed",
+                    message: other.to_string(),
+                    suggested_fix: None,
+                    stage: None,
+                },
+            ),
+        };
+        (status, Json(body)).into_response()
+    }
+}

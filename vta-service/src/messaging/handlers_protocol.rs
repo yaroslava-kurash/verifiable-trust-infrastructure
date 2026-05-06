@@ -676,3 +676,26 @@ pub async fn handle_list_services(
         Err(other) => Ok(Some(problem_report_internal(other.to_string()))),
     }
 }
+
+// ── List drain over DIDComm ──────────────────────────────────────
+
+pub async fn handle_list_drain(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<Arc<VtaState>>,
+) -> HandlerResult {
+    let auth = match auth_from_message(&message, &state.acl_ks).await {
+        Ok(a) => a,
+        Err(e) => return Ok(Some(problem_report_unauthorized(e.to_string()))),
+    };
+    let result =
+        crate::operations::protocol::list_drain::list_drain(&state.config, &state.drains_ks, &auth)
+            .await;
+
+    use crate::operations::protocol::list_drain::ListDrainError;
+    match result {
+        Ok(r) => response(protocol_management::LIST_DRAIN_RESULT, &r),
+        Err(ListDrainError::Auth(e)) => Ok(Some(problem_report_unauthorized(e))),
+        Err(other) => Ok(Some(problem_report_internal(other.to_string()))),
+    }
+}
