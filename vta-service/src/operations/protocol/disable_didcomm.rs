@@ -137,6 +137,7 @@ pub async fn disable_didcomm(
     webvh_ks: &KeyspaceHandle,
     audit_ks: &KeyspaceHandle,
     drains_ks: &KeyspaceHandle,
+    snapshot_ks: &KeyspaceHandle,
     seed_store: &dyn SeedStore,
     did_resolver: &DIDCacheClient,
     didcomm_bridge: &Arc<DIDCommBridge>,
@@ -155,6 +156,22 @@ pub async fn disable_didcomm(
     // Pre-flight checks (atomic; nothing mutated until past here).
     let (_vta_did, scid, current_doc, prior_mediator) =
         read_preconditions(config, webvh_ks, &params).await?;
+
+    // Persist snapshot BEFORE the runtime mutation per spec §3.5a.
+    // Pre-state is DidcommSnapshot::Enabled with the prior mediator
+    // so a future `services didcomm rollback` re-enables that
+    // mediator. routing_keys is empty — the existing #vta-didcomm
+    // service entry doesn't carry routing-keys today.
+    use crate::operations::protocol::snapshot::{self, DidcommSnapshot, ServiceConfigSnapshot};
+    snapshot::write(
+        snapshot_ks,
+        ServiceConfigSnapshot::Didcomm(DidcommSnapshot::Enabled {
+            mediator_did: prior_mediator.clone(),
+            routing_keys: vec![],
+        }),
+    )
+    .await
+    .map_err(|e| DisableDidcommError::Storage(format!("snapshot write: {e}")))?;
 
     // Patch out the `#vta-didcomm` service entry.
     let patched = without_didcomm_service(current_doc);
@@ -260,11 +277,25 @@ async fn read_preconditions(
     webvh_ks: &KeyspaceHandle,
     params: &DisableDidcommParams,
 ) -> Result<(String, String, JsonValue, String), DisableDidcommError> {
+    use crate::operations::protocol::invariant::{
+        CurrentServices, ProposedOp, would_violate_last_service,
+    };
+    use crate::operations::protocol::snapshot::ServiceKind;
+    use vta_sdk::error::VtaError;
+
     let cfg = config.read().await;
     if !cfg.services.didcomm {
         return Err(DisableDidcommError::DidcommNotEnabled);
     }
-    if !cfg.services.rest {
+    // Brick-prevention via the shared §3.2 helper (T0.4) —
+    // single source of truth across all disable / rollback paths.
+    // VtaError::LastServiceRefused maps to the existing
+    // DisableDidcommError::NoProtocolRemaining wire variant so
+    // operators see the same error string as before this refactor.
+    if let Err(VtaError::LastServiceRefused) = would_violate_last_service(
+        &CurrentServices::new(cfg.services.rest, cfg.services.didcomm),
+        ProposedOp::disable(ServiceKind::Didcomm),
+    ) {
         return Err(DisableDidcommError::NoProtocolRemaining);
     }
     if params.transport == DisableTransport::Didcomm
@@ -340,6 +371,7 @@ mod tests {
     use super::*;
     use crate::config::{AppConfig, ServerConfig, ServicesConfig, StoreConfig};
     use crate::keys::seed_store::PlaintextSeedStore;
+    use crate::operations::protocol::snapshot;
     use crate::store::Store;
     use vti_common::telemetry::RingBufferTelemetry;
 
@@ -442,6 +474,7 @@ mod tests {
         let (_d3, webvh_ks) = empty_keyspace("webvh").await;
         let (_d4, audit_ks) = empty_keyspace("audit").await;
         let (_d5, drains_ks) = empty_keyspace("drains").await;
+        let (_d6, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
         let resolver = resolver().await;
         let seed = dummy_seed(dir.path());
 
@@ -452,6 +485,7 @@ mod tests {
             &webvh_ks,
             &audit_ks,
             &drains_ks,
+            &snapshot_ks,
             &*seed,
             &resolver,
             &bridge,
@@ -483,6 +517,7 @@ mod tests {
         let (_d3, webvh_ks) = empty_keyspace("webvh").await;
         let (_d4, audit_ks) = empty_keyspace("audit").await;
         let (_d5, drains_ks) = empty_keyspace("drains").await;
+        let (_d6, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
         let resolver = resolver().await;
         let seed = dummy_seed(dir.path());
 
@@ -493,6 +528,7 @@ mod tests {
             &webvh_ks,
             &audit_ks,
             &drains_ks,
+            &snapshot_ks,
             &*seed,
             &resolver,
             &bridge,
@@ -520,6 +556,7 @@ mod tests {
         let (_d3, webvh_ks) = empty_keyspace("webvh").await;
         let (_d4, audit_ks) = empty_keyspace("audit").await;
         let (_d5, drains_ks) = empty_keyspace("drains").await;
+        let (_d6, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
         let resolver = resolver().await;
         let seed = dummy_seed(dir.path());
 
@@ -531,6 +568,7 @@ mod tests {
             &webvh_ks,
             &audit_ks,
             &drains_ks,
+            &snapshot_ks,
             &*seed,
             &resolver,
             &bridge,
@@ -560,6 +598,7 @@ mod tests {
         let (_d3, webvh_ks) = empty_keyspace("webvh").await;
         let (_d4, audit_ks) = empty_keyspace("audit").await;
         let (_d5, drains_ks) = empty_keyspace("drains").await;
+        let (_d6, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
         let resolver = resolver().await;
         let seed = dummy_seed(dir.path());
 
@@ -573,6 +612,7 @@ mod tests {
             &webvh_ks,
             &audit_ks,
             &drains_ks,
+            &snapshot_ks,
             &*seed,
             &resolver,
             &bridge,
@@ -601,6 +641,7 @@ mod tests {
         let (_d3, webvh_ks) = empty_keyspace("webvh").await;
         let (_d4, audit_ks) = empty_keyspace("audit").await;
         let (_d5, drains_ks) = empty_keyspace("drains").await;
+        let (_d6, snapshot_ks) = empty_keyspace(snapshot::KEYSPACE_NAME).await;
         let resolver = resolver().await;
         let seed = dummy_seed(dir.path());
 
@@ -611,6 +652,7 @@ mod tests {
             &webvh_ks,
             &audit_ks,
             &drains_ks,
+            &snapshot_ks,
             &*seed,
             &resolver,
             &bridge,
