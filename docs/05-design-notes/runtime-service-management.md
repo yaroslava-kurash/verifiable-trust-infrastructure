@@ -678,29 +678,56 @@ All previously-open questions are resolved. Audit performed on
    symmetric — each publishes a new LogEntry that re-applies
    its kind's prior config.
 
-### Implementation note — REST service entry is net-new
+### Implementation note — REST service entry already exists
 
-Today the VTA's own DID document does **not** advertise a REST
-service entry. `config.public_url` is used internally but never
-rendered into `service[]`
-(`vta-service/src/operations/did_webvh/document.rs:79`). So
-`services rest enable` is the path that adds the entry for the
-first time. **An upgraded VTA boots with no REST service entry
-in its DID doc** — the operator must explicitly opt in via
-`pnm services rest enable --url <url>` to advertise REST. This
-matches the spec's "operator drives every service mutation"
-model and avoids an implicit behavior change on upgrade.
+The VTA's own DID document **already advertises** a REST service
+entry today. The rendering goes through the
+`additional_services` extension point of `build_did_document_inner`
+rather than being baked into the inner function directly:
 
-A REST service entry uses `type: ["VerifiableTrustAgent"]` (new
-kind, distinct from `LinkedDomains` which has weaker semantics).
-The exact shape is finalized in T1.3.
+* `vta-service/src/setup.rs:86` — `build_vta_additional_services`
+  produces a single entry:
+  ```json
+  {
+    "id":   "{DID}#vta-rest",
+    "type": "VTARest",
+    "serviceEndpoint": "<public_url>"
+  }
+  ```
+* Emitted iff `services.rest == true` AND `public_url` is set
+  (matrix test in `setup.rs:175`).
+* SDK resolves it via `find_service("vta-rest")` at
+  `vta-sdk/src/session.rs:1100`. The resolve path is
+  load-bearing for the SDK's own routing.
 
-**Initial state of all three states post-upgrade:** an upgraded
-VTA with both `public_url` configured and DIDComm enabled comes
-up in **S2** (DIDComm-only), not S3. Operators who want REST
-advertised run `services rest enable` once. The §7a.1 state
-model still applies — S1/S2/S3 are reachable by operator action
-from any starting point.
+This **constrains** the runtime-mutation work in P1.3 / T2.4:
+
+* **Wire shape is fixed.** Keep `id: "{DID}#vta-rest"`, keep
+  `type: "VTARest"`. SDK consumers depend on these strings.
+* **Rendering is moved, not invented.** P1.3 lifts the rendering
+  out of `setup::build_vta_additional_services` and into the
+  shared service-rendering layer, so the same JSON is emitted
+  whether it comes from setup or from a runtime
+  `services rest enable/update`. The setup path delegates to the
+  shared layer.
+* **§3.3 ordering note:** today the array is
+  `[#vta-didcomm (if mediator), #vta-rest, #tee-attestation
+  (if tee)]`. To honor "DIDComm preferred," the existing order is
+  already correct — DIDComm is first. Confirmed in T0.1 audit
+  against `document.rs:79` + `setup.rs:86`. T2.4 just locks this
+  in via a render-layer test.
+
+**Initial state post-upgrade.** An upgraded VTA with
+`services.rest = true` + `public_url` set + `services.didcomm =
+true` boots in **S3** (both advertised) — there is no implicit
+state change from upgrade. Existing config drives the same shape
+the runtime commands produce. A VTA configured today with
+`services.rest = false` + `services.didcomm = false` is already
+unreachable (its DID doc has no transport service entries) —
+that's a pre-existing config foot-gun, not something this spec
+introduces. Per §3.2, the runtime commands enforce the
+"at-least-one" invariant going forward; existing misconfigured
+VTAs are not auto-repaired.
 
 ## 11. Lifecycle
 
