@@ -79,6 +79,11 @@ pub const LIST_SERVICES: &str =
 pub const LIST_SERVICES_RESULT: &str =
     "https://firstperson.network/protocols/services-management/1.0/list-result";
 
+pub const LIST_DRAIN: &str =
+    "https://firstperson.network/protocols/services-management/1.0/didcomm-drain-list";
+pub const LIST_DRAIN_RESULT: &str =
+    "https://firstperson.network/protocols/services-management/1.0/didcomm-drain-list-result";
+
 // ── services-management (DIDComm side, continued) ───────────────────
 
 // T2.3 rename — was MIGRATE_MEDIATOR / mediator-management/1.0/migrate.

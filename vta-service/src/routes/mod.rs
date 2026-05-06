@@ -241,6 +241,7 @@ pub fn router() -> Router<AppState> {
             post(protocol::rollback_rest_handler),
         )
         .route("/services", get(protocol::list_services_handler))
+        .route("/services/didcomm/drain", get(protocol::list_drain_handler))
         .route(
             "/services/didcomm/update",
             post(protocol::update_didcomm_handler),
