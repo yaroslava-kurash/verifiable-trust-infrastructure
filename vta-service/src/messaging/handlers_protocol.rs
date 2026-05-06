@@ -32,11 +32,14 @@ use crate::messaging::handshake::AlwaysOkProver;
 use crate::operations::protocol::disable_didcomm::{
     DisableDidcommParams, DisableTransport, disable_didcomm,
 };
+use crate::operations::protocol::disable_rest::{DisableRestParams, disable_rest};
 use crate::operations::protocol::drain_cancel::{DrainCancelParams, drain_cancel};
+use crate::operations::protocol::enable_rest::{EnableRestParams, enable_rest};
 use crate::operations::protocol::migrate_mediator::{
     MigrateAuditKind, MigrateMediatorParams, migrate_mediator,
 };
 use crate::operations::protocol::report::{ReportParams, mediator_report};
+use crate::operations::protocol::update_rest::{UpdateRestParams, update_rest};
 
 type HandlerResult = Result<Option<DIDCommResponse>, DIDCommServiceError>;
 
@@ -320,6 +323,179 @@ pub async fn handle_mediator_report(
     match result {
         Ok(r) => response(protocol_management::MEDIATOR_REPORT_RESULT, &r),
         Err(ReportError::Auth(e)) => Ok(Some(problem_report_unauthorized(e))),
+        Err(other) => Ok(Some(problem_report_internal(other.to_string()))),
+    }
+}
+
+// ── REST service-management handlers (T1.5) ─────────────────────────
+//
+// Each handler is a thin adapter mirroring `handle_disable_didcomm`:
+// authenticate the message, parse the body, call the existing
+// operation function, and emit either a typed result or a problem-
+// report. All three REST ops are reachable over DIDComm — REST is
+// always running per spec §3.2, so unlike `enable_didcomm` (which
+// can't arrive over a transport that isn't running yet) there's no
+// chicken-and-egg constraint here.
+
+fn body_str_field(message: &Message, key: &str) -> Result<String, DIDCommServiceError> {
+    message
+        .body
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| handler_err(format!("missing or non-string `{key}` in body")))
+}
+
+pub async fn handle_enable_rest(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<Arc<VtaState>>,
+) -> HandlerResult {
+    let auth = match auth_from_message(&message, &state.acl_ks).await {
+        Ok(a) => a,
+        Err(e) => return Ok(Some(problem_report_unauthorized(e.to_string()))),
+    };
+
+    let url = body_str_field(&message, "url")?;
+
+    let result = enable_rest(
+        &state.config,
+        &state.keys_ks,
+        &state.contexts_ks,
+        &state.webvh_ks,
+        &state.audit_ks,
+        &state.snapshot_ks,
+        &*state.seed_store,
+        state
+            .did_resolver
+            .as_ref()
+            .ok_or_else(|| handler_err("did_resolver unavailable"))?,
+        &state.didcomm_bridge,
+        &state.telemetry,
+        &auth,
+        EnableRestParams { url },
+        "didcomm",
+    )
+    .await;
+
+    use crate::operations::protocol::enable_rest::EnableRestError;
+    match result {
+        Ok(r) => response(
+            protocol_management::ENABLE_REST_RESULT,
+            &serde_json::json!({
+                "log_entry_version_id": r.new_version_id,
+                "effective_at": Utc::now().to_rfc3339(),
+                "url": r.url,
+            }),
+        ),
+        Err(EnableRestError::ServiceAlreadyEnabled) => {
+            Ok(Some(problem_report_conflict("REST is already enabled")))
+        }
+        Err(EnableRestError::Validation(e)) => Ok(Some(problem_report_bad_request(e))),
+        Err(EnableRestError::Auth(e)) => Ok(Some(problem_report_unauthorized(e))),
+        Err(other) => Ok(Some(problem_report_internal(other.to_string()))),
+    }
+}
+
+pub async fn handle_update_rest(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<Arc<VtaState>>,
+) -> HandlerResult {
+    let auth = match auth_from_message(&message, &state.acl_ks).await {
+        Ok(a) => a,
+        Err(e) => return Ok(Some(problem_report_unauthorized(e.to_string()))),
+    };
+
+    let url = body_str_field(&message, "url")?;
+
+    let result = update_rest(
+        &state.config,
+        &state.keys_ks,
+        &state.contexts_ks,
+        &state.webvh_ks,
+        &state.audit_ks,
+        &state.snapshot_ks,
+        &*state.seed_store,
+        state
+            .did_resolver
+            .as_ref()
+            .ok_or_else(|| handler_err("did_resolver unavailable"))?,
+        &state.didcomm_bridge,
+        &state.telemetry,
+        &auth,
+        UpdateRestParams { url },
+        "didcomm",
+    )
+    .await;
+
+    use crate::operations::protocol::update_rest::UpdateRestError;
+    match result {
+        Ok(r) => response(
+            protocol_management::UPDATE_REST_RESULT,
+            &serde_json::json!({
+                "log_entry_version_id": r.new_version_id,
+                "effective_at": Utc::now().to_rfc3339(),
+                "prior_url": r.prior_url,
+                "url": r.url,
+            }),
+        ),
+        Err(UpdateRestError::ServiceNotPresent) => Ok(Some(problem_report_conflict(
+            "REST is not currently enabled",
+        ))),
+        Err(UpdateRestError::Validation(e)) => Ok(Some(problem_report_bad_request(e))),
+        Err(UpdateRestError::Auth(e)) => Ok(Some(problem_report_unauthorized(e))),
+        Err(other) => Ok(Some(problem_report_internal(other.to_string()))),
+    }
+}
+
+pub async fn handle_disable_rest(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<Arc<VtaState>>,
+) -> HandlerResult {
+    let auth = match auth_from_message(&message, &state.acl_ks).await {
+        Ok(a) => a,
+        Err(e) => return Ok(Some(problem_report_unauthorized(e.to_string()))),
+    };
+
+    let result = disable_rest(
+        &state.config,
+        &state.keys_ks,
+        &state.contexts_ks,
+        &state.webvh_ks,
+        &state.audit_ks,
+        &state.snapshot_ks,
+        &*state.seed_store,
+        state
+            .did_resolver
+            .as_ref()
+            .ok_or_else(|| handler_err("did_resolver unavailable"))?,
+        &state.didcomm_bridge,
+        &state.telemetry,
+        &auth,
+        DisableRestParams,
+        "didcomm",
+    )
+    .await;
+
+    use crate::operations::protocol::disable_rest::DisableRestError;
+    match result {
+        Ok(r) => response(
+            protocol_management::DISABLE_REST_RESULT,
+            &serde_json::json!({
+                "log_entry_version_id": r.new_version_id,
+                "effective_at": Utc::now().to_rfc3339(),
+                "prior_url": r.prior_url,
+            }),
+        ),
+        Err(DisableRestError::ServiceNotPresent) => Ok(Some(problem_report_conflict(
+            "REST is not currently enabled — nothing to disable",
+        ))),
+        Err(DisableRestError::LastServiceRefused) => Ok(Some(problem_report_conflict(
+            "refusing operation: would leave the VTA with no advertised services",
+        ))),
+        Err(DisableRestError::Auth(e)) => Ok(Some(problem_report_unauthorized(e))),
         Err(other) => Ok(Some(problem_report_internal(other.to_string()))),
     }
 }

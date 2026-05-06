@@ -29,6 +29,30 @@ pub const DISABLE_DIDCOMM: &str =
 pub const DISABLE_DIDCOMM_RESULT: &str =
     "https://firstperson.network/protocols/services-management/1.0/disable-result";
 
+// REST-side service management. Spec:
+// `docs/05-design-notes/runtime-service-management.md` §3.4.
+// All three are reachable over DIDComm — REST is always running
+// (per spec §3.2 at-least-one-service invariant), so a request
+// adding/updating/removing the REST advertisement can travel over
+// DIDComm without hitting the same chicken-and-egg problem as
+// `enable_didcomm` (which can't be invoked over a transport that
+// isn't running yet).
+
+pub const ENABLE_REST: &str =
+    "https://firstperson.network/protocols/services-management/1.0/rest-enable";
+pub const ENABLE_REST_RESULT: &str =
+    "https://firstperson.network/protocols/services-management/1.0/rest-enable-result";
+
+pub const UPDATE_REST: &str =
+    "https://firstperson.network/protocols/services-management/1.0/rest-update";
+pub const UPDATE_REST_RESULT: &str =
+    "https://firstperson.network/protocols/services-management/1.0/rest-update-result";
+
+pub const DISABLE_REST: &str =
+    "https://firstperson.network/protocols/services-management/1.0/rest-disable";
+pub const DISABLE_REST_RESULT: &str =
+    "https://firstperson.network/protocols/services-management/1.0/rest-disable-result";
+
 // ── mediator-management ─────────────────────────────────────────────
 
 pub const MIGRATE_MEDIATOR: &str =
