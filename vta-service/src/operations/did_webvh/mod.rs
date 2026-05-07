@@ -725,7 +725,7 @@ pub async fn create_did_webvh(
             None
         } else {
             Some(Arc::new(
-                next_key_hashes.into_iter().map(Into::into).collect(),
+                next_key_hashes.iter().cloned().map(Into::into).collect(),
             ))
         },
         ..Default::default()
@@ -826,6 +826,58 @@ pub async fn create_did_webvh(
         )
         .await
         .map_err(|e| AppError::Internal(format!("{e}")))?;
+    }
+
+    // Index every minted key into the per-version `webvh_keys` keyspace so
+    // `update_did_webvh` can resolve handles by hash without legacy-scan
+    // fallbacks. Pre-rotation handles MUST be installed here — the webvh
+    // signing-key check on the first update consults `previous.next_key_hashes`,
+    // and the secret behind those hashes lives only at the BIP-32 paths
+    // captured by these handles. Without this, an update-with-pre-rotation
+    // path can't find the right secret.
+    let genesis_version_id = result
+        .log_entry()
+        .get_version_id_fields()
+        .map(|(n, h)| format!("{n}-{h}"))
+        .map_err(|e| AppError::Internal(format!("read genesis version id: {e}")))?;
+
+    let signing_hash = Secret::base58_hash_string(&derived.signing_pub)
+        .map_err(|e| AppError::Internal(format!("hash genesis signing pubkey: {e}")))?;
+    let now_ts = Utc::now();
+    let signing_handle = webvh_keys::WebvhKeyHandle {
+        scid: scid.clone(),
+        version_id: genesis_version_id.clone(),
+        hash: signing_hash,
+        public_key: derived.signing_pub.clone(),
+        derivation_path: derived.signing_path.clone(),
+        seed_id: active_seed_id,
+        role: webvh_keys::WebvhKeyRole::UpdateKey,
+        label: derived.signing_label.clone(),
+        created_at: now_ts,
+    };
+    webvh_keys::install(keys_ks, &signing_handle)
+        .await
+        .map_err(|e| AppError::Internal(format!("install genesis update-key handle: {e}")))?;
+
+    for (i, (hash, pk)) in next_key_hashes
+        .iter()
+        .zip(pre_rotation_keys.iter())
+        .enumerate()
+    {
+        let handle = webvh_keys::WebvhKeyHandle {
+            scid: scid.clone(),
+            version_id: genesis_version_id.clone(),
+            hash: hash.clone(),
+            public_key: pk.public_key.clone(),
+            derivation_path: pk.path.clone(),
+            seed_id: Some(pre_rotation_seed_id),
+            role: webvh_keys::WebvhKeyRole::PreRotation,
+            label: format!("genesis pre-rotation #{i}"),
+            created_at: now_ts,
+        };
+        webvh_keys::install(keys_ks, &handle).await.map_err(|e| {
+            AppError::Internal(format!("install genesis pre-rotation handle #{i}: {e}"))
+        })?;
     }
 
     // Optionally set as primary DID

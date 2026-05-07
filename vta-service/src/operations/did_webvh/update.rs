@@ -391,6 +391,116 @@ pub(super) async fn load_active_update_key(
 /// public_key matches `target_pubkey`. Synthesise a [`WebvhKeyHandle`]
 /// from the record's `derivation_path` + `seed_id` so the caller can
 /// re-derive the secret. Returns `Ok(None)` if no match.
+/// Resolve a webvh signing key whose hash is committed in
+/// `previous.next_key_hashes` (pre-rotation reveal path).
+///
+/// Iterates each committed hash and tries:
+/// 1. Fast path: `webvh_keys::find_handle_by_hash` (works for DIDs created
+///    after the genesis-pre-rotation install fix in `create_did_webvh`).
+/// 2. Legacy fallback: scan `key:{did}#pre-rotation-N` records, hash each
+///    record's `public_key`, and return the first match (handles DIDs
+///    that predate the `webvh_keys` index).
+///
+/// Returns the [`WebvhKeyHandle`] for the matched key — the caller
+/// re-derives the secret via [`derive_secret_for_handle`].
+pub(super) async fn load_pre_rotation_signing_key(
+    keys_ks: &KeyspaceHandle,
+    scid: &str,
+    committed_hashes: &[String],
+) -> Result<WebvhKeyHandle, UpdateDidWebvhError> {
+    if committed_hashes.is_empty() {
+        return Err(UpdateDidWebvhError::Library(
+            "previous entry has empty next_key_hashes — pre-rotation reveal impossible".into(),
+        ));
+    }
+    tracing::debug!(
+        scid,
+        hashes = ?committed_hashes,
+        "load_pre_rotation_signing_key: searching for committed pre-rotation candidate"
+    );
+    for hash in committed_hashes {
+        // Fast path.
+        match webvh_keys::find_handle_by_hash(keys_ks, scid, hash).await {
+            Ok(Some(handle)) => {
+                tracing::debug!(
+                    scid,
+                    hash,
+                    role = ?handle.role,
+                    public_key = %handle.public_key,
+                    "load_pre_rotation_signing_key: fast-path hit"
+                );
+                return Ok(handle);
+            }
+            Ok(None) => {}
+            Err(e) => {
+                return Err(UpdateDidWebvhError::Persistence(format!(
+                    "webvh_keys lookup by hash: {e}"
+                )));
+            }
+        }
+        // Legacy fallback.
+        if let Some(handle) = legacy_lookup_pre_rotation_by_hash(keys_ks, scid, hash).await? {
+            tracing::debug!(
+                scid,
+                hash,
+                public_key = %handle.public_key,
+                "load_pre_rotation_signing_key: legacy fallback hit"
+            );
+            return Ok(handle);
+        }
+    }
+    Err(UpdateDidWebvhError::Library(format!(
+        "no pre-rotation key found for any committed hash: {committed_hashes:?}"
+    )))
+}
+
+/// Legacy fallback: scan `key:*` records (the pre-`webvh_keys` storage
+/// convention) for a record whose `public_key` hashes to `target_hash`.
+/// Used by DIDs created before the genesis pre-rotation handles were
+/// installed in the `webvh_keys` keyspace.
+async fn legacy_lookup_pre_rotation_by_hash(
+    keys_ks: &KeyspaceHandle,
+    scid: &str,
+    target_hash: &str,
+) -> Result<Option<WebvhKeyHandle>, UpdateDidWebvhError> {
+    let raw_keys = keys_ks
+        .prefix_keys(b"key:".to_vec())
+        .await
+        .map_err(|e| UpdateDidWebvhError::Persistence(format!("legacy scan: {e}")))?;
+    for raw in raw_keys {
+        let record: Option<KeyRecord> = keys_ks
+            .get(raw)
+            .await
+            .map_err(|e| UpdateDidWebvhError::Persistence(format!("legacy load: {e}")))?;
+        let Some(record) = record else { continue };
+        let computed = match Secret::base58_hash_string(&record.public_key) {
+            Ok(h) => h,
+            Err(_) => continue,
+        };
+        if computed != target_hash {
+            continue;
+        }
+        return Ok(Some(WebvhKeyHandle {
+            scid: scid.to_string(),
+            // Synthetic — legacy records pre-date the per-version
+            // convention. Fine for re-deriving the secret; supersede
+            // routines key off `webvh_keys` storage entries directly,
+            // not this synthetic version.
+            version_id: "legacy".into(),
+            hash: target_hash.to_string(),
+            public_key: record.public_key.clone(),
+            derivation_path: record.derivation_path.clone(),
+            seed_id: record.seed_id,
+            role: WebvhKeyRole::PreRotation,
+            label: record
+                .label
+                .unwrap_or_else(|| format!("legacy pre-rotation key for {scid}")),
+            created_at: Utc::now(),
+        }));
+    }
+    Ok(None)
+}
+
 async fn legacy_lookup_by_public_key(
     keys_ks: &KeyspaceHandle,
     scid: &str,
@@ -754,6 +864,18 @@ pub async fn update_did_webvh(
         .as_ref()
         .map(|arc| (**arc).clone())
         .unwrap_or_default();
+    // Pre-rotation is "active" when the previous entry committed
+    // `next_key_hashes`. The library's `check_signing_key` consults
+    // `previous.next_key_hashes` (not `previous.update_keys`) for the
+    // signing-key authorization check in that case, so the next entry
+    // MUST be signed by a key whose hash was in that commitment.
+    // See didwebvh-rs::lib::DIDWebVHState::check_signing_key.
+    let last_next_key_hashes: Vec<String> = last_params
+        .next_key_hashes
+        .as_ref()
+        .map(|arc| arc.iter().map(|m| m.as_ref().to_string()).collect())
+        .unwrap_or_default();
+    let pre_rotation_active = !last_next_key_hashes.is_empty();
 
     // 5. Resolve effective pre-rotation count.
     let pre_rotation_count = opts.pre_rotation_count.unwrap_or(record.pre_rotation_count);
@@ -770,7 +892,10 @@ pub async fn update_did_webvh(
         })?;
 
     // 7. Derive new keys (no persist yet — version_id unknown).
-    let derived_auth = if new_doc.is_some() {
+    //    With pre-rotation active, the "auth" key for the new entry is
+    //    the *revealed* pre-rotation candidate from the previous entry,
+    //    not a freshly-minted key. We pick that handle in step 8 below.
+    let derived_auth = if new_doc.is_some() && !pre_rotation_active {
         derive_webvh_keys(keys_ks, seed_store, &context.base_path, 1).await?
     } else {
         vec![]
@@ -778,8 +903,34 @@ pub async fn update_did_webvh(
     let derived_pre_rotation =
         derive_webvh_keys(keys_ks, seed_store, &context.base_path, pre_rotation_count).await?;
 
-    // 8. Find + load active update key for signing.
-    let signing_handle = load_active_update_key(keys_ks, scid, &last_update_keys).await?;
+    // 8. Resolve the signing key.
+    //
+    //    With pre-rotation active, find a handle whose hash is in
+    //    `last.next_key_hashes` — that's the only key webvh will accept
+    //    as a signer for the next log entry. Without pre-rotation, fall
+    //    back to the pre-existing `load_active_update_key` lookup over
+    //    `last.update_keys`.
+    tracing::info!(
+        scid,
+        did = %record.did,
+        pre_rotation_active,
+        next_key_hashes_count = last_next_key_hashes.len(),
+        update_keys_count = last_update_keys.len(),
+        "update_did_webvh: resolving signing key"
+    );
+    let signing_handle = if pre_rotation_active {
+        load_pre_rotation_signing_key(keys_ks, scid, &last_next_key_hashes).await?
+    } else {
+        load_active_update_key(keys_ks, scid, &last_update_keys).await?
+    };
+    tracing::info!(
+        scid,
+        signing_pubkey = %signing_handle.public_key,
+        signing_hash = %signing_handle.hash,
+        signing_role = ?signing_handle.role,
+        signing_version = %signing_handle.version_id,
+        "update_did_webvh: signing key resolved"
+    );
     let signing_secret = derive_secret_for_handle(keys_ks, seed_store, &signing_handle).await?;
 
     // 9. Build the library config.
@@ -788,11 +939,28 @@ pub async fn update_did_webvh(
         .signing_key(signing_secret);
     if let Some(doc) = new_doc {
         builder = builder.document(doc);
-        let new_keys: Vec<Multibase> = derived_auth
-            .iter()
-            .map(|k| Multibase::from(k.public_key.clone()))
-            .collect();
+        let new_keys: Vec<Multibase> = if pre_rotation_active {
+            // Reveal the pre-rotation key as the new update_keys entry.
+            // `validate_pre_rotation_keys` requires every key in the new
+            // update_keys to have its hash committed in
+            // previous.next_key_hashes — `signing_handle.public_key`
+            // satisfies that by construction (we picked it BY hash).
+            vec![Multibase::from(signing_handle.public_key.clone())]
+        } else {
+            derived_auth
+                .iter()
+                .map(|k| Multibase::from(k.public_key.clone()))
+                .collect()
+        };
         builder = builder.update_keys(new_keys);
+    } else if pre_rotation_active {
+        // Metadata-only update under pre-rotation: still rotate
+        // update_keys to the revealed pre-rotation pubkey so the chain's
+        // active update-keys keep moving forward in lockstep with the
+        // signing-key reveal. Otherwise the next entry's
+        // `previous.next_key_hashes` carries an unused commitment while
+        // the active key on record stays stale.
+        builder = builder.update_keys(vec![Multibase::from(signing_handle.public_key.clone())]);
     }
     // Always pass next_key_hashes when caller toggled pre-rotation OR
     // when the DID currently uses pre-rotation — keeps the commitment
@@ -872,6 +1040,32 @@ pub async fn update_did_webvh(
             "pre-rotation key",
         )
         .await?;
+    }
+    // When we reveal a pre-rotation key, re-install it as an
+    // `UpdateKey` handle under the new version_id. Without this, the
+    // supersede step (below) moves the previous version's PreRotation
+    // handle out of the active prefix, and the next update can't
+    // resolve the now-active key by hash via the fast path. The handle
+    // contents are otherwise identical to the previous PreRotation
+    // entry — same derivation path, same secret.
+    if pre_rotation_active {
+        let revealed = WebvhKeyHandle {
+            scid: scid.to_string(),
+            version_id: new_version_id.clone(),
+            hash: signing_handle.hash.clone(),
+            public_key: signing_handle.public_key.clone(),
+            derivation_path: signing_handle.derivation_path.clone(),
+            seed_id: signing_handle.seed_id,
+            role: WebvhKeyRole::UpdateKey,
+            label: format!(
+                "revealed pre-rotation key (was version {})",
+                signing_handle.version_id
+            ),
+            created_at: Utc::now(),
+        };
+        webvh_keys::install(keys_ks, &revealed)
+            .await
+            .map_err(|e| UpdateDidWebvhError::Persistence(format!("install revealed key: {e}")))?;
     }
 
     // Supersede the previous version's keys (best-effort — handles that
@@ -964,16 +1158,21 @@ pub async fn update_did_webvh(
         "did:webvh updated"
     );
 
+    let update_keys_count = if !derived_auth.is_empty() {
+        derived_auth.len() as u32
+    } else if pre_rotation_active {
+        // Reveal-only path: we set update_keys = [revealed_pubkey].
+        1
+    } else {
+        last_update_keys.len() as u32
+    };
+
     Ok(UpdateDidWebvhResult {
         did: record.did.clone(),
         new_version_id,
         new_scid,
         new_log_entry: new_log_entry_str,
-        update_keys_count: if derived_auth.is_empty() {
-            last_update_keys.len() as u32
-        } else {
-            derived_auth.len() as u32
-        },
+        update_keys_count,
         pre_rotation_key_count: derived_pre_rotation.len() as u32,
     })
 }
@@ -1554,5 +1753,639 @@ mod tests {
             }]
         });
         validate_document_for_update(doc, did).expect("external keys allowed");
+    }
+}
+
+#[cfg(test)]
+mod pre_rotation_e2e_tests {
+    //! End-to-end regression tests for the create→update flow, with
+    //! particular focus on pre-rotation. These drive
+    //! [`super::super::create_did_webvh`] and [`super::update_did_webvh`]
+    //! through real fjall keyspaces and assert the resulting webvh log
+    //! validates as a chain.
+    //!
+    //! These tests catch the class of bug where the signing-key
+    //! selection in `update_did_webvh` ignores
+    //! `previous.next_key_hashes`. Before the fix, the
+    //! `update_with_pre_rotation_count_one` test failed with the
+    //! didwebvh-rs `ParametersError: Signing key ID … does not match
+    //! any next key hashes …` — the same error operators saw running
+    //! `pnm services rest disable` against a pre-rotation-enabled VTA.
+    //!
+    //! Coverage:
+    //! - `pre_rotation_count = 0`: standard non-pre-rotation update.
+    //! - `pre_rotation_count = 1`: single-shot reveal (regression case).
+    //! - `pre_rotation_count = 1`, two consecutive updates: exercises
+    //!   the post-update install of the revealed key as an UpdateKey
+    //!   handle so the second update can find a signing key by hash.
+    //! - `pre_rotation_count = 2`: multiple committed candidates.
+    //! - `rotate_did_webvh_keys` against a pre-rotation DID: the
+    //!   convenience wrapper delegates to update_did_webvh, so it
+    //!   benefits from the same fix.
+    //!
+    //! All tests use the serverless URL path (no webvh-host fixture).
+
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+    use chrono::Utc;
+    use serde_json::json;
+    use tokio::time::sleep;
+
+    /// webvh requires `currentVersionTime > previousVersionTime`
+    /// (strict, second precision). A `create_did` immediately
+    /// followed by `update_did` in the same wall-clock second falls
+    /// foul of this. Tests sleep just past the second boundary
+    /// between log-entry-producing calls.
+    const VERSION_TIME_GAP: Duration = Duration::from_millis(1100);
+
+    use super::state_from_jsonl;
+    use super::{
+        RotateDidWebvhKeysOptions, UpdateDidWebvhOptions, rotate_did_webvh_keys, update_did_webvh,
+    };
+    use crate::auth::AuthClaims;
+    use crate::config::AppConfig;
+    use crate::didcomm_bridge::DIDCommBridge;
+    use crate::keys::seed_store::PlaintextSeedStore;
+    use crate::operations::did_webvh::{CreateDidWebvhParams, create_did_webvh};
+    use crate::test_support::{TestStore, open_test_store, test_app_config};
+
+    fn admin_auth() -> AuthClaims {
+        AuthClaims::unsafe_local_cli_super_admin("test")
+    }
+
+    async fn build_resolver() -> DIDCacheClient {
+        DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .expect("did resolver")
+    }
+
+    fn dummy_bridge() -> Arc<DIDCommBridge> {
+        Arc::new(DIDCommBridge::placeholder())
+    }
+
+    fn ts_app_config(ts: &TestStore) -> AppConfig {
+        test_app_config(ts.data_dir.clone())
+    }
+
+    /// Stage a fresh VTA-shaped fixture: a tempdir-backed store, an
+    /// active seed, and a context. Returns everything callers need to
+    /// drive `create_did_webvh` then `update_did_webvh`.
+    async fn setup(context_id: &str) -> (TestStore, PlaintextSeedStore) {
+        let ts = open_test_store().await;
+        let seed_store = PlaintextSeedStore::new(&ts.data_dir);
+        crate::keys::seed_store::SeedStore::set(&seed_store, &[0xAAu8; 64])
+            .await
+            .expect("write seed");
+        crate::keys::seeds::save_seed_record(
+            &ts.keys_ks,
+            &crate::keys::seeds::SeedRecord {
+                id: 0,
+                seed_hex: None,
+                created_at: Utc::now(),
+                retired_at: None,
+            },
+        )
+        .await
+        .expect("save seed record");
+        crate::keys::seeds::set_active_seed_id(&ts.keys_ks, 0)
+            .await
+            .expect("set active seed");
+        crate::contexts::create_context(&ts.contexts_ks, context_id, "e2e ctx")
+            .await
+            .expect("create context");
+        (ts, seed_store)
+    }
+
+    /// Helper: drive `create_did_webvh` for a serverless DID with the
+    /// given pre-rotation count, and return the resulting (did, scid).
+    #[allow(clippy::too_many_arguments)]
+    async fn create_did(
+        ts: &TestStore,
+        seed_store: &PlaintextSeedStore,
+        cfg: &AppConfig,
+        auth: &AuthClaims,
+        resolver: &DIDCacheClient,
+        bridge: &Arc<DIDCommBridge>,
+        context_id: &str,
+        pre_rotation_count: u32,
+    ) -> (String, String) {
+        let result = create_did_webvh(
+            &ts.keys_ks,
+            &ts.imported_ks,
+            &ts.contexts_ks,
+            &ts.webvh_ks,
+            &ts.did_templates_ks,
+            seed_store,
+            cfg,
+            auth,
+            CreateDidWebvhParams {
+                context_id: context_id.into(),
+                server_id: None,
+                url: Some("https://example.com/.well-known/did/did.jsonl".into()),
+                path: None,
+                label: Some("e2e".into()),
+                portable: true,
+                add_mediator_service: false,
+                additional_services: None,
+                pre_rotation_count,
+                did_document: None,
+                did_log: None,
+                set_primary: true,
+                signing_key_id: None,
+                ka_key_id: None,
+                template: None,
+                template_context: None,
+                template_vars: Default::default(),
+                is_vta_identity: false,
+            },
+            resolver,
+            bridge,
+            "test",
+        )
+        .await
+        .expect("create_did_webvh");
+        (result.did, result.scid)
+    }
+
+    /// Build a well-formed DID document patch that swaps the only
+    /// verificationMethod's pubkey. Anything that satisfies
+    /// `validate_document_for_update` is fine — we don't care about the
+    /// exact shape, only that the chain validates afterward.
+    fn doc_patch(did: &str, suffix: &str) -> serde_json::Value {
+        json!({
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            "id": did,
+            "verificationMethod": [{
+                "id": format!("{did}#patched-{suffix}"),
+                "type": "Multikey",
+                "controller": did,
+                "publicKeyMultibase": format!("z6MkPatched{suffix}"),
+            }]
+        })
+    }
+
+    /// Validate the full chain end-to-end. Re-running
+    /// `state_from_jsonl` on the persisted log calls
+    /// `DIDWebVHState::validate` + `assert_complete`, so any
+    /// chain-internal inconsistency surfaces here.
+    async fn assert_chain_validates(ts: &TestStore, did: &str) {
+        let log = crate::webvh_store::get_did_log(&ts.webvh_ks, did)
+            .await
+            .expect("get_did_log")
+            .expect("log present");
+        state_from_jsonl(&log).expect("chain validates");
+    }
+
+    /// Sanity: pre_rotation_count = 0 (no pre-rotation) — the path
+    /// the existing integration tests already covered. Asserts the
+    /// non-pre-rotation flow continues to work after the refactor.
+    #[tokio::test]
+    async fn update_without_pre_rotation_succeeds() {
+        let (ts, seed_store) = setup("ctx-nopre").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-nopre",
+            0,
+        )
+        .await;
+        sleep(VERSION_TIME_GAP).await;
+
+        let result = update_did_webvh(
+            &ts.keys_ks,
+            &ts.contexts_ks,
+            &ts.webvh_ks,
+            &ts.audit_ks,
+            &seed_store,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                document: Some(doc_patch(&did, "v2")),
+                ..Default::default()
+            },
+            &resolver,
+            &bridge,
+            "test",
+        )
+        .await
+        .expect("update");
+
+        assert!(result.new_version_id.starts_with("2-"));
+        assert_chain_validates(&ts, &did).await;
+    }
+
+    /// Regression test for the bug operators hit running
+    /// `pnm services rest disable` against a pre-rotation-enabled
+    /// VTA. With pre_rotation_count = 1 (the interactive setup
+    /// default), a doc-patch update used to fail with
+    /// `ParametersError: Signing key ID … does not match any next
+    /// key hashes …` from didwebvh-rs because the update path signed
+    /// with `last.update_keys[0]` instead of the pre-rotation
+    /// candidate committed in `last.next_key_hashes`.
+    #[tokio::test]
+    async fn update_with_pre_rotation_count_one_succeeds() {
+        let (ts, seed_store) = setup("ctx-pre1").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-pre1",
+            1,
+        )
+        .await;
+        sleep(VERSION_TIME_GAP).await;
+
+        let result = update_did_webvh(
+            &ts.keys_ks,
+            &ts.contexts_ks,
+            &ts.webvh_ks,
+            &ts.audit_ks,
+            &seed_store,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                document: Some(doc_patch(&did, "v2")),
+                ..Default::default()
+            },
+            &resolver,
+            &bridge,
+            "test",
+        )
+        .await
+        .expect("update under pre-rotation must succeed");
+
+        assert!(result.new_version_id.starts_with("2-"));
+        // Pre-rotation reveal: the new active update_key is the
+        // revealed pre-rotation candidate, count = 1.
+        assert_eq!(result.update_keys_count, 1);
+        // pre-rotation continues — fresh candidate committed.
+        assert_eq!(result.pre_rotation_key_count, 1);
+        assert_chain_validates(&ts, &did).await;
+    }
+
+    /// Two consecutive doc-patch updates with pre_rotation_count = 1.
+    /// This exercises the post-update install of the revealed key as
+    /// an `UpdateKey` handle — without that step, the second update
+    /// would fail to resolve a signing key after the first update's
+    /// pre-rotation handle is moved to the `superseded:` prefix.
+    #[tokio::test]
+    async fn two_consecutive_updates_with_pre_rotation_succeed() {
+        let (ts, seed_store) = setup("ctx-pre1b").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-pre1b",
+            1,
+        )
+        .await;
+        sleep(VERSION_TIME_GAP).await;
+
+        update_did_webvh(
+            &ts.keys_ks,
+            &ts.contexts_ks,
+            &ts.webvh_ks,
+            &ts.audit_ks,
+            &seed_store,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                document: Some(doc_patch(&did, "v2")),
+                ..Default::default()
+            },
+            &resolver,
+            &bridge,
+            "test",
+        )
+        .await
+        .expect("update 1");
+        sleep(VERSION_TIME_GAP).await;
+
+        let result2 = update_did_webvh(
+            &ts.keys_ks,
+            &ts.contexts_ks,
+            &ts.webvh_ks,
+            &ts.audit_ks,
+            &seed_store,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                document: Some(doc_patch(&did, "v3")),
+                ..Default::default()
+            },
+            &resolver,
+            &bridge,
+            "test",
+        )
+        .await
+        .expect("update 2");
+
+        assert!(result2.new_version_id.starts_with("3-"));
+        assert_chain_validates(&ts, &did).await;
+    }
+
+    /// pre_rotation_count = 2 — the previous entry commits two
+    /// candidates; the next update reveals one of them. Asserts
+    /// `load_pre_rotation_signing_key` correctly picks a matching
+    /// candidate when more than one is committed.
+    #[tokio::test]
+    async fn update_with_pre_rotation_count_two_succeeds() {
+        let (ts, seed_store) = setup("ctx-pre2").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-pre2",
+            2,
+        )
+        .await;
+        sleep(VERSION_TIME_GAP).await;
+
+        update_did_webvh(
+            &ts.keys_ks,
+            &ts.contexts_ks,
+            &ts.webvh_ks,
+            &ts.audit_ks,
+            &seed_store,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                document: Some(doc_patch(&did, "v2")),
+                ..Default::default()
+            },
+            &resolver,
+            &bridge,
+            "test",
+        )
+        .await
+        .expect("update 1");
+        sleep(VERSION_TIME_GAP).await;
+
+        update_did_webvh(
+            &ts.keys_ks,
+            &ts.contexts_ks,
+            &ts.webvh_ks,
+            &ts.audit_ks,
+            &seed_store,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                document: Some(doc_patch(&did, "v3")),
+                ..Default::default()
+            },
+            &resolver,
+            &bridge,
+            "test",
+        )
+        .await
+        .expect("update 2");
+
+        assert_chain_validates(&ts, &did).await;
+    }
+
+    /// Disabling pre-rotation mid-chain: signing key still must come
+    /// from the previous entry's `next_key_hashes`, but the new
+    /// entry's `next_key_hashes` is empty (turning off the feature).
+    /// Subsequent updates fall back to the standard `update_keys`
+    /// path — covered implicitly by the next assertion.
+    #[tokio::test]
+    async fn disabling_pre_rotation_then_updating_succeeds() {
+        let (ts, seed_store) = setup("ctx-pre-off").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-pre-off",
+            1,
+        )
+        .await;
+        sleep(VERSION_TIME_GAP).await;
+
+        // Update 1: turn off pre-rotation.
+        let r1 = update_did_webvh(
+            &ts.keys_ks,
+            &ts.contexts_ks,
+            &ts.webvh_ks,
+            &ts.audit_ks,
+            &seed_store,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                document: Some(doc_patch(&did, "v2")),
+                pre_rotation_count: Some(0),
+                ..Default::default()
+            },
+            &resolver,
+            &bridge,
+            "test",
+        )
+        .await
+        .expect("disable pre-rotation");
+        assert_eq!(r1.pre_rotation_key_count, 0);
+        sleep(VERSION_TIME_GAP).await;
+
+        // Update 2: ordinary non-pre-rotation update.
+        let r2 = update_did_webvh(
+            &ts.keys_ks,
+            &ts.contexts_ks,
+            &ts.webvh_ks,
+            &ts.audit_ks,
+            &seed_store,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                document: Some(doc_patch(&did, "v3")),
+                ..Default::default()
+            },
+            &resolver,
+            &bridge,
+            "test",
+        )
+        .await
+        .expect("subsequent update");
+        assert!(r2.new_version_id.starts_with("3-"));
+        assert_chain_validates(&ts, &did).await;
+    }
+
+    /// `rotate_did_webvh_keys` is a thin wrapper that mints fresh
+    /// VM keys and delegates to `update_did_webvh`. Confirm it works
+    /// against a pre-rotation-enabled DID.
+    #[tokio::test]
+    async fn rotate_keys_with_pre_rotation_succeeds() {
+        let (ts, seed_store) = setup("ctx-rotate").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-rotate",
+            1,
+        )
+        .await;
+        sleep(VERSION_TIME_GAP).await;
+
+        let result = rotate_did_webvh_keys(
+            &ts.keys_ks,
+            &ts.contexts_ks,
+            &ts.webvh_ks,
+            &ts.audit_ks,
+            &seed_store,
+            &auth,
+            &scid,
+            RotateDidWebvhKeysOptions::default(),
+            &resolver,
+            &bridge,
+            "test",
+        )
+        .await
+        .expect("rotate-keys under pre-rotation");
+
+        assert!(result.new_version_id.starts_with("2-"));
+        assert_chain_validates(&ts, &did).await;
+    }
+
+    /// Pre-fix-genesis → post-fix-update scenario.
+    ///
+    /// Operators who created their VTA with the original (broken)
+    /// build have pre-rotation keys saved only at the legacy
+    /// `key:{did}#pre-rotation-N` records — no `webvh_keys` handles.
+    /// After upgrading to the fixed build, the first update has to
+    /// fall back to `legacy_lookup_pre_rotation_by_hash` to find a
+    /// signing key.
+    ///
+    /// This test simulates that state by deleting the
+    /// `webvh_keys` handles installed at genesis, then running the
+    /// update. If the legacy fallback is broken, the update fails
+    /// with the same `ParametersError: Signing key ID … does not
+    /// match any next key hashes` error operators see.
+    #[tokio::test]
+    async fn update_with_legacy_only_pre_rotation_genesis_succeeds() {
+        let (ts, seed_store) = setup("ctx-legacy").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-legacy",
+            1,
+        )
+        .await;
+        sleep(VERSION_TIME_GAP).await;
+
+        // Wipe the webvh_keys keyspace entries so only the legacy
+        // `key:{did}#…` records remain. This puts the store into the
+        // shape it had on a pre-fix VTA.
+        let prefix = format!("webvh:{scid}:");
+        let raws = ts
+            .keys_ks
+            .prefix_keys(prefix.into_bytes())
+            .await
+            .expect("scan webvh_keys");
+        assert!(
+            !raws.is_empty(),
+            "fixture invariant: genesis must install at least one webvh_keys handle"
+        );
+        for raw in raws {
+            ts.keys_ks
+                .remove(raw)
+                .await
+                .expect("strip webvh_keys handles to simulate pre-fix genesis");
+        }
+
+        // Sanity: legacy `key:` records still in place.
+        let legacy = ts
+            .keys_ks
+            .prefix_keys(b"key:".to_vec())
+            .await
+            .expect("scan legacy keys");
+        assert!(
+            legacy.iter().any(|raw| std::str::from_utf8(raw)
+                .map(|s| s.contains("#pre-rotation-"))
+                .unwrap_or(false)),
+            "fixture invariant: legacy pre-rotation record must exist"
+        );
+
+        // The update should succeed via the legacy fallback in
+        // `load_pre_rotation_signing_key`.
+        let result = update_did_webvh(
+            &ts.keys_ks,
+            &ts.contexts_ks,
+            &ts.webvh_ks,
+            &ts.audit_ks,
+            &seed_store,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                document: Some(doc_patch(&did, "v2")),
+                ..Default::default()
+            },
+            &resolver,
+            &bridge,
+            "test",
+        )
+        .await
+        .expect("legacy-fallback update under pre-rotation");
+
+        assert!(result.new_version_id.starts_with("2-"));
+        assert_eq!(result.update_keys_count, 1);
+        assert_eq!(result.pre_rotation_key_count, 1);
+        assert_chain_validates(&ts, &did).await;
     }
 }
