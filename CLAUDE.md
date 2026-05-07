@@ -300,10 +300,18 @@ new flow, update both this section and the relevant `docs/*.md`.
   - **PNM REST bridge**: `pnm bootstrap provision-request` →
     `pnm bootstrap provision-integration` (authenticated, hits
     `POST /bootstrap/provision-integration`).
-  - **DIDComm**: `provision-integration/1.0` protocol (authcrypt; ACL gates).
+  - **DIDComm**: same `pnm bootstrap provision-integration`
+    command when the client is on DIDComm transport — the
+    `provision-integration/1.0` protocol carries the VP and
+    receives the same sealed bundle. `VtaClient::
+    provision_integration` dispatches based on the
+    `Transport::Rest`/`Transport::DIDComm` variant.
+    `auth_from_message` enforces `DIDCommSender == VPHolder`
+    before the bundle is issued (privilege-laundering guard).
 - **Code**: `vta-service/src/operations/provision_integration.rs`,
-  `vta-sdk/src/provision_integration/`,
-  `vta-service/src/routes/bootstrap.rs:provision_integration`.
+  `vta-sdk/src/provision_integration/{http,didcomm}.rs`,
+  `vta-service/src/routes/bootstrap.rs:provision_integration`,
+  `vta-service/src/messaging/handlers.rs:handle_provision_integration`.
 - **Docs**: `docs/03-integrating/provision-integration.md`.
 
 ### Runtime service management

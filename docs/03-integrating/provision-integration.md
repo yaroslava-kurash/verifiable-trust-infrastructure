@@ -30,12 +30,19 @@ Three transports carry the same VP-and-sealed-bundle exchange:
 
 1. **File** — air-gapped / offline. Operator hand-carries the request
    and the bundle as files.
-2. **REST** — PNM-bridged. Operator runs `pnm bootstrap
-   provision-integration` from an authenticated workstation.
-3. **DIDComm** — holder-driven. The integration itself sends the
-   request over an authcrypt'd DIDComm session. Used when an
-   already-admin DID provisions further integrations in the same
-   context.
+2. **REST** — `pnm bootstrap provision-integration` from an
+   authenticated REST session.
+3. **DIDComm** — same `pnm bootstrap provision-integration`
+   command when the operator's `pnm` is connected via DIDComm
+   (`pnm setup` opted into DIDComm transport, or an
+   already-admin integration runs the SDK directly). The
+   `provision-integration/1.0` protocol carries the same VP-and-
+   sealed-bundle exchange over an authcrypt'd DIDComm session.
+
+`VtaClient::provision_integration` dispatches automatically
+based on how the client was constructed; the operator command is
+identical in both cases. The sealed bundle returned is identical
+across all three transports.
 
 The sealed bundle returned is identical across all three. Only the
 transport differs.

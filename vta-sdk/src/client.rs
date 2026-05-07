@@ -1657,12 +1657,20 @@ impl VtaClient {
         }
     }
 
-    /// `POST /bootstrap/provision-integration` — bridge a VP-framed
-    /// bootstrap request to the VTA and receive the sealed bundle.
+    /// Bridge a VP-framed bootstrap request to the VTA and receive
+    /// the sealed bundle.
     ///
-    /// Requires REST transport — the endpoint has no DIDComm
-    /// equivalent in phase 1. Callers on the DIDComm transport get
-    /// [`VtaError::UnsupportedTransport`].
+    /// Works over both transports:
+    /// - **REST**: `POST /bootstrap/provision-integration`.
+    /// - **DIDComm**: `provision-integration/1.0` protocol over the
+    ///   open authcrypt session. The VTA-side handler is the same
+    ///   shared library function as REST; only the I/O differs.
+    ///
+    /// In DIDComm mode, the session's `client_did` must already
+    /// hold admin role in the target context's ACL. The VTA
+    /// rejects with `Forbidden` (mapped to [`VtaError::Auth`]) if
+    /// the DIDComm sender DID and the VP's holder DID disagree —
+    /// privilege-laundering guard.
     #[cfg(feature = "provision-integration")]
     pub async fn provision_integration(
         &self,
@@ -1683,9 +1691,16 @@ impl VtaClient {
                 Self::handle_response(resp).await
             }
             #[cfg(feature = "session")]
-            Transport::DIDComm { .. } => Err(VtaError::UnsupportedTransport(
-                "provision-integration is REST-only in phase 1".into(),
-            )),
+            Transport::DIDComm { session, .. } => {
+                crate::provision_integration::didcomm::provision_integration_didcomm(
+                    session,
+                    req.request,
+                    req.context,
+                    req.assertion,
+                    req.vc_validity_seconds,
+                )
+                .await
+            }
         }
     }
 }

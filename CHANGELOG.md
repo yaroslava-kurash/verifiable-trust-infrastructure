@@ -23,6 +23,15 @@
   operator guide and
   `docs/05-design-notes/runtime-service-management.md` for the
   spec.
+- **`pnm bootstrap provision-integration` works over DIDComm** —
+  the SDK's `VtaClient::provision_integration` now dispatches to
+  the existing `provision-integration/1.0` DIDComm handler when
+  the client is in DIDComm transport mode, instead of returning
+  `UnsupportedTransport`. The pnm-cli command is unchanged;
+  whichever transport the client opened (REST or DIDComm) is
+  what carries the VP and the sealed bundle. The VTA enforces
+  `DIDCommSender == VPHolder` on the DIDComm path
+  (privilege-laundering guard).
 - **Promote a serverless WebVH DID to a server-managed one** —
   `pnm webvh register-did --did <did> --server <server-id>` (and
   the offline `vta webvh register-did …`) push an existing local

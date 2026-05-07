@@ -373,13 +373,20 @@ pub async fn run_connect(
 }
 
 /// `pnm bootstrap provision-integration` — bridge a VP-framed
-/// BootstrapRequest to the VTA's `POST /bootstrap/provision-integration`
-/// endpoint over the authenticated session, writing the returned
+/// BootstrapRequest to the VTA over whichever transport the client
+/// is currently using (REST or DIDComm), writing the returned
 /// armored bundle to disk.
 ///
-/// The VTA runs the same shared library fn as the offline
-/// `vta bootstrap provision-integration` CLI; the difference is
-/// transport only.
+/// The VTA runs the same shared library fn for both transports and
+/// the offline `vta bootstrap provision-integration` CLI; the only
+/// difference between paths is the wire form of the request /
+/// response. `VtaClient::provision_integration` dispatches:
+/// - REST → `POST /bootstrap/provision-integration` with the
+///   bearer token from the open session.
+/// - DIDComm → `provision-integration/1.0` message over the open
+///   authcrypt session. The VTA enforces that the DIDComm sender
+///   DID matches the VP holder before issuing the bundle
+///   (privilege-laundering guard).
 pub async fn run_provision_integration(
     client: &vta_sdk::client::VtaClient,
     request: PathBuf,
