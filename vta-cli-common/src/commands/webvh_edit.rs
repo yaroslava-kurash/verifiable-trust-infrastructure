@@ -89,6 +89,87 @@ pub fn extract_current_document(did_log: &str) -> Result<Value, EditFlowError> {
     Ok(state)
 }
 
+/// Extract the `versionId` of the last non-empty log entry. Used as
+/// the optimistic-concurrency precondition on the save call: the VTA
+/// rejects the update if the DID has moved on since this versionId.
+/// Returns `Err(EmptyLog)` when the log has no entries; returns
+/// `Err(LogParse)` if the latest entry is malformed or missing
+/// `versionId` (extremely unlikely on a valid did:webvh log — but
+/// fall back to None at the call site rather than blocking the save
+/// just because we couldn't read a version).
+pub fn extract_latest_version_id(did_log: &str) -> Result<String, EditFlowError> {
+    let line = did_log
+        .lines()
+        .rfind(|l| !l.trim().is_empty())
+        .ok_or(EditFlowError::EmptyLog)?;
+    let entry: Value = serde_json::from_str(line)
+        .map_err(|e| EditFlowError::LogParse(format!("line parse: {e}")))?;
+    entry
+        .get("versionId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| EditFlowError::LogParse("LogEntry has no `versionId` field".into()))
+}
+
+/// Summary of the DID's currently-effective pre-rotation setup,
+/// extracted from the on-disk log without needing to depend on
+/// didwebvh-rs. Surfaced before the "Override pre-rotation count?"
+/// prompt so the operator can see what they're choosing to change.
+///
+/// Pre-rotation is "active" when the most recent log entry that
+/// mentions `nextKeyHashes` has a non-empty array. Walking back
+/// through entries handles the did:webvh delta-parameter model
+/// (subsequent entries may omit unchanged fields).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreRotationStatus {
+    /// Number of pre-rotation keys committed in the most recent
+    /// non-empty commitment. `0` when pre-rotation is disabled or
+    /// has never been enabled.
+    pub committed_count: usize,
+    /// True iff the most recent mention of `nextKeyHashes` was
+    /// non-empty. False when the most recent mention was an empty
+    /// array (explicit disable) or when no entry has ever mentioned
+    /// the field.
+    pub active: bool,
+    /// True when no entry in the log has ever mentioned
+    /// `nextKeyHashes` — distinguishes "never enabled" from
+    /// "explicitly disabled" for the operator-facing display.
+    pub never_set: bool,
+}
+
+/// Walk the log latest-first to find the most recent entry that
+/// declared `nextKeyHashes`. The latest such declaration is
+/// authoritative under did:webvh delta-parameter semantics.
+pub fn extract_pre_rotation_status(did_log: &str) -> PreRotationStatus {
+    for line in did_log.lines().rev() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        let Some(hashes) = entry
+            .get("parameters")
+            .and_then(|p| p.get("nextKeyHashes"))
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+        let count = hashes.len();
+        return PreRotationStatus {
+            committed_count: count,
+            active: count > 0,
+            never_set: false,
+        };
+    }
+    PreRotationStatus {
+        committed_count: 0,
+        active: false,
+        never_set: true,
+    }
+}
+
 /// Read the `id` field from a DID document. Used to enforce the
 /// DID-id invariant after the operator edits the document.
 pub fn document_id(doc: &Value) -> Result<&str, EditFlowError> {
@@ -258,6 +339,12 @@ pub fn build_options_from_flags(flags: &EditFlags) -> Result<UpdateDidWebvhBody,
         watchers,
         ttl: flags.ttl,
         label: flags.label.clone(),
+        // Non-interactive flag-driven path (e.g. `pnm webvh edit-did
+        // --document <file>` from a script). The interactive flow sets
+        // this to the fetched versionId so a stale `get → edit → save`
+        // cycle gets a 409; scripted callers opt in by passing
+        // `--expected-version-id` (wired separately).
+        expected_version_id: None,
     })
 }
 
@@ -271,7 +358,10 @@ pub fn build_options_from_flags(flags: &EditFlags) -> Result<UpdateDidWebvhBody,
 /// `Confirm` defaulting to `false` so the operator can hit Enter
 /// repeatedly to skip everything and just publish the document
 /// edit on its own.
-pub fn prompt_webvh_params(edited_doc: Option<Value>) -> Result<UpdateDidWebvhBody, EditFlowError> {
+pub fn prompt_webvh_params(
+    edited_doc: Option<Value>,
+    pre_rotation_status: Option<&PreRotationStatus>,
+) -> Result<UpdateDidWebvhBody, EditFlowError> {
     use dialoguer::{Confirm, Input};
 
     fn err(e: dialoguer::Error) -> EditFlowError {
@@ -282,6 +372,27 @@ pub fn prompt_webvh_params(edited_doc: Option<Value>) -> Result<UpdateDidWebvhBo
         document: edited_doc,
         ..Default::default()
     };
+
+    // Show the current pre-rotation setup so the operator can decide
+    // what (if anything) to change. Skipped when the caller didn't
+    // supply a status (e.g. an offline test path that has no log).
+    if let Some(s) = pre_rotation_status {
+        if s.never_set {
+            eprintln!("  Pre-rotation: disabled (never enabled on this DID).");
+        } else if !s.active {
+            eprintln!("  Pre-rotation: disabled (explicitly turned off).");
+        } else {
+            let plural = if s.committed_count == 1 {
+                "key"
+            } else {
+                "keys"
+            };
+            eprintln!(
+                "  Pre-rotation: active — {} {plural} currently committed.",
+                s.committed_count
+            );
+        }
+    }
 
     if Confirm::new()
         .with_prompt("Override pre-rotation count?")
@@ -332,7 +443,7 @@ pub fn prompt_webvh_params(edited_doc: Option<Value>) -> Result<UpdateDidWebvhBo
 
     if Confirm::new()
         .with_prompt("Add an audit label for this update?")
-        .default(false)
+        .default(true)
         .interact()
         .map_err(err)?
     {
@@ -407,6 +518,67 @@ mod tests {
         let doc = extract_current_document(log).unwrap();
         assert_eq!(doc["id"], "did:webvh:foo");
         assert_eq!(doc["key"], "v2");
+    }
+
+    #[test]
+    fn extract_latest_version_id_returns_last_entrys_version_id() {
+        let log = "{\"versionId\":\"1-aaa\",\"state\":{\"id\":\"did:webvh:foo\"}}\n\
+                   {\"versionId\":\"2-bbb\",\"state\":{\"id\":\"did:webvh:foo\"}}\n";
+        assert_eq!(extract_latest_version_id(log).unwrap(), "2-bbb");
+    }
+
+    #[test]
+    fn extract_latest_version_id_skips_trailing_blank_lines() {
+        let log = "{\"versionId\":\"1-aaa\",\"state\":{\"id\":\"x\"}}\n\
+                   {\"versionId\":\"2-bbb\",\"state\":{\"id\":\"x\"}}\n\n\n";
+        assert_eq!(extract_latest_version_id(log).unwrap(), "2-bbb");
+    }
+
+    #[test]
+    fn extract_latest_version_id_errors_on_empty_log() {
+        let err = extract_latest_version_id("").unwrap_err();
+        assert!(matches!(err, EditFlowError::EmptyLog), "got {err:?}");
+    }
+
+    #[test]
+    fn extract_pre_rotation_status_walks_back_through_deltas() {
+        // Latest entry omits parameters → walk back to entry 2 which
+        // committed 2 next-key hashes.
+        let log = format!(
+            "{{\"versionId\":\"1-aaa\",\"parameters\":{{\"nextKeyHashes\":[\"Qm1\"]}}}}\n\
+             {{\"versionId\":\"2-bbb\",\"parameters\":{{\"nextKeyHashes\":[\"Qm2a\",\"Qm2b\"]}}}}\n\
+             {{\"versionId\":\"3-ccc\",\"parameters\":{{}}}}\n"
+        );
+        let s = extract_pre_rotation_status(&log);
+        assert!(s.active);
+        assert_eq!(s.committed_count, 2);
+        assert!(!s.never_set);
+    }
+
+    #[test]
+    fn extract_pre_rotation_status_recognises_explicit_disable() {
+        // Entry 2 explicitly empties nextKeyHashes → pre-rotation off.
+        let log = format!(
+            "{{\"versionId\":\"1-aaa\",\"parameters\":{{\"nextKeyHashes\":[\"Qm1\"]}}}}\n\
+             {{\"versionId\":\"2-bbb\",\"parameters\":{{\"nextKeyHashes\":[]}}}}\n"
+        );
+        let s = extract_pre_rotation_status(&log);
+        assert!(!s.active);
+        assert_eq!(s.committed_count, 0);
+        assert!(!s.never_set);
+    }
+
+    #[test]
+    fn extract_pre_rotation_status_returns_never_set_when_no_entry_mentions_it() {
+        let log = "{\"versionId\":\"1-aaa\",\"parameters\":{}}\n\
+                   {\"versionId\":\"2-bbb\",\"parameters\":{}}\n";
+        let s = extract_pre_rotation_status(log);
+        assert!(!s.active);
+        assert_eq!(s.committed_count, 0);
+        assert!(
+            s.never_set,
+            "no nextKeyHashes anywhere → never_set must be true"
+        );
     }
 
     #[test]

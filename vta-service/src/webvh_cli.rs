@@ -407,6 +407,8 @@ pub async fn run_edit_did(
             .ok_or_else(|| format!("DID `{did}` has no log on disk"))?;
         let prior = extract_current_document(&log)?;
         let prior_id = document_id(&prior)?.to_string();
+        let pre_rotation_status =
+            vta_cli_common::commands::webvh_edit::extract_pre_rotation_status(&log);
         eprintln!("Editing DID document for {prior_id}.");
         eprintln!("Opening $EDITOR — save and exit to continue, or quit without saving to abort.");
 
@@ -426,7 +428,7 @@ pub async fn run_edit_did(
                 return Ok(());
             }
         };
-        prompt_webvh_params(edited)?
+        prompt_webvh_params(edited, Some(&pre_rotation_status))?
     };
 
     confirm_publish(&body, no_confirm)?;
@@ -449,6 +451,7 @@ pub async fn run_edit_did(
         watchers: body.watchers,
         ttl: body.ttl,
         label: body.label,
+        expected_version_id: body.expected_version_id,
     };
 
     let auth = cli_super_admin();

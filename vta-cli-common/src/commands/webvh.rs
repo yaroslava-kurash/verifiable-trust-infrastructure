@@ -186,7 +186,8 @@ pub async fn cmd_webvh_did_edit(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use super::webvh_edit::{
         build_options_from_flags, confirm_publish, diff_summary, document_id,
-        extract_current_document, launch_editor, prompt_webvh_params,
+        extract_current_document, extract_latest_version_id, extract_pre_rotation_status,
+        launch_editor, prompt_webvh_params,
     };
 
     // Fetch the DID record (for context_id + scid) — this also
@@ -207,7 +208,7 @@ pub async fn cmd_webvh_did_edit(
         || flags.no_watchers
         || flags.label.is_some();
 
-    let body = if any_flag_set {
+    let mut body = if any_flag_set {
         let body = build_options_from_flags(&flags)?;
         // Validate the supplied document doesn't change the DID id.
         if let Some(edited) = &body.document {
@@ -221,14 +222,21 @@ pub async fn cmd_webvh_did_edit(
         body
     } else {
         // Interactive path: fetch the log, extract the latest doc,
-        // open in $EDITOR, then walk the parameter prompts.
+        // open in $EDITOR, then walk the parameter prompts. Capture
+        // the latest versionId so the save call can carry an
+        // optimistic-concurrency precondition (lost-update guard).
         let log = client.get_did_webvh_log(did).await?;
         let log_str = log.log.ok_or_else(|| -> Box<dyn std::error::Error> {
             "DID has no published log on the VTA — nothing to edit".into()
         })?;
         let prior = extract_current_document(&log_str)?;
         let prior_id = document_id(&prior)?.to_string();
+        let fetched_version_id = extract_latest_version_id(&log_str).ok();
+        let pre_rotation_status = extract_pre_rotation_status(&log_str);
         eprintln!("Editing DID document for {prior_id}.");
+        if let Some(ref v) = fetched_version_id {
+            eprintln!("  Current versionId: {v}");
+        }
         eprintln!("Opening $EDITOR — save and exit to continue, or quit without saving to abort.");
 
         let edited = match launch_editor(&prior)? {
@@ -248,8 +256,15 @@ pub async fn cmd_webvh_did_edit(
             }
         };
 
-        prompt_webvh_params(edited)?
+        let mut body = prompt_webvh_params(edited, Some(&pre_rotation_status))?;
+        // Stamp the precondition so the VTA refuses the save if the
+        // DID was updated by another operator while we were editing.
+        body.expected_version_id = fetched_version_id;
+        body
     };
+    // Suppress the unused_mut warning when the flag-driven branch
+    // doesn't mutate `body` after construction.
+    let _ = &mut body;
 
     confirm_publish(&body, no_confirm)?;
 

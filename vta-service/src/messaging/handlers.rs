@@ -1374,6 +1374,7 @@ pub async fn handle_update_did_webvh(
         watchers: env.body.watchers,
         ttl: env.body.ttl,
         label: env.body.label,
+        expected_version_id: env.body.expected_version_id,
     };
 
     let result = app_try!(

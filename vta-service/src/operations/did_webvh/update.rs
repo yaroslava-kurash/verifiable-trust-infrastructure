@@ -66,6 +66,15 @@ pub struct UpdateDidWebvhOptions {
     /// Operator-facing label for audit. Optional.
     #[serde(default)]
     pub label: Option<String>,
+    /// Optimistic-concurrency precondition. When `Some`, the operation
+    /// refuses with `Conflict` if the DID's latest log entry no longer
+    /// matches this versionId. Lets a `get → edit → save` flow detect
+    /// lost updates instead of silently overwriting another operator's
+    /// edits with a chain that's structurally valid but content-wise
+    /// based on a stale read. `None` (default) preserves prior
+    /// behaviour for scripted callers.
+    #[serde(default)]
+    pub expected_version_id: Option<String>,
 }
 
 /// Result of a successful update.
@@ -695,6 +704,10 @@ pub async fn rotate_did_webvh_keys(
             watchers: None,
             ttl: None,
             label,
+            // rotate_did_webvh_keys composes update_did_webvh internally;
+            // it doesn't expose the precondition (rotation is not a
+            // user-edited document flow), so pass None.
+            expected_version_id: None,
         },
         did_resolver,
         didcomm_bridge,
@@ -858,6 +871,25 @@ pub async fn update_did_webvh(
     let last_state = state.log_entries().last().ok_or_else(|| {
         UpdateDidWebvhError::Library(format!("DID {} has no log entries", record.did))
     })?;
+
+    // 4a. Optimistic-concurrency precondition. Check BEFORE key
+    //     derivation / signing so a stale `get → edit → save` cycle
+    //     fails fast and cheap, with a message the operator can act
+    //     on. This catches the lost-update race the within-operation
+    //     `log_entry_count` check at the end does NOT — that one only
+    //     covers two server calls racing each other; this one covers
+    //     a client call that was authored against a stale view.
+    if let Some(expected) = opts.expected_version_id.as_deref() {
+        let latest = last_state.get_version_id();
+        if latest != expected {
+            return Err(UpdateDidWebvhError::Conflict(format!(
+                "DID {} has been updated since you read it (expected versionId `{expected}`, \
+                 current is `{latest}`). Re-fetch the document and re-apply your edits.",
+                record.did
+            )));
+        }
+    }
+
     let last_params = last_state.validated_parameters.clone();
     let last_update_keys: Vec<Multibase> = last_params
         .update_keys
@@ -2386,6 +2418,182 @@ mod pre_rotation_e2e_tests {
         assert!(result.new_version_id.starts_with("2-"));
         assert_eq!(result.update_keys_count, 1);
         assert_eq!(result.pre_rotation_key_count, 1);
+        assert_chain_validates(&ts, &did).await;
+    }
+
+    /// Optimistic-concurrency precondition.
+    ///
+    /// Scenario: operator A reads the DID at versionId `1-…`, operator B
+    /// (or a bot) updates the DID, then A tries to save its edits with
+    /// the stale `expected_version_id`. The save must fail with
+    /// `Conflict` rather than silently building a chain on top of B's
+    /// changes — otherwise A's document body overwrites B's edits even
+    /// though the chain stays structurally valid.
+    #[tokio::test]
+    async fn update_with_stale_expected_version_id_conflicts() {
+        let (ts, seed_store) = setup("ctx-stale").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-stale",
+            0,
+        )
+        .await;
+
+        // Capture the genesis versionId (`1-…`) before anyone updates.
+        let log = crate::webvh_store::get_did_log(&ts.webvh_ks, &did)
+            .await
+            .expect("get_did_log")
+            .expect("log present");
+        let genesis_version_id = log
+            .lines()
+            .next()
+            .and_then(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .and_then(|v| {
+                v.get("versionId")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .expect("genesis versionId");
+
+        // Concurrent update by "operator B" — bumps the chain to `2-…`.
+        sleep(VERSION_TIME_GAP).await;
+        update_did_webvh(
+            &ts.keys_ks,
+            &ts.contexts_ks,
+            &ts.webvh_ks,
+            &ts.audit_ks,
+            &seed_store,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                document: Some(doc_patch(&did, "by-b")),
+                ..Default::default()
+            },
+            &resolver,
+            &bridge,
+            "test",
+        )
+        .await
+        .expect("operator B's update succeeds");
+
+        // Operator A tries to save with the stale `1-…` precondition.
+        sleep(VERSION_TIME_GAP).await;
+        let err = update_did_webvh(
+            &ts.keys_ks,
+            &ts.contexts_ks,
+            &ts.webvh_ks,
+            &ts.audit_ks,
+            &seed_store,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                document: Some(doc_patch(&did, "by-a")),
+                expected_version_id: Some(genesis_version_id.clone()),
+                ..Default::default()
+            },
+            &resolver,
+            &bridge,
+            "test",
+        )
+        .await
+        .expect_err("stale expected_version_id must conflict");
+
+        match err {
+            crate::operations::did_webvh::UpdateDidWebvhError::Conflict(msg) => {
+                assert!(
+                    msg.contains(&genesis_version_id),
+                    "error should name the stale version: got {msg}"
+                );
+                assert!(
+                    msg.contains("Re-fetch"),
+                    "error should hint at the recovery action: got {msg}"
+                );
+            }
+            other => panic!("expected Conflict, got {other:?}"),
+        }
+
+        // The chain on disk should still be exactly what B wrote — A's
+        // attempted update did not touch storage.
+        let log_after = crate::webvh_store::get_did_log(&ts.webvh_ks, &did)
+            .await
+            .expect("get_did_log")
+            .expect("log present");
+        assert_eq!(
+            log_after.lines().count(),
+            2,
+            "A's update must not have appended a third entry"
+        );
+    }
+
+    /// Same precondition machinery, but the supplied versionId matches
+    /// the current latest — should pass through cleanly. Pins the
+    /// happy-path so we don't accidentally make the precondition reject
+    /// every update.
+    #[tokio::test]
+    async fn update_with_current_expected_version_id_succeeds() {
+        let (ts, seed_store) = setup("ctx-current").await;
+        let cfg = ts_app_config(&ts);
+        let auth = admin_auth();
+        let resolver = build_resolver().await;
+        let bridge = dummy_bridge();
+
+        let (did, scid) = create_did(
+            &ts,
+            &seed_store,
+            &cfg,
+            &auth,
+            &resolver,
+            &bridge,
+            "ctx-current",
+            0,
+        )
+        .await;
+        let log = crate::webvh_store::get_did_log(&ts.webvh_ks, &did)
+            .await
+            .expect("get_did_log")
+            .expect("log present");
+        let current_version_id = log
+            .lines()
+            .last()
+            .and_then(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .and_then(|v| {
+                v.get("versionId")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .expect("current versionId");
+
+        sleep(VERSION_TIME_GAP).await;
+        let result = update_did_webvh(
+            &ts.keys_ks,
+            &ts.contexts_ks,
+            &ts.webvh_ks,
+            &ts.audit_ks,
+            &seed_store,
+            &auth,
+            &scid,
+            UpdateDidWebvhOptions {
+                document: Some(doc_patch(&did, "current")),
+                expected_version_id: Some(current_version_id),
+                ..Default::default()
+            },
+            &resolver,
+            &bridge,
+            "test",
+        )
+        .await
+        .expect("update with matching expected_version_id should succeed");
+        assert!(result.new_version_id.starts_with("2-"));
         assert_chain_validates(&ts, &did).await;
     }
 }
