@@ -123,6 +123,13 @@ impl RecordSnapshot {
 /// Reasons the snapshot's fields no longer match the on-disk record.
 /// Each carries enough context for the op-layer wrapper to format an
 /// actionable operator-facing message.
+///
+/// The `Changed` suffix is intentional — every variant says "this
+/// specific field's value changed between snapshot and re-load", and
+/// hoisting `Changed` to the enum name would lose that contrast with
+/// other potential race shapes (e.g. a future `RecordDeleted` arm).
+/// Suppress clippy's enum-variant-names lint for that reason.
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, thiserror::Error)]
 pub enum RaceDetected {
     #[error(

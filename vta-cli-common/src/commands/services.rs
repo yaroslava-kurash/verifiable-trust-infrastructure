@@ -178,8 +178,7 @@ pub async fn cmd_services_didcomm_rollback(
     client: &VtaClient,
     drain_ttl_secs: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut req = RollbackDidcommRequest::default();
-    req.drain_ttl_secs = drain_ttl_secs;
+    let req = RollbackDidcommRequest { drain_ttl_secs };
     let resp = client.rollback_didcomm(req).await?;
     print_rollback_result("DIDComm", &resp);
     Ok(())

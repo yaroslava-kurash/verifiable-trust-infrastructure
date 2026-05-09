@@ -151,6 +151,15 @@ pub enum ExistingDataDirPolicy {
 /// Per-backend seed-store config. The `backend` discriminator selects the
 /// variant; required fields per variant are validated at deserialization
 /// time via `serde(deny_unknown_fields)`.
+///
+/// `large_enum_variant` is suppressed deliberately: the `Vault` arm
+/// carries ~14 KV-v2 + auth-method fields, which dominates the
+/// stack size of an `Option<SecretsBackendInput>`. The enum is
+/// parsed exactly once at setup time from a TOML file and never
+/// stored on a hot path, so the per-variant size footprint isn't
+/// load-bearing — boxing just to mollify the lint would add
+/// indirection for no operational benefit.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Deserialize)]
 #[serde(tag = "backend", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SecretsBackendInput {
