@@ -164,6 +164,11 @@ aws-lc-rs = { version = "1", optional = true }
 tempfile = "3"
 http-body-util = "0.1"
 urlencoding = "2"
+# Self-dep with `test-support` enabled so integration tests under
+# `tests/` get the shared `test_support::build_test_app` HTTP scaffolding
+# without each having to copy ~140 LoC of AppState-wiring boilerplate.
+# Production builds remain unaffected — this is dev-deps only.
+vta-service = { path = ".", features = ["test-support"] }
 
 [lints]
 workspace = true

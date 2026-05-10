@@ -8803,6 +8803,7 @@ dependencies = [
  "vaultrs",
  "vta-cli-common",
  "vta-sdk 0.6.0",
+ "vta-service",
  "vti-common",
  "x25519-dalek",
  "zeroize",
