@@ -708,6 +708,19 @@ enum AuthCommands {
     Logout,
     /// Show current authentication status
     Status,
+    /// Sign an unseal challenge with this PNM's stored admin key.
+    ///
+    /// Pair with `vta unseal`: when the VTA prints a 64-character hex
+    /// challenge, run `pnm auth sign-challenge <hex>` and paste the
+    /// resulting signature back into the unseal prompt. The cold-start
+    /// alternative — when PNM isn't usable yet — is `vta auth
+    /// sign-challenge --did <did> --challenge <hex>`, which signs from
+    /// the VTA's local fjall keystore (daemon must be stopped).
+    SignChallenge {
+        /// The 32-byte challenge in hex (exactly as printed by `vta
+        /// unseal`).
+        challenge: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1861,6 +1874,9 @@ async fn main() {
             AuthCommands::Status => {
                 auth::status(&keyring_key);
                 Ok(())
+            }
+            AuthCommands::SignChallenge { challenge } => {
+                auth::sign_unseal_challenge(&keyring_key, &challenge)
             }
         },
         Commands::Config { command } => match command {

@@ -84,6 +84,16 @@ enum Commands {
     /// keystore — daemon must be stopped). Paste the signature back into
     /// the prompt.
     Unseal,
+    /// Authentication helpers (offline; safe to run while sealed).
+    ///
+    /// Today: only the `sign-challenge` subcommand, which signs the
+    /// challenge from `vta unseal` using a key from the local fjall
+    /// keystore. Useful for cold-start operators who can't reach PNM
+    /// yet (no network, no PNM auth setup, etc.).
+    Auth {
+        #[command(subcommand)]
+        command: AuthCommands,
+    },
     /// Export admin DID and credential (blocked when sealed)
     ExportAdmin,
     /// Show VTA status and statistics
@@ -709,6 +719,32 @@ enum ConfigCommands {
 }
 
 #[derive(Subcommand)]
+enum AuthCommands {
+    /// Sign an unseal challenge using a key from the local fjall keystore.
+    ///
+    /// The cold-start companion to `pnm auth sign-challenge`. When
+    /// `vta unseal` prints a challenge, run this in a *second* terminal
+    /// (the daemon must be stopped — fjall takes an exclusive lock per
+    /// data dir) to produce the Ed25519 signature, then paste it back
+    /// into the unseal prompt.
+    ///
+    /// Only supports `did:key:` admin DIDs; for other DID methods the
+    /// unseal flow itself rejects via the verifier in `seal::
+    /// verify_challenge_signature`.
+    SignChallenge {
+        /// The admin DID to sign as. Must match a key record in the
+        /// local keystore — typically the super-admin's `did:key:zXxx`
+        /// from `vta bootstrap-admin`.
+        #[arg(long)]
+        did: String,
+        /// The 32-byte challenge in hex (exactly as printed by
+        /// `vta unseal`).
+        #[arg(long)]
+        challenge: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum AclCommands {
     /// List all ACL entries
     List {
@@ -887,6 +923,29 @@ async fn main() {
             };
             let store = store::Store::open(&config.store).expect("failed to open store");
             if let Err(e) = seal::run_unseal_challenge(&store).await {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Auth { command }) => {
+            // `auth` subcommands are intentionally not gated on the seal —
+            // sign-challenge produces an Ed25519 signature offline; it
+            // never mutates state and is the cold-start companion to
+            // `vta unseal` itself. Gating it on `check_seal` would be a
+            // chicken-and-egg paradox.
+            let config = match AppConfig::load(cli.config) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    std::process::exit(1);
+                }
+            };
+            let result = match command {
+                AuthCommands::SignChallenge { did, challenge } => {
+                    auth_sign_challenge(&config, &did, &challenge).await
+                }
+            };
+            if let Err(e) = result {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }
@@ -1617,6 +1676,89 @@ fn run_config_show(config_path: Option<PathBuf>) -> Result<(), Box<dyn std::erro
         Some(&config.store.data_dir.display().to_string()),
     );
     println!();
+    Ok(())
+}
+
+/// `vta auth sign-challenge` — sign the 32-byte challenge from `vta unseal`
+/// using the admin's Ed25519 private key, loaded from the local fjall
+/// keystore. The cold-start companion to `pnm auth sign-challenge` for
+/// operators who can't reach PNM yet (no network, no PNM auth setup).
+///
+/// Daemon must be stopped — fjall holds an exclusive lock per data dir.
+/// Only `did:key:` admin DIDs are supported (matches the verifier in
+/// `seal::verify_challenge_signature`).
+async fn auth_sign_challenge(
+    config: &AppConfig,
+    did: &str,
+    challenge_hex: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use ed25519_dalek::Signer;
+    use keys::{KeyRecord, KeyType};
+
+    if !did.starts_with("did:key:") {
+        return Err(format!(
+            "vta auth sign-challenge only supports did:key admin DIDs (got: {did}). \
+             For other DID methods, unseal via the REST API with a running VTA."
+        )
+        .into());
+    }
+
+    // 32-byte challenge from `vta unseal`.
+    let challenge_bytes: [u8; 32] = hex::decode(challenge_hex.trim())
+        .map_err(|e| format!("challenge is not valid hex: {e}"))?
+        .try_into()
+        .map_err(|v: Vec<u8>| format!("challenge must be 32 bytes (got {} bytes)", v.len()))?;
+
+    // For `did:key:zXxx` the key_id is `did:key:zXxx#zXxx` (the
+    // verifying key's multibase IS the DID-suffix). Construct
+    // directly rather than scanning the keyspace.
+    let multibase = did.strip_prefix("did:key:").unwrap();
+    let key_id = format!("{did}#{multibase}");
+
+    let store = store::Store::open(&config.store)?;
+    let keys_ks = store.keyspace("keys")?;
+    let record: KeyRecord = keys_ks
+        .get(keys::store_key(&key_id))
+        .await?
+        .ok_or_else(|| {
+            format!(
+                "no key record found for `{did}` in this VTA's keystore. \
+                 If the admin DID was minted on a different host, run \
+                 `pnm auth sign-challenge {challenge_hex}` from that host instead."
+            )
+        })?;
+
+    if record.key_type != KeyType::Ed25519 {
+        return Err(format!(
+            "key for `{did}` is not Ed25519 (found: {:?}); cannot sign unseal challenge",
+            record.key_type
+        )
+        .into());
+    }
+
+    let seed_store = create_seed_store(config).map_err(|e| e.to_string())?;
+    let seed = load_seed_bytes(&keys_ks, &*seed_store, record.seed_id).await?;
+
+    let bip32 = ExtendedSigningKey::from_seed(&seed)
+        .map_err(|e| format!("BIP-32 root key derivation failed: {e}"))?;
+    let derivation_path: DerivationPath = record
+        .derivation_path
+        .parse()
+        .map_err(|e| format!("invalid stored derivation path: {e}"))?;
+    let derived = bip32
+        .derive(&derivation_path)
+        .map_err(|e| format!("key derivation failed: {e}"))?;
+
+    let signing_key = SigningKey::from_bytes(derived.signing_key.as_bytes());
+    let signature = signing_key.sign(&challenge_bytes);
+
+    eprintln!();
+    eprintln!("  Signature (hex):");
+    println!("{}", hex::encode(signature.to_bytes()));
+    eprintln!();
+    eprintln!("  Paste the signature above into the `vta unseal` prompt.");
+    eprintln!();
+
     Ok(())
 }
 

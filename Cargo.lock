@@ -5797,6 +5797,7 @@ dependencies = [
  "dialoguer",
  "dirs",
  "ed25519-dalek",
+ "hex",
  "multibase",
  "rand 0.10.1",
  "reqwest 0.13.3",
