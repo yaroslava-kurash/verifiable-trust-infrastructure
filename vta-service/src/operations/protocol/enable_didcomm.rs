@@ -64,6 +64,10 @@ pub struct EnableDidcommResult {
     pub new_version_id: String,
     pub mediator_did: String,
     pub mediator_endpoint: String,
+    /// The VTA's own DID. See [`super::enable_rest::EnableRestResult`].
+    pub vta_did: String,
+    /// True when the VTA's DID is self-hosted.
+    pub serverless: bool,
 }
 
 #[derive(Debug, Error)]
@@ -238,6 +242,8 @@ pub async fn enable_didcomm(
         new_version_id: update_result.new_version_id,
         mediator_did: resolved.mediator_did,
         mediator_endpoint: resolved.endpoint,
+        vta_did,
+        serverless: update_result.serverless,
     })
 }
 

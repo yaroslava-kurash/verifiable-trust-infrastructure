@@ -275,6 +275,7 @@ pub async fn cmd_webvh_did_edit(
     println!("  New SCID:        {}", result.new_scid);
     println!("  Update keys:     {}", result.update_keys_count);
     println!("  Pre-rotation:    {}", result.pre_rotation_key_count);
+    crate::commands::services::print_serverless_hint(result.serverless, &result.did);
     Ok(())
 }
 

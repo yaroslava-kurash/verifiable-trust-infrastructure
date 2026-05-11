@@ -61,6 +61,14 @@ pub struct EnableRestResult {
     /// The validated URL that was published — canonicalised from
     /// `params.url` by `url::Url`.
     pub url: String,
+    /// The VTA's own DID — subject of the LogEntry this enable
+    /// wrote. Propagated upward so route + DIDComm response
+    /// shapes can emit the "fetch did.jsonl + redeploy" hint to
+    /// operators running serverless deployments.
+    pub vta_did: String,
+    /// True when `record.server_id == "serverless"` — the new
+    /// LogEntry is local-only.
+    pub serverless: bool,
 }
 
 #[derive(Debug, Error)]
@@ -208,6 +216,12 @@ pub async fn enable_rest(
     Ok(EnableRestResult {
         new_version_id: update_result.new_version_id,
         url: canonical_url,
+        vta_did,
+        // `update_did_webvh` derives `serverless` from the same
+        // record we loaded in `read_preconditions`; trust its
+        // answer so this op layer stays a single source of truth
+        // (no parallel `server_id == "serverless"` check here).
+        serverless: update_result.serverless,
     })
 }
 

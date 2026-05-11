@@ -62,6 +62,19 @@ pub struct EnableDidcommResponse {
     pub new_version_id: String,
     pub mediator_did: String,
     pub mediator_endpoint: String,
+    /// The VTA's own DID — subject of the LogEntry this enable
+    /// wrote. Carried so the CLI can print follow-up commands like
+    /// `pnm webvh did-log <vta_did>` for serverless deployments.
+    /// `#[serde(default)]` + elide-when-empty keeps the wire form
+    /// back-compat with older servers.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vta_did: String,
+    /// True when the VTA's DID is self-hosted (`server_id =
+    /// "serverless"`). The new LogEntry is local only — operators
+    /// must fetch the updated `did.jsonl` and redeploy.
+    /// `#[serde(default)]` for back-compat.
+    #[serde(default)]
+    pub serverless: bool,
 }
 
 /// Request body for `POST /services/didcomm/disable`.
@@ -86,6 +99,13 @@ pub struct DisableDidcommResponse {
     /// `None` when it was torn down immediately.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drains_until: Option<String>,
+    /// The VTA's own DID. See [`EnableDidcommResponse::vta_did`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vta_did: String,
+    /// True when the VTA's DID is self-hosted. See
+    /// [`EnableDidcommResponse::serverless`].
+    #[serde(default)]
+    pub serverless: bool,
 }
 
 #[cfg(feature = "client")]
@@ -333,6 +353,13 @@ pub struct UpdateDidcommResponse {
     pub active_mediator_did: String,
     pub active_mediator_endpoint: String,
     pub drains_until: String,
+    /// The VTA's own DID. See [`EnableDidcommResponse::vta_did`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vta_did: String,
+    /// True when the VTA's DID is self-hosted. See
+    /// [`EnableDidcommResponse::serverless`].
+    #[serde(default)]
+    pub serverless: bool,
 }
 
 /// Request body for `POST /mediators/drain/cancel`.

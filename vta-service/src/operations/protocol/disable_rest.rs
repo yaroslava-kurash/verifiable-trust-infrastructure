@@ -67,6 +67,10 @@ pub struct DisableRestResult {
     /// Pre-disable URL — recorded so callers / telemetry / audit
     /// can graph what was just unadvertised.
     pub prior_url: String,
+    /// The VTA's own DID. See [`super::enable_rest::EnableRestResult`].
+    pub vta_did: String,
+    /// True when the VTA's DID is self-hosted.
+    pub serverless: bool,
 }
 
 #[derive(Debug, Error)]
@@ -241,6 +245,8 @@ pub async fn disable_rest(
     Ok(DisableRestResult {
         new_version_id: update_result.new_version_id,
         prior_url,
+        vta_did,
+        serverless: update_result.serverless,
     })
 }
 

@@ -421,5 +421,12 @@ pub async fn update_did_webvh(
         new_log_entry: new_log_entry_str,
         update_keys_count,
         pre_rotation_key_count: derived_pre_rotation.len() as u32,
+        // Surface so route + DIDComm response shapes can emit the
+        // "fetch did.jsonl + redeploy" hint to operators. The
+        // string-equality check matches the same sentinel
+        // (`SERVERLESS_MARKER`) that `register_did_with_server`
+        // gates on and that step 13 above used to decide whether
+        // to call the host transport.
+        serverless: record.server_id == "serverless",
     })
 }

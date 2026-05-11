@@ -83,6 +83,12 @@ pub struct RollbackRestResult {
     /// when the rollback was a no-op (snapshot ≡ current).
     pub new_version_id: Option<String>,
     pub kind: RollbackKind,
+    /// The VTA's own DID. Empty for no-op rollbacks (no LogEntry
+    /// was written). See [`super::enable_rest::EnableRestResult`].
+    pub vta_did: String,
+    /// True when the VTA's DID is self-hosted. `false` on no-op
+    /// rollbacks (no follow-up redeploy needed).
+    pub serverless: bool,
 }
 
 #[derive(Debug, Error)]
@@ -227,6 +233,8 @@ pub async fn rollback_rest(
             Ok(RollbackRestResult {
                 new_version_id: Some(result.new_version_id),
                 kind: RollbackKind::Disabled,
+                vta_did: result.vta_did,
+                serverless: result.serverless,
             })
         }
 
@@ -252,6 +260,8 @@ pub async fn rollback_rest(
             Ok(RollbackRestResult {
                 new_version_id: Some(result.new_version_id),
                 kind: RollbackKind::Enabled,
+                vta_did: result.vta_did,
+                serverless: result.serverless,
             })
         }
 
@@ -278,6 +288,8 @@ pub async fn rollback_rest(
             Ok(RollbackRestResult {
                 new_version_id: Some(result.new_version_id),
                 kind: RollbackKind::Updated,
+                vta_did: result.vta_did,
+                serverless: result.serverless,
             })
         }
 
@@ -292,6 +304,11 @@ pub async fn rollback_rest(
             Ok(RollbackRestResult {
                 new_version_id: None,
                 kind: RollbackKind::NoOp,
+                // No LogEntry written — the CLI hint path is
+                // suppressed for no-ops anyway, so empty + false
+                // is the right "nothing to follow up on" signal.
+                vta_did: String::new(),
+                serverless: false,
             })
         }
     }

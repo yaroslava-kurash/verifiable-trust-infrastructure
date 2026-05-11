@@ -65,6 +65,17 @@ pub struct EnableDidcommResponse {
     pub new_version_id: String,
     pub mediator_did: String,
     pub mediator_endpoint: String,
+    /// The VTA's own DID — subject of the LogEntry this enable
+    /// wrote. Lets the CLI emit a "fetch did.jsonl + redeploy"
+    /// hint without an extra round-trip. Wire-aligned with
+    /// `vta_sdk::protocol::EnableDidcommResponse`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vta_did: String,
+    /// True when the VTA's DID is self-hosted (`server_id =
+    /// "serverless"`); the new LogEntry was persisted locally
+    /// but not published.
+    #[serde(default)]
+    pub serverless: bool,
 }
 
 /// `POST /services/didcomm/enable` — enable DIDComm on a REST-only
@@ -141,6 +152,8 @@ pub async fn enable_didcomm_handler(
         new_version_id: result.new_version_id,
         mediator_did: result.mediator_did,
         mediator_endpoint: result.mediator_endpoint,
+        vta_did: result.vta_did,
+        serverless: result.serverless,
     }))
 }
 
@@ -341,6 +354,13 @@ pub struct DisableDidcommResponse {
     /// `None` when it was torn down immediately.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub drains_until: Option<String>,
+    /// The VTA's own DID. See [`EnableDidcommResponse::vta_did`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vta_did: String,
+    /// True when the VTA's DID is self-hosted. See
+    /// [`EnableDidcommResponse::serverless`].
+    #[serde(default)]
+    pub serverless: bool,
 }
 
 /// `POST /services/didcomm/disable` — disable DIDComm. Auth:
@@ -387,6 +407,8 @@ pub async fn disable_didcomm_handler(
         new_version_id: result.new_version_id,
         prior_mediator_did: result.prior_mediator_did,
         drains_until: result.drains_until.map(|t| t.to_rfc3339()),
+        vta_did: result.vta_did,
+        serverless: result.serverless,
     }))
 }
 
@@ -591,6 +613,13 @@ pub struct UpdateDidcommResponse {
     pub active_mediator_did: String,
     pub active_mediator_endpoint: String,
     pub drains_until: String,
+    /// The VTA's own DID. See [`EnableDidcommResponse::vta_did`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vta_did: String,
+    /// True when the VTA's DID is self-hosted. See
+    /// [`EnableDidcommResponse::serverless`].
+    #[serde(default)]
+    pub serverless: bool,
 }
 
 /// `POST /services/didcomm/update` — change the active mediator. Auth:
@@ -673,6 +702,8 @@ pub async fn update_didcomm_handler(
         active_mediator_did: result.active_mediator_did,
         active_mediator_endpoint: result.active_mediator_endpoint,
         drains_until: result.drains_until.to_rfc3339(),
+        vta_did: result.vta_did,
+        serverless: result.serverless,
     }))
 }
 
@@ -1222,6 +1253,8 @@ pub async fn enable_rest_handler(
         log_entry_version_id: result.new_version_id,
         effective_at: chrono::Utc::now().to_rfc3339(),
         drain_until: None,
+        vta_did: result.vta_did,
+        serverless: result.serverless,
     }))
 }
 
@@ -1261,6 +1294,8 @@ pub async fn update_rest_handler(
         log_entry_version_id: result.new_version_id,
         effective_at: chrono::Utc::now().to_rfc3339(),
         drain_until: None,
+        vta_did: result.vta_did,
+        serverless: result.serverless,
     }))
 }
 
@@ -1300,6 +1335,8 @@ pub async fn disable_rest_handler(
         log_entry_version_id: result.new_version_id,
         effective_at: chrono::Utc::now().to_rfc3339(),
         drain_until: None,
+        vta_did: result.vta_did,
+        serverless: result.serverless,
     }))
 }
 
@@ -1554,6 +1591,8 @@ pub async fn rollback_rest_handler(
         kind: rest_kind_str(result.kind).into(),
         drain_until: None,
         draining_mediator: None,
+        vta_did: result.vta_did,
+        serverless: result.serverless,
     }))
 }
 
@@ -1622,6 +1661,8 @@ pub async fn rollback_didcomm_handler(
         kind: didcomm_kind_str(result.kind).into(),
         drain_until: None,
         draining_mediator: result.draining_mediator,
+        vta_did: result.vta_did,
+        serverless: result.serverless,
     }))
 }
 
@@ -1659,6 +1700,16 @@ pub struct RollbackResponse {
     /// arms.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub draining_mediator: Option<String>,
+    /// The VTA's own DID — subject of the LogEntry this rollback
+    /// wrote. Empty in `no_op` responses where no LogEntry was
+    /// written. Aligned with
+    /// `vta_sdk::protocol::services::RollbackResponse::vta_did`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vta_did: String,
+    /// True when the VTA's DID is self-hosted. `false` on no-op
+    /// rollbacks (no follow-up redeploy needed).
+    #[serde(default)]
+    pub serverless: bool,
 }
 
 fn rest_kind_str(k: RestRollbackKind) -> &'static str {

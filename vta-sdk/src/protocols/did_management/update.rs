@@ -73,6 +73,18 @@ pub struct UpdateDidWebvhResultBody {
     pub new_log_entry: String,
     pub update_keys_count: u32,
     pub pre_rotation_key_count: u32,
+    /// True when the DID is self-hosted (the VTA's stored
+    /// `server_id` is `"serverless"`). The new log entry is
+    /// persisted locally but NOT pushed to any webvh host — the
+    /// operator must fetch the updated `did.jsonl` and redeploy it.
+    /// `false` when the VTA published to a registered host as part
+    /// of this call.
+    ///
+    /// `#[serde(default)]` for back-compat with VTAs that don't
+    /// emit the field; absent → `false` (i.e. assume hosted, which
+    /// keeps old CLIs from showing a spurious self-host hint).
+    #[serde(default)]
+    pub serverless: bool,
 }
 
 #[cfg(test)]
@@ -143,10 +155,29 @@ mod tests {
             new_log_entry: "{\"versionId\":\"3-...\"}".into(),
             update_keys_count: 1,
             pre_rotation_key_count: 2,
+            serverless: true,
         };
         let json = serde_json::to_string(&r).unwrap();
         let restored: UpdateDidWebvhResultBody = serde_json::from_str(&json).unwrap();
         assert_eq!(restored.update_keys_count, 1);
         assert_eq!(restored.new_version_id, "3-zVer");
+        assert!(restored.serverless);
+    }
+
+    /// Old VTA → new client: `serverless` absent on the wire must
+    /// default to `false`, not fail deserialization. Pins the
+    /// back-compat guarantee `#[serde(default)]` provides.
+    #[test]
+    fn result_body_serverless_defaults_to_false_when_absent() {
+        let legacy = r#"{
+            "did": "did:webvh:abc",
+            "new_version_id": "3-zVer",
+            "new_scid": "abc",
+            "new_log_entry": "{}",
+            "update_keys_count": 1,
+            "pre_rotation_key_count": 2
+        }"#;
+        let r: UpdateDidWebvhResultBody = serde_json::from_str(legacy).unwrap();
+        assert!(!r.serverless);
     }
 }

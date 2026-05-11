@@ -36,6 +36,7 @@ use std::sync::Arc;
 use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
 use tokio::sync::RwLock;
 
+use vta_cli_common::commands::services::print_serverless_hint;
 use vta_cli_common::render::print_cli_error;
 use vti_common::config::StoreConfig as VtiStoreConfig;
 use vti_common::telemetry::{RingBufferTelemetry, SharedTelemetrySink};
@@ -248,6 +249,7 @@ pub async fn run_services_rest_enable(config_path: Option<PathBuf>, url: String)
     println!("REST enabled.");
     println!("  New version ID: {}", result.new_version_id);
     println!("  URL:            {}", result.url);
+    print_serverless_hint(result.serverless, &result.vta_did);
     Ok(())
 }
 
@@ -275,6 +277,7 @@ pub async fn run_services_rest_update(config_path: Option<PathBuf>, url: String)
     println!("  Prior URL:      {}", result.prior_url);
     println!("  New URL:        {}", result.url);
     println!("  New version ID: {}", result.new_version_id);
+    print_serverless_hint(result.serverless, &result.vta_did);
     Ok(())
 }
 
@@ -301,6 +304,7 @@ pub async fn run_services_rest_disable(config_path: Option<PathBuf>) -> CliResul
     println!("REST disabled.");
     println!("  Prior URL:      {}", result.prior_url);
     println!("  New version ID: {}", result.new_version_id);
+    print_serverless_hint(result.serverless, &result.vta_did);
     Ok(())
 }
 
@@ -333,6 +337,7 @@ pub async fn run_services_rest_rollback(config_path: Option<PathBuf>) -> CliResu
         if let Some(version) = result.new_version_id {
             println!("  New version ID: {version}");
         }
+        print_serverless_hint(result.serverless, &result.vta_did);
     }
     Ok(())
 }
@@ -378,6 +383,7 @@ pub async fn run_services_didcomm_enable(
         println!("  Mediator URL:   {}", result.mediator_endpoint);
     }
     println!("  New version ID: {}", result.new_version_id);
+    print_serverless_hint(result.serverless, &result.vta_did);
     Ok(())
 }
 
@@ -424,6 +430,7 @@ pub async fn run_services_didcomm_update(
     println!("  Active mediator: {}", result.active_mediator_did);
     println!("  New version ID:  {}", result.new_version_id);
     println!("  Drain deadline:  {}", result.drains_until);
+    print_serverless_hint(result.serverless, &result.vta_did);
     Ok(())
 }
 
@@ -467,6 +474,7 @@ pub async fn run_services_didcomm_disable(
     } else {
         println!("  Listener torn down immediately (drain TTL 0).");
     }
+    print_serverless_hint(result.serverless, &result.vta_did);
     Ok(())
 }
 
@@ -518,6 +526,7 @@ pub async fn run_services_didcomm_rollback(
         if let Some(draining) = result.draining_mediator {
             println!("  Draining:       {draining}");
         }
+        print_serverless_hint(result.serverless, &result.vta_did);
     }
     Ok(())
 }

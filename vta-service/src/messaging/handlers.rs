@@ -1401,6 +1401,7 @@ pub async fn handle_update_did_webvh(
         new_log_entry: result.new_log_entry,
         update_keys_count: result.update_keys_count,
         pre_rotation_key_count: result.pre_rotation_key_count,
+        serverless: result.serverless,
     };
     response(
         vta_sdk::protocols::did_management::UPDATE_DID_WEBVH_RESULT,
@@ -1452,6 +1453,7 @@ pub async fn handle_rotate_did_webvh_keys(
         new_log_entry: result.new_log_entry,
         update_keys_count: result.update_keys_count,
         pre_rotation_key_count: result.pre_rotation_key_count,
+        serverless: result.serverless,
     };
     response(
         vta_sdk::protocols::did_management::ROTATE_DID_WEBVH_KEYS_RESULT,

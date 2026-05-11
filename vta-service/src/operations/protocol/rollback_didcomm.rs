@@ -115,6 +115,12 @@ pub struct RollbackDidcommResult {
     /// previously-active one), or `None` for `Enabled` /
     /// `NoOp` arms where no drain is scheduled.
     pub draining_mediator: Option<String>,
+    /// The VTA's own DID. Empty for no-op rollbacks. See
+    /// [`super::enable_rest::EnableRestResult`].
+    pub vta_did: String,
+    /// True when the VTA's DID is self-hosted. `false` on no-op
+    /// rollbacks.
+    pub serverless: bool,
 }
 
 #[derive(Debug, Error)]
@@ -251,6 +257,8 @@ pub async fn rollback_didcomm(
                 new_version_id: Some(result.new_version_id),
                 kind: RollbackKind::Disabled,
                 draining_mediator: Some(prior.to_string()),
+                vta_did: result.vta_did,
+                serverless: result.serverless,
             })
         }
 
@@ -291,6 +299,8 @@ pub async fn rollback_didcomm(
                 new_version_id: Some(result.new_version_id),
                 kind: RollbackKind::Enabled,
                 draining_mediator: None,
+                vta_did: result.vta_did,
+                serverless: result.serverless,
             })
         }
 
@@ -336,6 +346,8 @@ pub async fn rollback_didcomm(
                 new_version_id: Some(result.new_version_id),
                 kind: RollbackKind::Updated,
                 draining_mediator: Some(result.prior_mediator_did),
+                vta_did: result.vta_did,
+                serverless: result.serverless,
             })
         }
 
@@ -349,6 +361,11 @@ pub async fn rollback_didcomm(
                 new_version_id: None,
                 kind: RollbackKind::NoOp,
                 draining_mediator: None,
+                // No LogEntry written — empty `vta_did` + `false`
+                // are the "no follow-up needed" sentinel for the
+                // CLI hint path.
+                vta_did: String::new(),
+                serverless: false,
             })
         }
     }

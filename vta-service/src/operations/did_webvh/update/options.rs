@@ -58,6 +58,13 @@ pub struct UpdateDidWebvhResult {
     pub new_log_entry: String,
     pub update_keys_count: u32,
     pub pre_rotation_key_count: u32,
+    /// True when the DID's `server_id` is `"serverless"` — the new
+    /// LogEntry was persisted locally but NOT published to any
+    /// webvh host. Surfaced upward so route + DIDComm response
+    /// shapes can tell the operator they need to fetch the updated
+    /// log and redeploy. Mirrors the same-named wire field on
+    /// `UpdateDidWebvhResultBody`.
+    pub serverless: bool,
 }
 
 /// A freshly-derived webvh key. Not yet persisted — the caller installs

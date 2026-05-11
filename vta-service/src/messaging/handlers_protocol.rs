@@ -153,6 +153,8 @@ pub async fn handle_disable_didcomm(
                 "new_version_id": r.new_version_id,
                 "prior_mediator_did": r.prior_mediator_did,
                 "drains_until": r.drains_until.map(|t| t.to_rfc3339()),
+                "vta_did": r.vta_did,
+                "serverless": r.serverless,
             }),
         ),
         Err(DisableDidcommError::DidcommNotEnabled) => Ok(Some(problem_report_conflict(
@@ -254,6 +256,8 @@ pub async fn handle_update_didcomm(
                 "active_mediator_did": r.active_mediator_did,
                 "active_mediator_endpoint": r.active_mediator_endpoint,
                 "drains_until": r.drains_until.to_rfc3339(),
+                "vta_did": r.vta_did,
+                "serverless": r.serverless,
             }),
         ),
         Err(UpdateDidcommError::DidcommNotEnabled) => Ok(Some(problem_report_conflict(
@@ -429,6 +433,8 @@ pub async fn handle_enable_rest(
                 "log_entry_version_id": r.new_version_id,
                 "effective_at": Utc::now().to_rfc3339(),
                 "url": r.url,
+                "vta_did": r.vta_did,
+                "serverless": r.serverless,
             }),
         ),
         Err(EnableRestError::ServiceAlreadyEnabled) => {
@@ -482,6 +488,8 @@ pub async fn handle_update_rest(
                 "effective_at": Utc::now().to_rfc3339(),
                 "prior_url": r.prior_url,
                 "url": r.url,
+                "vta_did": r.vta_did,
+                "serverless": r.serverless,
             }),
         ),
         Err(UpdateRestError::ServiceNotPresent) => Ok(Some(problem_report_conflict(
@@ -532,6 +540,8 @@ pub async fn handle_disable_rest(
                 "log_entry_version_id": r.new_version_id,
                 "effective_at": Utc::now().to_rfc3339(),
                 "prior_url": r.prior_url,
+                "vta_did": r.vta_did,
+                "serverless": r.serverless,
             }),
         ),
         Err(DisableRestError::ServiceNotPresent) => Ok(Some(problem_report_conflict(
@@ -590,6 +600,8 @@ pub async fn handle_rollback_rest(
                     crate::operations::protocol::rollback_rest::RollbackKind::Updated => "updated",
                     crate::operations::protocol::rollback_rest::RollbackKind::NoOp => "no_op",
                 },
+                "vta_did": r.vta_did,
+                "serverless": r.serverless,
             }),
         ),
         Err(RollbackRestError::NoPriorMutation) => Ok(Some(problem_report_conflict(
@@ -679,6 +691,8 @@ pub async fn handle_rollback_didcomm(
                     crate::operations::protocol::rollback_didcomm::RollbackKind::NoOp => "no_op",
                 },
                 "draining_mediator": r.draining_mediator,
+                "vta_did": r.vta_did,
+                "serverless": r.serverless,
             }),
         ),
         Err(RollbackDidcommError::NoPriorMutation) => Ok(Some(problem_report_conflict(

@@ -105,6 +105,41 @@ External resolvers see one new LogEntry per change. Public-key
 consumers (anyone who already verified your VTA's DID) are not
 affected.
 
+## Self-hosted (serverless) deployments
+
+If your VTA was set up without a webvh host
+(`server_id = "serverless"`), every service mutation persists the
+new LogEntry to **local fjall storage only**. The VTA does *not*
+push it anywhere — there's nowhere to push to. Resolvers will
+keep returning the prior version until you fetch the updated
+log and redeploy it to your host.
+
+The CLI emits a follow-up hint after every serverless-side
+mutation so the redeploy step doesn't get forgotten:
+
+```
+REST URL updated.
+  New version ID: 7-zQm...
+  Effective at:   2026-05-11T20:30:00Z
+
+  This VTA's DID is self-hosted. Fetch the updated log:
+    pnm webvh did-log did:webvh:abc:host:vta --out did.jsonl
+  then redeploy did.jsonl to your host. Until you do,
+  resolvers will keep returning the prior version.
+```
+
+Server-managed deployments — the VTA was set up with a registered
+webvh host — show no hint because the VTA already
+pushed the new LogEntry to the host as part of the operation
+(`PUT /api/dids/{mnemonic}`, idempotent).
+
+If you later want a serverless DID promoted to server-managed
+(so future updates auto-publish), use
+`pnm webvh register-did --did <did> --server <id>`. See
+[Walkthrough: register a serverless DID with a webvh
+host](#walkthrough-register-a-serverless-did-with-a-webvh-host)
+below.
+
 ## Brick-prevention
 
 **At least one transport service must remain advertised at all

@@ -64,6 +64,10 @@ pub struct UpdateRestResult {
     /// The validated new URL that was published — canonicalised
     /// from `params.url` by `url::Url`.
     pub url: String,
+    /// The VTA's own DID. See [`super::enable_rest::EnableRestResult`].
+    pub vta_did: String,
+    /// True when the VTA's DID is self-hosted.
+    pub serverless: bool,
 }
 
 #[derive(Debug, Error)]
@@ -216,6 +220,8 @@ pub async fn update_rest(
         new_version_id: update_result.new_version_id,
         prior_url,
         url: canonical_url,
+        vta_did,
+        serverless: update_result.serverless,
     })
 }
 

@@ -91,6 +91,10 @@ pub struct UpdateDidcommResult {
     pub active_mediator_did: String,
     pub active_mediator_endpoint: String,
     pub drains_until: chrono::DateTime<chrono::Utc>,
+    /// The VTA's own DID. See [`super::enable_rest::EnableRestResult`].
+    pub vta_did: String,
+    /// True when the VTA's DID is self-hosted.
+    pub serverless: bool,
 }
 
 #[derive(Debug, Error)]
@@ -318,6 +322,8 @@ pub async fn update_didcomm(
         active_mediator_did: resolved.mediator_did,
         active_mediator_endpoint: resolved.endpoint,
         drains_until: deadline,
+        vta_did,
+        serverless: update_result.serverless,
     })
 }
 

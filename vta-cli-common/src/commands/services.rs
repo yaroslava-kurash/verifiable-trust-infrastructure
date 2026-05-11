@@ -68,6 +68,7 @@ pub async fn cmd_services_rest_enable(
     println!("REST enabled.");
     println!("  New version ID: {}", resp.log_entry_version_id);
     println!("  Effective at:   {}", resp.effective_at);
+    print_serverless_hint(resp.serverless, &resp.vta_did);
     Ok(())
 }
 
@@ -80,6 +81,7 @@ pub async fn cmd_services_rest_update(
     println!("REST URL updated.");
     println!("  New version ID: {}", resp.log_entry_version_id);
     println!("  Effective at:   {}", resp.effective_at);
+    print_serverless_hint(resp.serverless, &resp.vta_did);
     Ok(())
 }
 
@@ -90,6 +92,7 @@ pub async fn cmd_services_rest_disable(
     println!("REST disabled.");
     println!("  New version ID: {}", resp.log_entry_version_id);
     println!("  Effective at:   {}", resp.effective_at);
+    print_serverless_hint(resp.serverless, &resp.vta_did);
     Ok(())
 }
 
@@ -123,6 +126,7 @@ pub async fn cmd_services_didcomm_enable(
         println!();
         println!("  Note: --force was set; mediator handshake steps 2-5 were bypassed.");
     }
+    print_serverless_hint(resp.serverless, &resp.vta_did);
     Ok(())
 }
 
@@ -148,6 +152,7 @@ pub async fn cmd_services_didcomm_update(
         "  Drain deadline:  {} (prior listener stays up until then)",
         resp.drains_until
     );
+    print_serverless_hint(resp.serverless, &resp.vta_did);
     Ok(())
 }
 
@@ -171,6 +176,7 @@ pub async fn cmd_services_didcomm_disable(
         }
         None => println!("  Listener torn down immediately (drain TTL was 0)."),
     }
+    print_serverless_hint(resp.serverless, &resp.vta_did);
     Ok(())
 }
 
@@ -297,6 +303,30 @@ fn print_rollback_result(kind: &str, resp: &vta_sdk::protocol::services::Rollbac
     if let Some(ref draining) = resp.draining_mediator {
         println!("  Draining:       {draining}");
     }
+    print_serverless_hint(resp.serverless, &resp.vta_did);
+}
+
+/// Print the "fetch did.jsonl + redeploy" hint when the mutation
+/// just wrote a LogEntry to a self-hosted VTA DID.
+///
+/// Silent when `serverless` is false (the VTA published to a host
+/// as part of the call — no follow-up needed) and when `vta_did`
+/// is empty (no LogEntry was written, e.g. no-op rollback).
+///
+/// Suffix is two operator-actionable lines: the command and the
+/// reason. Operators running scripted updates will see the line
+/// every time on serverless deployments — that's intentional,
+/// since the alternative is stale resolvers without an obvious
+/// cause.
+pub fn print_serverless_hint(serverless: bool, vta_did: &str) {
+    if !serverless || vta_did.is_empty() {
+        return;
+    }
+    println!();
+    println!("  This VTA's DID is self-hosted. Fetch the updated log:");
+    println!("    pnm webvh did-log {vta_did} --out did.jsonl");
+    println!("  then redeploy did.jsonl to your host. Until you do,");
+    println!("  resolvers will keep returning the prior version.");
 }
 
 #[derive(Debug, Clone, Copy)]

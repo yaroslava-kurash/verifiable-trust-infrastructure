@@ -76,6 +76,10 @@ pub struct DisableDidcommResult {
     /// `Some(deadline)` if the prior listener entered drain state;
     /// `None` if the listener was torn down immediately (TTL = 0).
     pub drains_until: Option<chrono::DateTime<chrono::Utc>>,
+    /// The VTA's own DID. See [`super::enable_rest::EnableRestResult`].
+    pub vta_did: String,
+    /// True when the VTA's DID is self-hosted.
+    pub serverless: bool,
 }
 
 #[derive(Debug, Error)]
@@ -169,7 +173,7 @@ pub async fn disable_didcomm(
     let _guard = PROTOCOL_LOCK.lock().await;
 
     // Pre-flight checks (atomic; nothing mutated until past here).
-    let (_vta_did, scid, current_doc, prior_mediator) =
+    let (vta_did, scid, current_doc, prior_mediator) =
         read_preconditions(config, webvh_ks, &params).await?;
 
     // Persist snapshot BEFORE the runtime mutation per spec §3.5a.
@@ -284,6 +288,8 @@ pub async fn disable_didcomm(
         new_version_id: update_result.new_version_id,
         prior_mediator_did: prior_mediator,
         drains_until,
+        vta_did,
+        serverless: update_result.serverless,
     })
 }
 
