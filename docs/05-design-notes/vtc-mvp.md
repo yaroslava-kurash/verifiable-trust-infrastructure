@@ -6,622 +6,538 @@ Last updated: 2026-05-11
 
 ## 1. Objective
 
-Turn the existing skeletal `vtc-service` crate (auth, ACL, sessions,
-DIDComm, setup, did:webvh) into a minimum-viable **Verifiable Trust
-Community** capable of standing up a self-governing community on top
-of an existing VTA. A VTC manages community lifecycle, policy-driven
-join/leave, role-based access, DTG credential issuance, optional
-public hosting, and integrates with a trust-registry so other
-communities can verify cross-community membership.
+Turn the skeletal `vtc-service` crate (auth, ACL, sessions, DIDComm,
+setup, `did:webvh`) into a minimum-viable **Verifiable Trust
+Community** — a self-governing community service that sits on top of
+an existing VTA, manages members through policy-driven join/leave,
+issues DTG credentials, integrates with a trust-registry, and
+optionally hosts a public website. The admin web UX lives in a
+separate sibling repo and consumes the REST API.
 
-The product is a Rust backend service; an admin web UX lives in a
-separate sibling repository and consumes the VTC's REST API.
+**Non-goals (MVP)**
 
-### Why this matters
+- Multi-tenant VTC. One binary, one community.
+- Custom credential types. Strictly the DTG catalog (§6.1).
+- TEE deployment of the VTC. *Permanent* non-goal (§3).
+- N-of-M admin approvals; webhooks; bulk ops; WASM plugins; i18n at
+  the resource layer. Defensible retrofits (§18).
 
-The VTA gives an operator key-management and DID-management
-infrastructure. It does not give them a *community*. Without a VTC,
-each operator has to invent their own membership model, their own
-policy engine, their own cross-community trust story. The VTC ships
-that as opinionated, composable infrastructure that stays inside the
-DTG credential catalog and the wider workspace doctrine.
+## 2. Dependencies
 
-### Non-goals
+Rust workspace, edition 2024, MSRV 1.94.0.
 
-* **Multi-tenant VTC.** One VTC binary hosts exactly one community.
-  Multi-community hosts are out of scope for MVP.
-* **Custom credential types.** The VTC issues and consumes only the
-  credentials defined in
-  [`openvtc/dtg-credentials`](https://github.com/OpenVTC/dtg-credentials)
-  (VMC, VRC, VIC, VPC, VEC, VWC, RCard). Communities extend behavior
-  via Rego + opaque JSON metadata blobs, not by adding new credential
-  shapes.
-* **TEE/Nitro deployment.** VTC ships as a regular service for MVP.
-  Enclaved variant follows the VTA's later TEE arc.
-* **N-of-M admin approvals**, **webhooks**, **bulk operations**,
-  **WASM plugins**, **i18n at the resource layer**. Each is a
-  defensible retrofit (see §16 and §17).
+Internal: `vti-common`, `vta-sdk` (REST + DIDComm + sealed-transfer),
+`affinidi-messaging-didcomm-service`, `fjall`, `axum`.
 
-## 2. Tech stack & codebase context
+New external:
 
-* Rust workspace, edition 2024, MSRV 1.94.0.
-* `vtc-service` already provides: auth (challenge-response, JWT
-  audience `"VTC"`), ACL (with role enum to be extended),
-  session-mgmt, DIDComm bridge, fjall-backed storage, `did:webvh`
-  setup, OS-keyring secret backend.
-* New dependencies:
-  * `dtg-credentials = "0.1"` — closed credential catalog.
-  * `affinidi-trust-registry-rs` (TRQP v2.0 client) — entity-level
-    membership recognition.
-  * `affinidi-status-list = "0.1"` (from `affinidi-tdk-rs`) — W3C
-    Bitstring Status List v1.0 for per-VMC revocation.
-  * `regorus` — embedded Rego engine.
-  * `webauthn-rs` — passkey enrolment for admin login.
-* Existing dependencies stay: `vti-common` (Store, AppError, telemetry
-  sink, identifier validation), `vta-sdk` (REST + DIDComm client,
-  sealed-transfer, attestation, protocol types),
-  `affinidi-messaging-didcomm-service`, `fjall`, `axum`.
+- [`dtg-credentials`](https://github.com/OpenVTC/dtg-credentials) —
+  the closed credential catalog.
+- [`affinidi-trust-registry-rs`](https://github.com/affinidi/affinidi-trust-registry-rs)
+  — TRQP v2.0 client.
+- [`affinidi-status-list`](https://github.com/affinidi/affinidi-tdk-rs)
+  — W3C Bitstring Status List v1.0.
+- `regorus` — embedded Rego engine.
+- `webauthn-rs` — passkey enrolment.
 
-## 3. Architectural decisions (pinned)
+## 3. Pinned architectural decisions
 
-These are settled. Do not re-litigate during implementation; raise an
-ADR if circumstances change.
+Single source of truth. Downstream sections cite §3 by row letter and
+do not restate.
 
-| Decision | Rationale |
-|---|---|
-| **1 VTC ⇄ 1 VTA topology** | The VTC has no key custody; every signature goes to the VTA signing oracle. Multi-VTA-per-VTC explodes the trust path without clear gain. |
-| **VTC is always authoritative for its own state** | ACL + keyspaces are source of truth. VMC/VEC are *projections* of that state, useful when the member operates outside the VTC. VTC's own authz code never reads the VCs it issued. |
-| **Credentials limited to DTG catalog** | VMC (membership), VEC (role + endorsement), VIC (invitation), VRC (relationship edge), VWC (witness, consumed only), RCard (contact), VPC (persona, v2). New credential types go upstream into dtg-credentials, not local extensions. |
-| **Embedded regorus, no OPA sidecar** | Single deploy artifact, lower latency, TEE-compatible later. Policy reload is explicit (`POST /v1/policies/{id}/activate`); no hot-reload watchers. |
-| **Trust-registry and StatusList are complementary** | StatusList answers "is this VC revoked?". Trust-registry answers "is this entity an active member?". A robust verifier consults both. |
-| **DTG VMC `validUntil` is mandatory and finite** | Per-community config; default 30 days. External verifiers MUST see a non-perpetual VMC. Inside the community, ACL is authoritative — expired VMC does not lock the member out. |
-| **Membership renewal is unconditional inside the community** | A member whose VMC expired three months ago can mint a fresh one any time, as long as ACL still says they're a member. No grace logic, no admin re-approval. |
-| **Admin UX is a separate sibling repository** | VTC ships pure backend. CORS configurable. |
-| **Public community website is feature-gated** | Cargo feature `website`. Operators who use an external host disable the feature; routes 404. |
-| **Extensibility model = Rego + opaque JSON blobs** | Communities customize *behavior* via policies and *data* via `extensions: JsonValue` slots. No plugin loader, no WASM hooks, no custom REST modules. |
-| **Hygiene baked in from day one** | Versioned audit events, idempotency keys, `/v1/` URL prefix, cursor pagination on lists, multi-passkey-per-admin. These are load-bearing retrofits, not features. |
-| **VTC never targets TEE deployment** | Only the VTA runs in Nitro Enclave / TEE. The VTC stays a regular service. This is a *permanent* non-goal, not a deferral — public website serves from local filesystem, no vsock parity is required, and the storage abstraction can stay simple. If TEE-grade trust is needed for a community, the trust anchor remains the VTA. |
-| **Every wire operation is a registered Trust Task** | REST endpoints and DIDComm messages are bound to a versioned Trust Task identifier hosted on [trusttasks.org](https://trusttasks.org). A Trust Task is the formal definition of an operation — what's being requested, what inputs/credentials are required, what outputs are produced, and what trust assumptions the verifier makes. This is opt-in discipline applied **from day one** so the wire surface is self-describing; soft-gated for MVP (Draft IDs stable; Published status targets v1.0). See §16. |
+| | Decision | Rationale |
+|---|---|---|
+| **A** | **1 VTC ⇄ 1 VTA** | The VTC has no key custody; every signature delegates to the VTA signing oracle. |
+| **B** | **VTC is always authoritative for its own state** | ACL + keyspaces are truth. VMC/VEC are *projections* useful only when the member operates outside the VTC. VTC authz never reads its own issued VCs. |
+| **C** | **Credentials limited to the DTG catalog** | New credential needs go upstream into `dtg-credentials`, not local extensions. |
+| **D** | **Embedded `regorus`, no OPA sidecar** | Single artefact, lower latency. Policy activation is explicit; no hot-reload watchers. |
+| **E** | **Trust-registry and StatusList are complementary** | StatusList = "is this VC revoked?"; trust-registry = "is this entity an active member?". Robust verifiers consult both. |
+| **F** | **VMC `validUntil` is mandatory, finite, configurable** (default 30d) | External verifiers MUST see a bounded VMC. Inside the community, ACL is authoritative — expired VMC does not lock the member out (membership renewal is unconditional on ACL membership; see §6.3). |
+| **G** | **Admin UX is a separate sibling repo** | VTC ships pure backend; admin UX consumed as a release artefact (§12.2). |
+| **H** | **Public website is feature-gated and filesystem-backed** | Operators can disable to host externally, or update files in place via standard tools (§12.1). |
+| **I** | **Extensibility = Rego + opaque JSON blobs** | Communities customise behaviour via policies and data via `extensions: JsonValue` slots. No plugin loader. |
+| **J** | **Hygiene from day one** | Versioned audit events with HMAC-hashed actors, idempotency keys, `/v1/` URL prefix, cursor pagination, multi-passkey-per-admin. Retrofits are painful. |
+| **K** | **VTC never targets TEE deployment** | *Permanent* non-goal. Trust anchor for TEE remains the VTA. |
+| **L** | **Every wire op is a registered Trust Task** | REST endpoints and DIDComm messages bind to a versioned Trust Task on [trusttasks.org](https://trusttasks.org). Soft gate for MVP — stable IDs + Draft `spec.md` required before an endpoint ships (§9.4). |
+| **M** | **`extensions: JsonValue` is the universal extensibility slot** | Present on `CommunityProfile`, `Member`, `JoinRequest`, `AdminEntry`, audit envelopes. Opaque to the VTC. Validated only for size and JSON well-formedness. Communities own its shape. |
 
-## 4. Bootstrap and setup
+## 4. Bootstrap & install
 
-### 4.1 CLI setup wizard — minimal handoff to web UX
+### 4.1 CLI wizard — minimal handoff to web UX
 
-```text
-$ vtc setup
-? Public VTC URL [https://vtc.example.com]:
-? Public admin UX URL [https://admin.example.com]:
-? VTA URL for provisioning [https://vta.example.com]:
-
-✓ Minted VTC seed
-✓ Provisioned VTC DID via VTA (template: vtc-host)
-✓ Initialised keyspaces (sessions, acl, policies, members,
-  join_requests, status_lists, registry_records, audit,
-  idempotency, relationships)
-
-  Open this URL within 1 hour to finish setup:
-
-    https://admin.example.com/install#token=eyJhbGc…
-```
-
-The CLI does the bare minimum to make the daemon answerable. All
-human-facing configuration (community profile, policies, admin
-identity) happens in the admin UX.
-
-What the CLI actually does:
+`vtc setup` asks three questions (public VTC URL, public admin UX
+URL, VTA URL), then does the bare minimum to make the daemon
+answerable:
 
 1. Mints a 24-word BIP-39 seed via `affinidi-secrets-resolver`
-   (default backend: OS keyring; AWS/GCP/Azure available via feature
-   flags, same pattern as VTA).
-2. Calls VTA's `POST /provision-integration` with the
-   `vtc-host` DID template (new built-in template — see §4.4).
-   Receives a sealed bundle containing the VTC's `did:webvh`, signing
-   key references, and the VTA trust bundle. Opens the bundle locally
-   and persists secrets.
-3. Initializes all fjall keyspaces (§13).
-4. Mints a single-use **install token**: signed JWT with
-   `aud="vtc-install"`, `exp=now+1h`, `iat`, `jti`, plus an embedded
-   ephemeral Ed25519 keypair the install flow uses for the
-   challenge-response binding.
-5. Prints the install URL and starts the daemon listening on the
-   configured port.
+   (default backend: OS keyring).
+2. Provisions the VTC's `did:webvh` against the VTA using the new
+   `vtc-host` DID template (§4.4).
+3. Initialises all fjall keyspaces (§13).
+4. Mints a single-use **install token** (signed JWT, 15-minute TTL,
+   single-use, with a one-time WebAuthn ceremony nonce embedded).
+5. Prints an install URL and starts the daemon.
 
-### 4.2 Install flow (admin UX side)
+**Install token transport hardening.** The install URL is printed
+once to the operator's terminal. The token alone is *insufficient*
+to claim admin — `POST /v1/install/claim` requires a WebAuthn
+ceremony bound to the embedded nonce. Stolen tokens cannot be
+claimed without the operator's authenticator.
 
-1. Operator opens the install URL. The admin UX exchanges the install
-   token for a setup session via `POST /v1/install/claim` (kills the
-   install token atomically; carve-out pattern mirrors VTA's
-   `BOOTSTRAP_CARVEOUT_CLOSED_KEY`).
-2. WebAuthn passkey registration on the operator's authenticator
-   (`webauthn-rs`). The passkey's public key is bound to a fresh
-   `did:key` derived from it. This is the admin's DID.
-3. Operator enters community profile in the UX: `name`, `description`,
-   `logo_url`, `public_url`, `contact_email`, `language`.
-4. Operator picks a seed policy template (`policies.open`,
-   `policies.invite_only`, `policies.kyc_required`) which the UX
-   uploads via `POST /v1/policies` then activates via
-   `POST /v1/policies/{id}/activate`. Operators can edit policies
-   later through the UX.
-5. Operator chooses trust-registry behaviour: publish-on-join default,
-   default departure disposition (Purge / Tombstone / Historical),
-   whether to publish the VTC's own issuer profile on startup.
-6. Admin UX calls `POST /v1/admin/bootstrap` with the admin DID. VTC
-   writes the first ACL entry (`role: Admin`), permanently closes the
-   install token carve-out, and emits a `CommunityInstalled` audit
-   event.
+### 4.2 Web install flow
 
-After step 6 the install URL is dead. All subsequent admin operations
-require an authenticated session against the admin DID's passkey.
+Admin UX opens the URL, then:
+
+1. **Claim** — `POST /v1/install/claim` with the WebAuthn challenge
+   response. VTC verifies the ceremony, the embedded nonce, and the
+   token's single-use carve-out (gated by a process-wide async
+   mutex; mirrors VTA's `MODE_B_LOCK` invariant — concurrent claims
+   are impossible). Carve-out closes atomically on first success.
+2. **Passkey ↔ DID binding.** WebAuthn enrolment is restricted to
+   Ed25519 (`COSEAlgorithmIdentifier = -8 EdDSA`) so the passkey
+   public key can be projected into a `did:key` directly. Operators
+   whose authenticators don't support Ed25519 see an install error
+   pointing at supported devices. The admin's DID is `did:key:<...>`
+   derived from the WebAuthn credential's public key, and the
+   install ceremony also requires the candidate DID to sign a server-
+   issued challenge — proving both the passkey and the DID-signing
+   path operate over the same keypair.
+3. **Profile + policies** — operator enters community profile, picks
+   a seed policy template, configures trust-registry behaviour.
+4. **Bootstrap** — `POST /v1/admin/bootstrap` writes the first ACL
+   entry (`role: Admin`) and emits `CommunityInstalled`.
+
+After bootstrap the install URL is dead.
 
 ### 4.3 Multi-passkey per admin DID
 
-Admin entry shape in the `acl` keyspace for admin-role entries:
+Admin entries carry `passkeys: Vec<RegisteredPasskey>` from day one.
+Each passkey records `credential_id`, `public_key`, `transports`,
+`label`, `registered_at`, `last_used_at`.
 
-```rust
-struct AdminEntry {
-    did: String,
-    role: VtcRole,
-    passkeys: Vec<RegisteredPasskey>,  // 1..N
-    joined_at: DateTime<Utc>,
-    extensions: Value,                  // opaque per-community blob
-}
+Endpoints:
 
-struct RegisteredPasskey {
-    credential_id: Vec<u8>,
-    public_key: Vec<u8>,
-    transports: Vec<AuthenticatorTransport>,
-    label: String,                      // e.g., "MacBook Air Touch ID"
-    registered_at: DateTime<Utc>,
-    last_used_at: Option<DateTime<Utc>>,
-}
-```
+- `POST /v1/admin/passkeys/register` — enrol an additional device.
+- `DELETE /v1/admin/passkeys/{credential_id}` — revoke a device.
+- `GET /v1/admin/passkeys` — list.
 
-Operations:
+**Reauth invariant.** Passkey enrolment and revocation **require a
+fresh WebAuthn user-verification ceremony in the same request** (not
+just a valid session). A stolen session cannot persist by binding a
+new authenticator. The user-verification flag in the WebAuthn
+assertion must be `true`.
 
-* `POST /v1/admin/passkeys/register` — initiate WebAuthn ceremony for
-  an additional device. Requires an authenticated session (the
-  operator is logged in on device A and registering device B).
-* `DELETE /v1/admin/passkeys/{credential_id}` — revoke a lost
-  device. Refuses if it would leave the admin DID with zero passkeys
-  (use emergency-bootstrap instead).
-* `GET /v1/admin/passkeys` — list registered devices.
+**Concurrency invariant.** Passkey writes serialise per admin DID
+under a fjall compare-and-set. The "refuses to leave zero passkeys"
+check executes inside the same transaction.
 
-Each passkey operation emits a versioned audit event
-(`AdminPasskeyRegistered`, `AdminPasskeyRevoked`).
+**REST-only.** Passkey ceremonies are origin-bound by the browser.
+The corresponding DIDComm protocol is **not** provided — passkey
+registration over DIDComm would bypass WebAuthn's RP-ID enforcement
+and is explicitly forbidden.
 
 ### 4.4 The `vtc-host` DID template
 
-New built-in DID template shipped with `vta-sdk`'s
-`did_templates::builtin` set. Mirrors the existing `webvh-control` /
-`webvh-daemon` shapes:
+New built-in template in `vta-sdk::did_templates::builtin`. Required
+vars: `vtc_url`, `community_name`. Mints:
 
-* `kind: "vtc-host"`
-* Required vars: `vtc_url` (REST advertisement),
-  `community_name` (for service entry label).
-* Key shapes: one `assertionMethod` Ed25519 (for credential
-  signatures), one `authentication` Ed25519 (for session/DID auth),
-  one `keyAgreement` X25519 (for DIDComm + sealed-transfer reception).
-* Service entries: `#vtc-rest` (REST endpoint), `#vtc-status-list`
-  (where the BitstringStatusListCredential is hosted — see §6.2).
-* No DIDComm service entry by default — communities that need a
-  mediator add it later via the existing `services didcomm enable`
-  runtime-service-management flow against their VTA.
+- one `assertionMethod` Ed25519 (credential signatures)
+- one `authentication` Ed25519 (session auth)
+- one `keyAgreement` X25519 (sealed-transfer + DIDComm reception)
+
+Service entries: `#vtc-rest`, `#vtc-status-list`. DIDComm service is
+not advertised by default — added later via the existing
+runtime-service-management flow if the community needs a mediator.
 
 ### 4.5 Emergency bootstrap (recovery)
 
-If all admin passkeys are lost: `vtc admin emergency-bootstrap` on a
-stopped daemon emits a new install token (1h TTL) and re-opens the
-install carve-out exactly once. Documented as a destructive operator
-action: it writes a loud audit event
-(`EmergencyBootstrapInvoked { operator_host, timestamp }`) on next
-daemon start, visible in `GET /v1/audit?type=EmergencyBootstrapInvoked`.
+If every admin passkey is lost: `vtc admin emergency-bootstrap` on a
+stopped daemon re-opens the install carve-out exactly once. **The
+command requires possession of the master seed mnemonic** — without
+the mnemonic, a filesystem-level attacker cannot trigger a takeover
+by stopping the process. Audit event `EmergencyBootstrapInvoked` is
+emitted on next daemon start, with operator hostname + timestamp,
+prominently surfaced in `/v1/health/diagnostics`. Documented as a
+destructive operator action.
 
-## 5. Core domain model
+## 5. Domain model
 
-### 5.1 Community profile
+### 5.1 `CommunityProfile` (singleton, key `community/profile`)
 
-Stored as a singleton record in the `community` keyspace.
+Fields: `community_did` (immutable), `name`, `description`,
+`logo_url`, `public_url`, `contact_email`, `language` (BCP 47,
+default `"en"`), `created_at`, `extensions` (§3-M).
 
-```rust
-struct CommunityProfile {
-    community_did: String,           // immutable; set at install
-    name: String,
-    description: String,
-    logo_url: Option<String>,
-    public_url: Option<String>,
-    contact_email: Option<String>,
-    language: String,                // BCP 47, default "en"
-    created_at: DateTime<Utc>,
-    extensions: Value,               // arbitrary community-defined fields
-}
+### 5.2 `Member`
+
+```
+did, role, joined_at, status_list_index, publish_consent,
+departure_preference, current_vmc_id, current_role_vec_id, extensions
 ```
 
-Editable by `admin` role. Stored under a stable key
-(`community/profile`) for cheap reads.
+Admin entries additionally carry `passkeys: Vec<RegisteredPasskey>`
+(§4.3).
 
-### 5.2 Member
+### 5.3 `Role`
 
-```rust
-struct Member {
-    did: String,                     // did:key or did:webvh
-    role: VtcRole,
-    joined_at: DateTime<Utc>,
-    status_list_index: u32,          // stable for member's lifetime
-    publish_consent: bool,           // trust-registry consent
-    departure_preference: Option<DepartureDisposition>,
-    current_vmc_id: Option<String>,  // latest issued VMC id
-    current_role_vec_id: Option<String>,
-    extensions: Value,
-}
+```
+enum VtcRole { Admin, Moderator, Issuer, Member, Custom(String) }
 ```
 
-ACL entry references the `Member` for non-admin roles. Admin entries
-carry `passkeys` directly (§4.3).
+Default permission matrix for **standard roles**:
 
-### 5.3 Roles
-
-```rust
-enum VtcRole {
-    Admin,
-    Moderator,
-    Issuer,
-    Member,
-    Custom(String),   // community-defined; permissions via role_definitions.rego
-}
-```
-
-Default permissions (rough matrix; final permissions defined by
-`role_definitions.rego` and consulted on each authorized request):
-
-| Action | Admin | Moderator | Issuer | Member |
+| Action | Admin | Mod | Issuer | Member |
 |---|---|---|---|---|
 | Edit community profile | ✓ | | | |
 | Author / activate policies | ✓ | | | |
-| Approve/reject join requests | ✓ | ✓ | | |
+| Approve / reject join requests | ✓ | ✓ | | |
 | Issue VEC / VWC / RCard on behalf of community | ✓ | | ✓ | |
 | Issue VMC | (only via join flow) | | | |
+| Promote to Admin | ✓ (§10.4) | | | |
 | Remove other members | ✓ | ✓ (policy-gated) | | |
-| Self-remove | ✓ | ✓ | ✓ | ✓ |
+| Self-remove | ✓ (§10.2) | ✓ | ✓ | ✓ |
 | Renew own VMC | ✓ | ✓ | ✓ | ✓ |
 | Publish self-issued VRC | ✓ | ✓ | ✓ | ✓ |
 | Rotate own DID | ✓ | ✓ | ✓ | ✓ |
 
-Custom roles must define their permissions in `role_definitions.rego`;
-unspecified actions default-deny.
+**Custom roles**: `Role::Custom(String)` receives *no* implicit
+grants from the matrix. The only authoritative source of Custom-role
+permissions is `role_definitions.rego` (§7.1). Unspecified actions
+default-deny. The standard matrix above applies *only* to the four
+named roles; do not bridge it onto Custom roles by similarity.
 
-### 5.4 Policy bundle
+### 5.4 `Policy`
 
-A `Policy` is a single Rego module plus metadata:
+Rego module + metadata (`id`, `name`, `purpose`, `rego_source`,
+`compiled` bytecode, `sha256`, `activated_at`, `author_did`). Exactly
+one policy per `purpose` is active. Activating a new policy
+atomically supersedes the prior one; the prior is retained as
+archived.
 
-```rust
-struct Policy {
-    id: Uuid,
-    name: String,                    // e.g., "join", "removal"
-    purpose: PolicyPurpose,
-    rego_source: String,
-    compiled: Vec<u8>,               // regorus pre-compiled bytecode
-    sha256: [u8; 32],
-    activated_at: Option<DateTime<Utc>>,
-    author_did: String,
-}
+### 5.5 `JoinRequest`
 
-enum PolicyPurpose {
-    Join,
-    Removal,
-    Personhood,
-    Registry,
-    Directory,
-    RoleDefinitions,
-    CrossCommunityRoles,
-    CrossCommunityRelationships,
-    Relationships,
-}
+```
+id, applicant_did, vp, submitted_at, status,
+policy_decision, registry_consent, extensions
 ```
 
-Exactly one Policy per `purpose` may be active at any time.
-Activating a new policy supersedes the prior one atomically; the prior
-is retained in the `policies` keyspace (archived) for audit.
+`status ∈ { Pending, Approved, Rejected, Withdrawn, Deferred }`.
+Rejected and withdrawn requests retained for 30 days (configurable
+via `join_requests.retention_days`), then purged by the retention
+sweeper. VP contents may include PII — the retention window is the
+sole control.
 
-### 5.5 Join request
+### 5.6 `StatusListState`
 
-```rust
-struct JoinRequest {
-    id: Uuid,
-    applicant_did: String,
-    vp: serde_json::Value,           // raw VP
-    submitted_at: DateTime<Utc>,
-    status: JoinStatus,
-    policy_decision: Option<PolicyDecision>,
-    registry_consent: Option<RegistryConsentRequest>,
-    extensions: Value,
-}
-
-enum JoinStatus { Pending, Approved, Rejected, Withdrawn, Deferred }
+```
+purpose ∈ { Revocation, Suspension }
+capacity (default 2^17 = 131_072)
+next_random_seed
+occupied
+list_credential_id
 ```
 
-### 5.6 Status-list state
+### 5.7 `RegistryRecord`
 
-```rust
-struct StatusListState {
-    purpose: StatusListPurpose,      // Revocation | Suspension
-    capacity: u32,                   // default 2^17 = 131_072
-    next_random_seed: u64,           // for random index allocation
-    occupied: u32,                   // count for the 75% alert
-    list_credential_id: String,
-}
+```
+record_id, member_did, status ∈ { Active, Departed },
+active_from, active_to, last_synced_at
 ```
 
-### 5.7 Trust-registry record
+## 6. Credentials — DTG catalog
 
-```rust
-struct RegistryRecord {
-    record_id: String,               // assigned by trust-registry
-    member_did: String,
-    status: RegistryStatus,
-    active_from: DateTime<Utc>,
-    active_to: Option<DateTime<Utc>>,
-    last_synced_at: DateTime<Utc>,
-}
-
-enum RegistryStatus { Active, Departed }
-```
-
-## 6. Credentials — DTG catalog mapping
-
-### 6.1 The closed catalog
-
-The VTC issues, consumes, or stores only credentials from
-`dtg-credentials`. The full mapping:
+### 6.1 Mapping
 
 | Use | Type | Issuer | Subject | Notes |
 |---|---|---|---|---|
-| Membership | **VMC** | community DID | member DID | `personhood: bool` gated by `personhood.rego`. `validUntil` mandatory (community config). `credentialStatus` points to community's BitstringStatusListCredential. |
-| Role grant | **VEC** | community DID | member DID | `endorsement = { type: "CommunityRole", role, communityDid }`. Issued alongside VMC at join; re-issued on role change. |
-| Invitation (gated communities) | **VIC** | community DID (admin/issuer) | applicant DID | Holder presents in VP at join. Policy can mandate. |
-| Member ↔ member trust edge | **VRC** | member DID | other member DID | Self-issued. Published to VTC for discoverability. |
-| Community ↔ community trust edge (v2) | VRC | community DID | other community DID | Pairs with trust-registry recognition. |
-| Member contact card | **RCard** | member or community | member | jCard value. Member-driven; VTC stores opaquely. |
-| Event/proximity witness | **VWC** | external | applicant | Consumed in join VPs; never issued by VTC. |
-| Custom endorsement | **VEC** | community (issuer role) | any DID | Community-defined `endorsement` value. The hook for badges, attestations, etc. — without inventing new credential types. |
-| Persona binding | VPC | community | member | **v2**. Not in MVP. |
+| Membership | **VMC** | community DID | member DID | `personhood: bool` gated by §6.4. `validUntil` mandatory (§3-F). |
+| Role grant | **VEC** | community DID | member DID | `endorsement = { type: "CommunityRole", role, communityDid }`. Re-issued on role change. |
+| Invitation | **VIC** | community DID (admin/issuer) | applicant DID | Required by gated communities' join policies. |
+| Member ↔ member trust edge | **VRC** | member DID | other member DID | Self-issued, optionally published (§12.3). |
+| Member contact card | **RCard** | member or community | member | jCard value. |
+| Event/proximity witness | **VWC** | external | applicant | Consumed in join VPs; VTC does not issue. |
+| Custom endorsement (badges, attestations) | **VEC** | community (issuer role) | any DID | Community-defined `endorsement` value. The hook for "we don't invent credential types". |
+| Persona | VPC | community | member | **v2**. Not in MVP. |
 
-### 6.2 Status-list integration
+### 6.2 Status list
 
-* On install, VTC mints two `BitstringStatusListCredential`s
-  (purpose `revocation`, purpose `suspension`), each with capacity
-  131,072 (configurable). Hosted at
-  `https://{vtc_public_url}/v1/status-lists/{purpose}` and referenced
-  in the VTC DID document via the `#vtc-status-list` service entry.
-* Index allocation is **random** with decoys (affinidi-status-list's
+- VTC mints two `BitstringStatusListCredential`s on install
+  (revocation + suspension), capacity 131K each. Hosted under the
+  `#vtc-status-list` service entry on the VTC DID — not the
+  deployment URL — so a host migration does not break issued VMCs.
+- Every VMC carries `credentialStatus` referencing the appropriate
+  list and index.
+- **Index allocation is random with decoys** (affinidi-status-list's
   privacy mode).
-* Every VMC issued carries `credentialStatus = { id: ".../status-lists/revocation#<idx>", type: "BitstringStatusListEntry", purpose: "revocation", statusListIndex: <idx>, statusListCredential: ".../status-lists/revocation" }`.
-* On member departure: flip the bit at the member's index. Same index
-  is reused across the member's lifetime (renewals re-issue VMCs that
-  point to the same index).
-* On `Purge` disposition: bit flipped *and* index removed from the
-  member record; the slot becomes a decoy.
-* **Alert** when any status list crosses 75% occupancy (telemetry
-  event `StatusListOccupancyWarning`); MVP does **not** chain to a
-  second list — that's a v2 problem documented in §16.
+- **Flipped indices are never reallocated.** Once a member departs
+  and their bit is flipped (revoked or suspended), the index is
+  permanently reserved as a decoy. Allocating it to a new member
+  would let external verifiers correlate the new member's slot with
+  the departed identity. Index space is sized accordingly.
+- Telemetry emits `StatusListOccupancyWarning` at 75% (live +
+  reserved). Chaining is v2 (§17).
 
-### 6.3 Renewal model
+### 6.3 Renewal — unconditional on ACL membership
 
-Endpoint: `POST /v1/members/me/renew` (REST) and
-`community/1.0/renew-vmc` (DIDComm).
+`POST /v1/members/me/renew`. Auth check verifies the caller's
+session matches an active ACL entry. **No expiry check, no grace
+window.** Per §3-F, VMC validity is an external-verifier concern;
+inside the community, ACL is truth.
 
-Behavior:
+Issuance steps:
 
-1. Auth check: member's session must match an active ACL entry.
-   No expiry/grace test.
-2. Mint new VMC (`validFrom = now, validUntil = now + community.membership.validity`)
-   via VTA signing oracle. Same `credentialStatus` index. Same
-   `subject` (member DID).
-3. Mint refreshed role VEC if any of: role changed since last issuance,
-   community profile changed (issuer DID renamed), policy version
-   updated such that role permissions changed.
-4. Sealed-transfer the credentials to the member's DID.
-5. Audit event `MembershipRenewed { member_did, vmc_id, validUntil }`.
+1. Mint new VMC (`validFrom = now`, `validUntil = now + community.membership.validity`)
+   via the VTA signing oracle. Same status-list index.
+2. Re-issue role VEC (always — both for ACL/role drift and to keep
+   external chains current).
+3. Re-evaluate `personhood.rego` (§6.4) and surface the resulting
+   `personhood` flag on the new VMC. If the flag changes from the
+   prior VMC, the audit event `MembershipRenewed` records
+   `personhood_changed: true`.
+4. Sealed-transfer to member's DID.
 
 ### 6.4 Personhood
 
-* New Rego policy `personhood.rego`. Ships as a **deny-all stub** by
-  default. Community admins author the actual rule (e.g., "require N
-  VWCs from event X plus M endorsements from existing personhood
-  holders").
-* Personhood is asserted via a separate explicit operation:
-  `POST /v1/members/{did}/personhood/assert`. Re-mints the member's
-  VMC with `personhood: true` (which adds the
-  `PersonhoodCredential` type marker per dtg-credentials).
-* Revoking personhood: `DELETE /v1/members/{did}/personhood` re-mints
-  the VMC with `personhood: false`. Audit logged.
-* Policy input contract: `data.input = { applicant_did, vp_claims }`.
-  Communities extend via additional `data.*` namespaces they populate
-  through custom REST hooks they wire up server-side (each
-  implementer reinvents — workspace doctrine).
+`personhood.rego` ships as a **deny-all stub**. Community admins
+author the actual rule. Personhood is asserted via a dedicated
+`POST /v1/members/{did}/personhood/assert` (re-mints VMC with
+`personhood: true`), and revoked via `DELETE` (re-mints with
+`false`). The policy re-evaluates on every renewal (§6.3 step 3) —
+losing personhood is not gated on operator action.
 
-### 6.5 DID rotation per method
+Policy input contract: `data.input = { applicant_did, vp_claims }`.
+Communities extend via `data.*` namespaces they populate themselves.
 
-| Member DID method | Mechanism |
-|---|---|
-| **did:webvh** | Native. VTC resolves the new DID, walks its `did.jsonl` history, finds the prior key matching the old ACL entry, verifies the rotation signature against the prior key. No additional credential required. |
-| **did:key** | Co-signed rotation attestation. Payload `{ old_did, new_did, vtc_did, rotation_id, expires_at: now+10m }` signed by **both** old-DID and new-DID keys. VTC verifies both signatures, atomically updates ACL (key change), reuses status-list index, re-issues VMC + role VEC to the new DID. Old DID's session invalidated. |
-
-Wire: `POST /v1/members/me/rotate` + `community/1.0/rotate-did`.
-Authentication is via the *new* DID's session (caller proves
-possession of the new key).
-
-In-flight VRCs keyed on the old DID are left intact (graph history
-preservation). Members who want continuity issue a fresh VRC linking
-new → old as a `controller-rotation` relationship.
-
-Members are expected to use `did:key` or `did:webvh` (workspace
-doctrine). Other DID methods are not supported in MVP.
-
-## 7. Policy engine (regorus)
+## 7. Policy engine
 
 ### 7.1 Required policies
 
-| Name | Purpose | Default-ship behavior |
+| Name | Purpose | Default-ship |
 |---|---|---|
-| `join` | Decide on join requests | Template: `policies.open` (accept any signed VP) |
-| `removal` | Decide admin-initiated removals | Default: any admin may remove any non-admin |
-| `personhood` | Decide personhood assertion | **Deny-all stub** — admin must replace |
-| `registry` | Decide trust-registry publish + departure disposition | Default: publish on join, default disposition = Tombstone |
-| `directory` | Decide member-directory visibility | Default: members can see other members' DID + role only |
-| `role_definitions` | Map roles (incl. custom) to permissions | Default: the matrix in §5.3 |
-| `cross_community_roles` | Decide if external VEC role grants are honoured | **Deny-all** by default |
-| `cross_community_relationships` | Decide if external VRCs are stored | **Deny-all** by default |
-| `relationships` | Decide if a published VRC is stored / surfaced | Default: store if both parties are current members |
+| `join` | Decide join requests | Template `policies.open` (accept any signed VP) |
+| `removal` | Decide admin-initiated removals | Any admin may remove any non-admin |
+| `personhood` | Decide personhood assertion | **Deny-all stub** |
+| `registry` | Trust-registry publish + departure disposition | Publish on join; default disposition `Tombstone` |
+| `directory` | Member-directory visibility | Members see DID + role only |
+| `role_definitions` | Map roles to permissions (incl. Custom) | The matrix in §5.3 for standard roles only |
+| `cross_community_roles` | Honour external VEC role grants | **Deny-all** |
+| `cross_community_relationships` | Store external VRCs | **Deny-all** |
+| `relationships` | Store published VRCs | Store if both parties are current members |
 
-### 7.2 Activation lifecycle
+### 7.2 Activation
 
-* Upload via `POST /v1/policies` (`admin` role). Body includes Rego
-  source + metadata. VTC compiles via `regorus`, returns 400 with
-  compilation errors on failure.
-* Activate via `POST /v1/policies/{id}/activate`. Atomic swap: in-flight
-  requests against the old policy complete; new requests use the new
-  one. Old policy retained in `policies` keyspace as archived (audit).
-* Test via `POST /v1/policies/{id}/test` — evaluates the policy against
-  a provided input without activating.
-* No file-watching, no auto-reload. Reloads are deliberate.
+`POST /v1/policies` (admin) uploads + compiles via `regorus` — 400
+with compilation errors on failure. `POST /v1/policies/{id}/activate`
+atomically swaps the active policy for its purpose; in-flight
+requests against the old policy complete; new requests use the new.
+`POST /v1/policies/{id}/test` evaluates without activating. No
+file-watching, no auto-reload.
 
 ### 7.3 Input contracts
-
-All Rego policies receive `data.input` plus, for some, additional
-`data.*` namespaces.
 
 | Policy | `input` shape |
 |---|---|
 | `join` | `{ applicant_did, vp_claims, action: "join", now }` |
 | `removal` | `{ actor_did, target_did, target_role, reason, action: "remove", now }` |
-| `personhood` | `{ applicant_did, vp_claims }` (community extends) |
-| `registry` | `{ member, action: "join"\|"leave", requested_disposition? }` |
+| `personhood` | `{ applicant_did, vp_claims }` |
+| `registry` | `{ member, action, requested_disposition? }` |
 | `directory` | `{ viewer_did, viewer_role, target_member, fields_requested }` |
 | `role_definitions` | `{ role, action, resource? }` |
 | `cross_community_roles` | `{ foreign_vec, target_role, vtc_state }` |
+| `cross_community_relationships` | `{ vrc, viewer_member, vtc_state }` |
 | `relationships` | `{ vrc, issuer_member, subject_member }` |
-
-Communities adding policy-specific context inject it via REST hooks
-they author themselves; the workspace ships the contracts above and
-does not standardize extension shapes.
 
 ## 8. Trust-registry integration
 
-### 8.1 Startup behaviour
+### 8.1 Startup
 
-On daemon start (after install completes), VTC publishes its issuer
-profile to the configured trust-registry via
-`affinidi-trust-registry-rs`. Idempotent: re-publishing updates the
-existing record. Publish failures are non-fatal — the daemon logs and
-continues; the `MembershipSyncer` retries.
+VTC publishes its issuer profile via `affinidi-trust-registry-rs` on
+boot. Idempotent. Publish failures are non-fatal but raise a state
+flag in `GET /v1/community/profile` (`registry_status:
+"degraded" | "active"`) and in `/v1/health/diagnostics`. Operators
+see the lag without having to grep telemetry.
 
-### 8.2 Three departure dispositions
+**PII boundary.** Only `member_did`, `status`, `active_from`,
+`active_to`, and `record_id` are written to the registry. The VTC
+refuses to publish `extensions`, emails, names, or any other
+community-defined fields.
+
+### 8.2 Departure dispositions
 
 | Disposition | Record state | Use case |
 |---|---|---|
 | **Purge** | Record deleted | Right-to-be-forgotten; private communities |
 | **Tombstone** | `status: Departed`, no date range | "Was a member, no longer" — minimal disclosure |
-| **Historical** | `status: Departed`, `active_from`/`active_to` populated | Audit / retroactive verification of attestations made during membership |
+| **Historical** | `status: Departed`, dates populated | Audit / retroactive verification |
 
-Decision flow:
+Decision flow: `registry.rego` sets the envelope
+(`publish_on_join`, `departure_options`, `default_departure`,
+`min_disposition` floor). Member preference clamps within the
+envelope. A member-initiated `Purge` **always overrides
+`min_disposition`** (RTBF). Logged as
+`RegistryRecordPolicyOverride { reason: "rtbf" }` with HMAC-hashed
+identifier (§11.1).
 
-1. **Community policy** (`registry.rego`) sets allowed envelope:
-   `publish_on_join`, `departure_options`, `default_departure`,
-   `min_disposition` (floor).
-2. **Member preference** (set at join, or at leave), clamped to the
-   policy's allowed set.
-3. **Right-to-be-forgotten override**: a member-initiated `Purge`
-   request *always wins* over `min_disposition`. Logged as
-   `RegistryRecordPolicyOverride { reason: "rtbf" }` with a hashed
-   member DID so the override is auditable without re-leaking the
-   identifier.
+**Timing-correlation mitigation.** RTBF-triggered registry mutations
+are coalesced into a daily batch (configurable;
+`registry.rtbf_batch_window_hours`, default 24) so that record
+disappearance cannot be timed-aligned with a specific override
+event. Status-list bit flips remain immediate locally.
 
-### 8.3 MembershipSyncer
+### 8.3 Reconciliation (`MembershipSyncer`)
 
-A `MembershipSyncer` (Tokio task, analogous to `DrainSweeper` in
-vta-service) drives reconciliation:
+Tokio task subscribed to `MemberAdded`, `MemberRemoved`,
+`RoleChanged`. Enqueues `SyncJob`s into a `sync_queue` keyspace;
+retries with exponential backoff. Boot-time replay.
 
-* Subscribes to local lifecycle events (`MemberAdded`, `MemberRemoved`,
-  `RoleChanged`).
-* For each event, computes the desired trust-registry + status-list
-  state and enqueues a `SyncJob`.
-* Retries with exponential backoff on registry-side failures.
-* Emits `RegistrySyncPending`, `RegistrySyncFailed`,
-  `StatusListUpdatePending`, `StatusListUpdateFailed` telemetry
-  events.
-* Boot-time replay of any outstanding jobs in the `sync_queue`
-  keyspace.
+**Visible failure.** Persistent sync failure (default ≥ 1 hour
+behind, configurable) surfaces in:
+- `GET /v1/community/profile` (`registry_status`)
+- `GET /v1/health/diagnostics`
+- Admin UX status pings
+
+For `Purge` jobs that fail to sync, the warning is escalated — a
+locally-deleted member still recognised externally is the silent
+privacy regression the disposition is meant to prevent.
 
 ### 8.4 Cross-community recognition
 
-A `cross_community_roles.rego` policy decides whether a foreign VEC's
-role claim should map to a local ACL role at this VTC. Default
-deny-all. Communities opt in to federated trust via Rego.
+`cross_community_roles.rego` decides whether a foreign VEC's role
+claim maps to a local ACL role. Default deny-all.
 
-Implementation hook: the auth extractor, when handed a session minted
-from a foreign VEC, runs `cross_community_roles.rego` to compute the
-effective local role. Empty result → 403.
+**Session-mint hardening.**
+
+- The foreign VEC must pass StatusList revocation check at
+  session-mint time (the issuer's status list URL is resolved live).
+- The foreign issuer must be present in the trust-registry's
+  recognition graph at the time of mint.
+- The minted session's TTL is clamped to the shortest of: the JWT
+  audience default, the foreign VEC's `validUntil`, the foreign
+  VMC's `validUntil`.
+- Recognition is **not cached**; every session mint re-runs the
+  full policy + StatusList + trust-registry check. A peer community
+  removed from the registry mid-session does not retain access on
+  refresh.
 
 ## 9. Wire protocols
 
-### 9.1 URL versioning
+### 9.1 Common conventions
 
-All REST endpoints live under `/v1/`. Adding `/v2/` is the explicit
-mechanism for breaking changes. No unversioned routes other than
-`/health`.
+- **URL versioning.** All REST under `/v1/`. Adding `/v2/` is the
+  explicit mechanism for breaking changes.
+- **Idempotency keys.** Every mutating endpoint accepts
+  `Idempotency-Key: <uuid>`. Cache key is `(session_id, idempotency_key)` —
+  **not** global. Idempotent retries from a different principal
+  receive their own response, not the cached one. Cache TTL: 24 h
+  for non-destructive operations; **destructive operations
+  (`DELETE`, removal, revocation) cache for 60 s only**, and re-validate
+  target state before returning a cached response. Same key + different
+  body → 422 `IdempotencyKeyConflict`.
+- **Cursor pagination.** All list endpoints accept
+  `?cursor=&limit=` (limit 1..200). Response includes `next_cursor`
+  (nullable) and optional `total_estimate`.
 
-### 9.2 Idempotency keys
+### 9.2 Routing modes
 
-Every mutating endpoint (`POST`, `PUT`, `DELETE`) accepts
-`Idempotency-Key: <uuid>`. VTC stores `(key, request_hash) → response`
-for 24 hours in the `idempotency` keyspace. Retries with the same key
-return the cached response; retries with the same key but a different
-request body return 422 `IdempotencyKeyConflict`.
+Each surface (API, admin UX, website) mounts on a path prefix, a
+Host header, or both. Default is **path-prefix on a single host** —
+works on day one without DNS configuration.
 
-Required on: all bootstrap, install, member-lifecycle, policy,
-credential, and rotation endpoints. Optional but accepted on read
-endpoints (no-op).
-
-### 9.3 Cursor pagination
-
-Standard contract on every list endpoint:
-
-```
-GET /v1/<collection>?cursor=<opaque>&limit=<1..200>
-
-→ 200 OK
-{
-  "items": [...],
-  "next_cursor": "<opaque>" | null,
-  "total_estimate": <u64 | null>   // optional
-}
+```toml
+# Default (path mode)
+[routing.api]       mount = "/v1"
+[routing.admin_ui]  mount = "/admin"
+[routing.website]   mount = "/"            # catch-all, lowest priority
 ```
 
-Cursor is opaque (server picks; typically a base64-encoded
-`(last_key, snapshot_id)` tuple). `next_cursor: null` means end of
-collection.
+Route priority (highest first): `/health`, `/v1/*`,
+`/v1/website/*` (management API), `/admin/*`, `/*` (public site).
 
-### 9.4 CORS
+**Subdomain mode**: per-surface `host` set; tower middleware routes
+by `Host`. Hosts not matching any surface return 404. Subdomain mode
+implies the operator handles per-surface TLS certs and DNS.
 
-`config.toml` carries a `cors.allowed_origins: Vec<String>` list.
-Wildcard origins refused at config-load time. Preflight responses
-include `Idempotency-Key` in `Access-Control-Allow-Headers`.
+**Multi-process daemons are not in MVP.** fjall is not multi-process-safe.
+Operators who need isolation strip surfaces at compile time via cargo
+features and put a reverse proxy / CDN in front.
 
-Interaction with admin UX hosting mode (§12.2):
+### 9.3 CORS + cookie scope
 
-* `admin_ui.mode = "embedded"` — admin UX served same-origin (or by
-  Host-header routing to a configured subdomain); no CORS entry
-  required for the admin UX itself.
-* `admin_ui.mode = "external"` — the install flow writes the external
-  admin origin into `cors.allowed_origins` during step 6.
+`cors.allowed_origins` is a configured allowlist. Wildcards refused.
 
-The public website's own origin is auto-allowed so that static-site
-JS can POST to `/v1/join-requests` without a separate CORS config.
+**Isolation invariant.** When the public website (§12.1) and the
+admin UX (§12.2) are served on the same domain, they **must** be on
+different cookie scopes. Path-mode default achieves this by setting
+the admin session cookie with `Path=/admin; SameSite=Strict;
+Secure; HttpOnly`; the public website's origin gains no
+implicit access to admin session cookies.
 
-### 9.5 REST surface (representative — full OpenAPI in §16 followup)
+Admin UX in `embedded` mode: same-origin or near-origin; no CORS
+allowance for the admin UX itself.
+Admin UX in `external` mode: install flow writes the external origin
+into `cors.allowed_origins`.
+
+The public website's origin is **not** auto-allowed for admin
+endpoints. The public site can POST to `/v1/join-requests`
+(unauthenticated) without preflight via simple-request semantics.
+
+**CSRF on admin mutating endpoints.** Every admin endpoint requires
+either `Sec-Fetch-Site: same-origin` or a CSRF double-submit cookie.
+Both checks are belt-and-braces: form-encoded POSTs from public-site
+JavaScript can't forge admin actions.
+
+### 9.4 Trust Tasks
+
+Every wire op binds to a versioned Trust Task identified by URL on
+[trusttasks.org](https://trusttasks.org):
 
 ```
-# Install / admin lifecycle
+https://trusttasks.org/{org}/{domain}/{path}/{major}.{minor}
+```
+
+For this workspace: `org = openvtc`, `domain = vtc`. Example:
+`https://trusttasks.org/openvtc/vtc/join/request/submit/1.0`.
+
+**REST binding.** Every request carries a `Trust-Task` header. The
+header is **exact-matched** against the handler's registered task
+URL at route attach time — not by prefix, not by major-version
+family. Mismatch → 415 `TrustTaskMismatch`; missing → 400
+`TrustTaskMissing`. **Exception**: `/health` is exempt to keep
+monitoring trivial; this is the only exempt endpoint and is
+documented.
+
+**DIDComm binding.** The DIDComm message `type` field **is** the
+Trust Task URL. No shorthand; no parallel registry.
+
+**Spec format.** Two artefacts under `trust-tasks/{path}/{major}.{minor}/`:
+
+- `spec.md` — narrative with frontmatter (id, title, status,
+  authors, inputs/outputs, trust assumptions, related).
+- `schema.json` — JSON Schema for input/output.
+
+Plus `trust-tasks/index.json` manifest. trusttasks.org publishes
+from this manifest via CI on merge to main.
+
+**Status lifecycle.** Draft → Reviewing → Published → Deprecated.
+Draft entries are wire-referenceable. Published entries have frozen
+schemas; further changes require a major bump.
+
+**MVP gate (soft).** Every operation that ships in MVP must have a
+Trust Task with a stable ID and at least a Draft `spec.md` before
+its endpoint ships. Published status is the target for v1.0 of the
+VTC, not the MVP gate. Published requires `schema.json` complete +
+at least one conformance test + no breaking changes since first
+Draft.
+
+Source-of-truth location, full ~50-entry catalog, governance, and
+the workspace's `vti-trust-tasks` integration crate live in the
+sibling document `trust-tasks-spec.md` — they are too long for the
+core MVP spec.
+
+### 9.5 REST surface (canonical)
+
+```
+# Install + admin
 POST   /v1/install/claim
 POST   /v1/admin/bootstrap
 POST   /v1/admin/passkeys/register
@@ -633,6 +549,8 @@ GET    /v1/admin/config
 PATCH  /v1/admin/config
 POST   /v1/admin/config/reload
 POST   /v1/admin/config/restart
+POST   /v1/admin/config/export
+POST   /v1/admin/config/import
 
 # Community
 GET    /v1/community/profile
@@ -642,1174 +560,514 @@ PUT    /v1/community/profile
 GET    /v1/members
 GET    /v1/members/{did}
 GET    /v1/members/{did}/relationships
-PATCH  /v1/members/{did}                 # role / extensions
-DELETE /v1/members/{did}                 # admin removal
-DELETE /v1/members/me                    # self removal
+PATCH  /v1/members/{did}                        # role / extensions
+POST   /v1/members/{did}/promote-to-admin       # separate audited path
+DELETE /v1/members/{did}                        # admin removal
+DELETE /v1/members/me                           # self removal
 POST   /v1/members/me/renew
 POST   /v1/members/me/rotate
 POST   /v1/members/{did}/personhood/assert
 DELETE /v1/members/{did}/personhood
 
-# Join requests
-POST   /v1/join-requests                 # submit (unauth, rate-limited)
+# Join
+POST   /v1/join-requests                        # submit (unauth, rate-limited)
 GET    /v1/join-requests
 GET    /v1/join-requests/{id}
 POST   /v1/join-requests/{id}/approve
 POST   /v1/join-requests/{id}/reject
 POST   /v1/join-requests/{id}/defer
 
-# Invitations (VIC)
-POST   /v1/invitations
-GET    /v1/invitations
-DELETE /v1/invitations/{id}
+# Invitations / policies / relationships / credentials issued
+POST,GET,DELETE /v1/invitations[/{id}]
+GET,POST       /v1/policies[/{id}/{activate,test}]
+POST,GET,DELETE /v1/relationships[/{id}]
+POST           /v1/credentials/{endorsements,witnesses,rcards}
 
-# Policies
-GET    /v1/policies
-POST   /v1/policies
-POST   /v1/policies/{id}/activate
-POST   /v1/policies/{id}/test
-GET    /v1/policies/active
-
-# Relationships (VRC)
-POST   /v1/relationships
-GET    /v1/relationships
-DELETE /v1/relationships/{id}
-
-# Credentials (Issuer/Admin)
-POST   /v1/credentials/endorsements      # mint VEC
-POST   /v1/credentials/witnesses         # mint VWC
-POST   /v1/credentials/rcards            # mint RCard
+# Status lists, audit, backup, registry
+GET            /v1/status-lists/{revocation,suspension}
+GET            /v1/audit
+POST           /v1/admin/backup/{export,import}
+GET,POST       /v1/registry/{profile,refresh}
 
 # Public website (feature: website)
-GET    /v1/website/files                 # list current site tree
-GET    /v1/website/files/{path}          # fetch a file
-PUT    /v1/website/files/{path}          # upload (admin/moderator)
-DELETE /v1/website/files/{path}
-POST   /v1/website/deploy                # tar.gz bundle (atomic if managed)
-GET    /v1/website/generations           # managed mode only
-POST   /v1/website/rollback/{gen}        # managed mode only
-
-# Status lists
-GET    /v1/status-lists/revocation       # public (the VC)
-GET    /v1/status-lists/suspension       # public (the VC)
-
-# Audit
-GET    /v1/audit
-
-# Backup
-POST   /v1/backup/export                 # admin only
-POST   /v1/backup/import                 # admin only
-POST   /v1/config/export
-POST   /v1/config/import
-
-# Trust-registry
-GET    /v1/registry/profile
-POST   /v1/registry/refresh
+GET,PUT,DELETE /v1/website/files[/{path}]
+POST           /v1/website/deploy
+GET,POST       /v1/website/{generations,rollback/{gen}}
 
 # Health
-GET    /health
-GET    /v1/health/diagnostics            # admin only
+GET            /health                          # Trust-Task exempt (§9.4)
+GET            /v1/health/diagnostics           # admin only
 ```
 
 ### 9.6 DIDComm surface
 
-Symmetric protocols under `community/1.0/`:
+Every REST mutating op has a DIDComm twin under the Trust Task URL.
+The DIDComm `type` field is the Trust Task URL directly — no
+shorthand. Notable absences:
+
+- Install + passkey registration: REST-only (§4.3).
+- `/health` + diagnostics: REST-only.
+- Website management: REST-only.
+
+**Per-DID rate limit.** DIDComm strips IP, so unauthenticated rate
+limiting on `community/1.0/join-request` uses a per-sender-DID
+leaky bucket (`didcomm.join_rate.bucket_capacity` and `refill_per_min`)
+in the DIDComm handler, executed *before* policy evaluation. Other
+DIDComm routes inherit the same per-DID limit, configurable per
+Trust Task ID.
+
+### 9.7 Auth + sessions
+
+- Challenge-response with JWT audience `"VTC"` — cross-audience
+  tokens rejected.
+- Sessions issued from REST (Bearer) or DIDComm (authcrypt sender).
+- **Step-up reauth** required for: passkey enrolment / revocation,
+  admin promotion, emergency operations. Implemented as a fresh
+  WebAuthn user-verification ceremony embedded in the request.
+- Cross-community sessions (§8.4): TTL clamped to inputs, recognition
+  re-evaluated on every refresh.
+
+## 10. Member lifecycle
+
+### 10.1 Join
 
 ```
-community/1.0/join-request
-community/1.0/join-decision
-community/1.0/renew-vmc
-community/1.0/rotate-did
-community/1.0/self-remove
-community/1.0/role-update              # admin → member notification
-community/1.0/status-changed           # admin → member notification
-community/1.0/membership-revoked       # admin → member notification
-
-invitations/1.0/issue                  # admin/issuer
-invitations/1.0/redeem                 # applicant
-
-relationships/1.0/publish
-relationships/1.0/query
-
-policies/1.0/upload
-policies/1.0/activate
-policies/1.0/test
-
-credentials/1.0/issue-endorsement      # admin/issuer
-credentials/1.0/issue-witness
-credentials/1.0/issue-rcard
-```
-
-`community/1.0/install/*` does not exist — install is REST-only by
-nature (no DIDComm session before admin bootstrap).
-
-## 10. Audit log
-
-### 10.1 Event vocabulary (versioned)
-
-```rust
-#[serde(tag = "type", content = "data")]
-enum AuditEvent {
-    // v1 events
-    CommunityInstalled(CommunityInstalledData),
-    EmergencyBootstrapInvoked(EmergencyBootstrapData),
-
-    AdminPasskeyRegistered(AdminPasskeyRegisteredData),
-    AdminPasskeyRevoked(AdminPasskeyRevokedData),
-
-    JoinRequestSubmitted(JoinRequestSubmittedData),
-    JoinRequestApproved(JoinDecisionData),
-    JoinRequestRejected(JoinDecisionData),
-    JoinRequestDeferred(JoinDecisionData),
-
-    MemberAdded(MemberLifecycleData),
-    MemberRemoved(MemberLifecycleData),
-    MembershipRenewed(MembershipRenewedData),
-    RoleChanged(RoleChangedData),
-    PersonhoodAsserted(PersonhoodData),
-    PersonhoodRevoked(PersonhoodData),
-    MemberDidRotated(DidRotationData),
-
-    RegistryRecordPublished(RegistryRecordData),
-    RegistryRecordUpdated(RegistryRecordData),
-    RegistryRecordRemoved(RegistryRecordData),
-    RegistryRecordPolicyOverride(RegistryOverrideData),
-
-    StatusListBitFlipped(StatusListBitFlippedData),
-    StatusListOccupancyWarning(StatusListWarningData),
-
-    PolicyUploaded(PolicyMetadata),
-    PolicyActivated(PolicyMetadata),
-
-    InvitationIssued(InvitationData),
-    InvitationRedeemed(InvitationData),
-    InvitationRevoked(InvitationData),
-
-    RelationshipPublished(RelationshipData),
-    RelationshipRemoved(RelationshipData),
-
-    CredentialIssued(CredentialIssuedData),    // VEC / VWC / RCard
-
-    ConfigChanged(ConfigChangedData),
-    ConfigReloaded(ConfigReloadedData),
-    RestartRequested(RestartRequestedData),
-}
-
-struct ConfigChangedData {
-    changes: Vec<ConfigChange>,
-    requires_restart: bool,
-}
-
-struct ConfigChange {
-    key: String,
-    old_value: Option<Value>,                  // null if previously unset
-    new_value: Value,
-    source_before: ConfigSource,               // "env" | "db" | "toml" | "default"
-}
-
-struct AuditEnvelope {
-    event_id: Uuid,
-    event_version: u32,                  // 1 for MVP; bumps on breaking shape change
-    schema_version: u32,                 // overall vocabulary version
-    timestamp: DateTime<Utc>,
-    actor_did_hash: [u8; 32],            // hashed for purge resilience
-    actor_did_plain: Option<String>,     // null after RTBF purge
-    target_did_hash: Option<[u8; 32]>,
-    target_did_plain: Option<String>,
-    event: AuditEvent,
-}
-```
-
-The hash-and-plaintext-pair pattern lets right-to-be-forgotten purges
-null the plaintext while keeping the hash for correlation across the
-audit log. Without hashes, every override leaks the DID it claimed to
-remove.
-
-### 10.2 Query surface
-
-```
-GET /v1/audit
-  ?since=<ISO8601>
-  &until=<ISO8601>
-  &type=<EventType>
-  &actor_did=<did>
-  &target_did=<did>
-  &cursor=<opaque>
-  &limit=<1..200>
-```
-
-Indexed columns in the `audit` keyspace: `timestamp` (primary),
-`type`, `actor_did_hash`, `target_did_hash`. Each yields a secondary
-index keyspace (`audit_by_type`, etc.) maintained on write.
-
-### 10.3 Retention
-
-* Default: retain forever (audit is forensic infrastructure).
-* Configurable per-event-type max retention via
-  `audit.retention.<event_type>`. Pruner task wakes hourly.
-* RTBF purges *null the plaintext fields*; the envelope (with hashes)
-  is retained for chain integrity.
-
-## 11. Member lifecycle
-
-### 11.1 Join
-
-```
-applicant → VTC (REST POST /v1/join-requests or DIDComm join-request):
-  {
-    applicant_did,
-    vp: <Verifiable Presentation>,
-    registry_consent: { publish, departure_preference } | null,
-    extensions: <opaque>
-  }
+applicant → POST /v1/join-requests (or DIDComm twin)
+  { applicant_did, vp, registry_consent?, extensions? }
 
 VTC:
-  1. Validate VP signature (typestate: VerifiedJoinRequest)
-  2. Compile + run join.rego with input.vp_claims
-  3. If allow:
-     a. Allocate status-list index
-     b. Compute VMC validUntil = now + community.membership.validity
-     c. Mint VMC + role VEC via VTA signing oracle
-     d. Write ACL entry + Member record
-     e. Run registry.rego, enqueue MembershipSyncer job
-     f. Sealed-transfer credentials to applicant_did
-     g. Audit: JoinRequestApproved + MemberAdded
-  4. If deny:
-     a. Persist JoinRequest with status=Rejected + decision rationale
-     b. Send DIDComm reject message to applicant
+  1. Verify VP signature → VerifiedJoinRequest (typestate)
+  2. Run join.rego with input.vp_claims
+  3. allow:
+     a. Allocate status-list index (random; flipped slots excluded)
+     b. Mint VMC + role VEC via VTA oracle (§14.2 for VTA timeout)
+     c. Write ACL + Member, enqueue registry.rego decision
+     d. Sealed-transfer credentials to applicant_did
+     e. Audit: JoinRequestApproved + MemberAdded
+  4. deny:
+     a. Persist JoinRequest as Rejected with decision rationale
+     b. DIDComm reject (where reachable)
      c. Audit: JoinRequestRejected
 ```
 
-### 11.2 Self-removal
+### 10.2 Removal
+
+**No-last-admin invariant.** Self-removal by the sole remaining
+admin is refused with 409 `LastAdminProtected`. Admin must demote
+or promote a successor first. Same check applies to admin removal
+of another admin — refused if the result would be zero admins.
+
+Self-removal (`DELETE /v1/members/me`):
 
 ```
-member → VTC:
-  DELETE /v1/members/me
-  { disposition: "Purge" | "Tombstone" | "Historical" | "PolicyDefault" }
-
-VTC:
-  1. Auth check: caller's DID is in ACL
-  2. Compute effective disposition (clamp to registry.rego allowed set;
-     RTBF override path for Purge)
-  3. Atomic local: delete ACL entry, delete/anonymize Member, flip
-     status-list bit, emit MemberRemoved audit
-  4. Enqueue MembershipSyncer job for registry-side change
-  5. Return 200 with effective disposition + sync job id
+{ disposition: Purge | Tombstone | Historical | PolicyDefault }
 ```
 
-### 11.3 Admin removal
+Atomic local: delete ACL, anonymise Member record, flip status-list
+bit (immediate), emit `MemberRemoved`. Registry sync enqueued.
 
-```
-admin → VTC:
-  DELETE /v1/members/{did}
-  { reason, disposition?: "..." }
+Admin removal (`DELETE /v1/members/{did}`): admin role plus
+`removal.rego` policy gate. Otherwise same effects.
 
-VTC:
-  1. Auth: admin role (or moderator if removal.rego allows)
-  2. Run removal.rego with { actor, target, reason }
-  3. If allow: same effects as self-removal, plus
-     audit event tagged with actor_did
-  4. Send community/1.0/membership-revoked DIDComm to target if
-     reachable
-```
-
-### 11.4 Renewal
+### 10.3 Renewal
 
 See §6.3. Unconditional on ACL membership.
 
-### 11.5 Role change
+### 10.4 Role change
+
+`PATCH /v1/members/{did}` accepts role changes **except** to
+`Admin`. Admin promotion is a separate endpoint:
 
 ```
-admin → VTC:
-  PATCH /v1/members/{did}
-  { role: "moderator" }
-
-VTC:
-  1. Auth check; validate role exists (standard or defined in
-     role_definitions.rego)
-  2. Update ACL entry
-  3. Mint new role VEC with endorsement.role=<new>
-     Old VEC superseded by validFrom timestamp ordering
-  4. Sealed-transfer new VEC to member
-  5. Audit: RoleChanged + DIDComm role-update notification
+POST /v1/members/{did}/promote-to-admin
 ```
 
-### 11.6 DID rotation
+requiring:
 
-See §6.5.
+- caller role = `Admin`
+- step-up WebAuthn UV ceremony in the same request (§9.7)
+- audit event `AdminPromoted` (its own variant, not a generic
+  `RoleChanged`) — distinct event type for SIEM filtering
+
+ACL update + new VEC issuance + sealed transfer + DIDComm
+notification mirror non-admin role change.
+
+### 10.5 DID rotation
+
+| Member DID method | Mechanism |
+|---|---|
+| **did:webvh** | Native: VTC resolves new DID, walks `did.jsonl` history, verifies prior-key signature. No additional credential. |
+| **did:key** | Co-signed rotation attestation. |
+
+**did:key rotation contract.**
+
+- VTC issues a single-use `rotation_id` via
+  `POST /v1/members/me/rotate/challenge` (auth: old DID's current session).
+  Server-issued, bound to old DID, 10-minute TTL.
+- Rotation payload `{ old_did, new_did, vtc_did, rotation_id, expires_at }`
+  is **domain-tag-prefixed** with the literal `vtc-did-rotation/v1\0`
+  before signing (mirrors `vta-sealed-transfer/v1` doctrine). Domain
+  separation prevents cross-protocol signature reuse.
+- Payload signed by **both** old and new keys.
+- `POST /v1/members/me/rotate` authenticates via the *new* DID's
+  session; VTC verifies both signatures, the rotation_id is consumed,
+  ACL updated atomically.
+- **All sessions, refresh tokens, idempotency-cached responses, and
+  in-flight DIDComm threads keyed on the old DID are revoked in the
+  same transaction.**
+- Status-list index reused (member identity continuous), VMC + role
+  VEC re-issued to new DID.
+
+Members must use `did:key` or `did:webvh` (workspace doctrine).
+
+### 10.6 Personhood
+
+See §6.4.
+
+## 11. Audit log
+
+### 11.1 Envelope + identifier hashing
+
+```
+struct AuditEnvelope {
+    event_id: Uuid,
+    event_version: u32,        // bumped on breaking shape change
+    schema_version: u32,
+    timestamp: DateTime<Utc>,
+    actor_did_hash:  [u8; 32], // HMAC-SHA256(audit_key, did_bytes)
+    actor_did_plain: Option<String>,
+    target_did_hash:  Option<[u8; 32]>,
+    target_did_plain: Option<String>,
+    event: AuditEvent,         // tagged enum, see §11.4
+}
+```
+
+**HMAC, not plain hash.** The audit secret `audit_key` is stored
+separately from the audit log (own keyspace, encrypted under the
+VTC seed), per-community. Plain SHA-256 over a DID is reversible by
+enumeration (DIDs are a small public space).
+
+**RTBF.** Right-to-be-forgotten requests null the `*_plain` fields
+and **rotate the `audit_key`**. Pre-rotation hashes become opaque to
+anyone without the prior key; post-rotation events use the new key.
+Audit chain integrity preserved via the per-envelope `event_id`.
+
+### 11.2 Query
+
+`GET /v1/audit?since=&until=&type=&actor_did=&target_did=&cursor=&limit=`.
+Indices on `timestamp`, `type`, `actor_did_hash`, `target_did_hash`
+maintained on write.
+
+### 11.3 Retention
+
+Default: retain forever. Per-event-type max retention configurable
+via `audit.retention.<event_type>`. **Pruner concurrency**: pruner
+reads a snapshot cutoff timestamp; writes are append-only above the
+cutoff. Pruner never deletes events younger than
+`cutoff + audit.pruner_safety_margin` (default 1 h) — protects
+against in-flight events being dropped.
+
+### 11.4 Event vocabulary
+
+Tagged enum (`#[serde(tag = "type", content = "data")]`). Variants
+emitted from each lifecycle section (§4, §10, §6, §8, §14.6).
+`AdminPromoted` is its own variant (§10.4). `ConfigChanged` carries
+per-key sensitivity: keys flagged `sensitive: true` redact
+`old_value` + `new_value` in the audit record (e.g., TLS paths;
+future webhook URLs with tokens). Complete catalog lives alongside
+the source in `vti-common::audit::events`.
 
 ## 12. Optional surfaces
 
 ### 12.1 Public community website (`website` feature)
 
-A generic static-file host. Community admins upload arbitrary HTML,
-CSS, JS, images, fonts — whatever they want — and the VTC serves it.
-No template language, no markdown rendering, no opinions about site
-structure. Operators can use plain HTML, an SPA, a static-site
-generator's output, or just dump a folder of files.
+Filesystem-backed static hosting. Files live at
+`website.root_dir`; can be edited directly (`scp`, `rsync`, `git`)
+or via the REST API. No template engine, no opinions about site
+structure.
 
-**Backing storage: local filesystem** (not fjall). Operators can
-update site files directly with `scp`, `rsync`, `git pull`, or a
-local editor and the changes are served on the next request. The
-REST API endpoints exist as the *convenient* way to update; direct
-filesystem editing is the *primary* one. This is possible because
-the VTC never runs in a TEE (§3) and the filesystem is reliably
-addressable.
+**Deploy modes** (config `website.deploy_mode`):
 
-#### Configuration
+- **`"live"`** (default): files served as-is from `root_dir`; bundle
+  deploys extract via a *staging directory + atomic rename*, never
+  in place (avoids partial reads under concurrent serving).
+- **`"managed"`**: `root_dir/gen-N/` directories + `current → gen-N`
+  symlink. Bundle deploys extract to a fresh generation; symlink
+  swapped atomically. Last 5 generations retained.
 
-```toml
-[website]
-enabled       = true
-root_dir      = "/var/lib/vtc/website"  # served from here
-deploy_mode   = "live"                  # or "managed"
-spa_fallback  = false                   # serve /index.html for unmatched paths
-max_file_size_mb     = 10
-max_bundle_size_mb   = 50
-max_files_per_bundle = 1000
-```
+**Path safety.**
 
-`deploy_mode`:
+- All paths canonicalised to `root_dir` real path; any resolution
+  that escapes `root_dir` is rejected (400).
+- Symlinks within `root_dir` are not followed.
+- Unicode-normalised to NFC; non-NFC paths rejected.
+- Null bytes, control characters in paths rejected.
+- Hidden files (leading `.`) not served.
 
-* **`"live"`** (default) — files in `root_dir` are served as-is. No
-  generations, no atomic swap, no rollback. Operator owns the
-  filesystem layout. Bundle deploys overwrite files in place.
-  Matches the "just copy files and they're live" mental model.
-* **`"managed"`** — `root_dir` contains `gen-N/` subdirectories and a
-  `current → gen-N` symlink. Bundle deploys extract to a fresh
-  `gen-N+1/`, then atomically swap the symlink. Last 5 generations
-  retained (configurable). Rollback via `POST /v1/website/rollback/{gen}`.
-  Operators who need rollback semantics opt in.
+**Content security.**
 
-#### REST surface
+- `X-Content-Type-Options: nosniff` on every response.
+- Default CSP disables inline JavaScript on the public site:
+  `default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'self'`.
+  Configurable per-site for SPA needs.
+- MIME types from extension (`mime_guess`), no sniffing.
+- Forbid serving files with executable bits or with extensions in
+  the configured `website.executable_blocklist` (default: `.cgi`,
+  `.php`, `.exe`).
 
-```
-GET    /v1/website/files            # list current site tree
-GET    /v1/website/files/{path}     # fetch a file
-PUT    /v1/website/files/{path}     # upload/overwrite (admin/moderator)
-DELETE /v1/website/files/{path}     # remove a file
-POST   /v1/website/deploy           # tar.gz bundle, atomic if managed
-GET    /v1/website/generations      # managed mode only
-POST   /v1/website/rollback/{gen}   # managed mode only
-```
+**Cookie isolation.** See §9.3. The website's origin must not share
+cookie scope with the admin UX.
 
-`POST /v1/website/deploy` accepts a `tar.gz` body up to
-`max_bundle_size_mb`. In `"live"` mode: extracted directly into
-`root_dir`, overwriting matching paths. In `"managed"` mode:
-extracted into a new generation, symlink swapped atomically.
+**Form submission.** The static site POSTs directly to
+`/v1/join-requests`. No proxy endpoint.
 
-#### Serving
+`ETag` (SHA-256 of content) + `Cache-Control` so a CDN can sit in
+front. Live-mode file-descriptor cache TTL configurable
+(`website.live_cache_ttl_seconds`, default 5).
 
-* MIME types detected by file extension (`mime_guess`).
-* `ETag` (SHA-256 of content) + `Cache-Control: public, max-age=3600`
-  on every response so operators can put a CDN in front.
-* Directory paths (`/about/`) resolve to `index.html` in that
-  directory.
-* Unmatched paths: 404, or fall back to `/index.html` if
-  `spa_fallback = true`.
-* Path traversal (`..` escape) rejected with 400.
-* Hidden files (leading `.`) not served.
+### 12.2 Admin UX (`admin-ui` feature)
 
-#### Form submissions to the join flow
+The admin UX is a static SPA built and released from
+[OpenVTC/vtc-admin-ui](https://github.com/OpenVTC/vtc-admin-ui).
+`vtc-service`'s `build.rs` fetches a SHA-256-pinned release tarball
+and bakes it via `include_dir!`. Tarball must be **signed by the
+OpenVTC release key**; `build.rs` verifies the signature *and* the
+digest before extracting. Offline builds use a vendored fallback
+under `VTC_OFFLINE_BUILD=1`.
 
-The static site can POST directly to `/v1/join-requests` (CORS
-allows the website's own origin by default). No special "form
-proxy" endpoint — the API endpoint is the form target.
+`admin_ui.mode = "embedded"` (default) serves the baked SPA at the
+configured mount. `mode = "external"` skips embedding; the operator
+hosts the UX elsewhere and the VTC just allows the origin in CORS.
 
-#### Disabled mode
+**WebAuthn `RP ID`.** With path-mode routing the `RP ID` is the base
+host. With subdomain routing, set `RP ID` to the *base domain* so
+credentials remain valid across subdomains. Migrating the admin UX
+to a different base domain re-registers all passkeys; documented in
+the operator runbook.
 
-`enabled = false` (or `website` cargo feature off): all
-`/v1/website/*` routes 404. Operator points DNS at an external host
-(GitHub Pages, Netlify, S3, whatever) and the community site is
-hosted externally.
+### 12.3 VRC graph
 
-### 12.2 Admin UX hosting (`admin-ui` feature)
+Self-issued only in MVP. Members mint VRCs in their wallet/PNM, then:
 
-The admin UX is a static SPA built and released from a separate
-sibling repository (`OpenVTC/vtc-admin-ui`). The VTC binary embeds
-that SPA at build time, then serves it from a configurable mount.
+`POST /v1/relationships` — caller submits a VRC they signed. VTC
+verifies signature against the issuer's known DID, runs
+`relationships.rego` (default: store if both parties are current
+members). Stored in the `relationships` keyspace.
 
-#### Embedded build
+`GET /v1/members/{did}/relationships` returns published VRCs where
+the DID is issuer or subject (paginated).
 
-`vtc-service/build.rs` reads a pinned version from `Cargo.toml`
-(metadata field `[package.metadata.admin_ui] version = "x.y.z"`) and
-fetches the release artifact:
+**Departure handling.** When a member is removed:
+- VRCs they *issued* are handled per their departure disposition
+  (purged on `Purge`).
+- VRCs naming them as *subject* — issued by remaining members — are
+  also redacted from list endpoints when the departed member chose
+  `Purge`. The VRC record itself remains in storage referenced by
+  issuer; the public listing strips it.
 
-```
-https://github.com/OpenVTC/vtc-admin-ui/releases/download/v{version}/admin-ui-dist.tar.gz
-```
+Bilateral counter-signing is v2.
 
-Extracts to `OUT_DIR/admin-ui-dist/`, then `include_dir!` bakes the
-tree into the binary. Build is reproducible: the release tarball is
-checksum-pinned (SHA-256 also in `Cargo.toml` metadata), and `build.rs`
-verifies before extracting.
-
-Offline builds: a vendored fallback at `vtc-service/vendor/admin-ui-dist/`
-is used if `VTC_OFFLINE_BUILD=1` is set. CI populates this; release
-tarballs ship with it bundled.
-
-#### Configuration
-
-```toml
-[admin_ui]
-enabled = true
-mode    = "embedded"   # or "external"
-mount   = "/admin"     # path; or use host below for subdomain mode
-host    = null         # e.g. "admin.example.com" for subdomain mode
-```
-
-* `mode = "embedded"`: VTC serves the baked-in SPA from `mount` /
-  `host`. No CORS needed (same origin or near-origin).
-* `mode = "external"`: VTC does not serve the SPA. The operator hosts
-  it elsewhere; the only thing VTC needs is the origin in
-  `cors.allowed_origins`. Useful when the operator wants to host the
-  admin UX on their own static infrastructure.
-
-#### WebAuthn `RP ID` and routing interaction
-
-The WebAuthn `RP ID` set at passkey registration must remain stable
-for passkeys to keep working. With path-prefix routing
-(`example.com/admin`) the `RP ID` is `example.com` and there's no
-issue. With subdomain routing (`admin.example.com`) the `RP ID`
-should be set to the *base* domain (`example.com`) so the credential
-is valid across subdomains. Otherwise moving the admin UX path later
-breaks every registered passkey. Codified in §17 as an operator-
-runbook item.
-
-### 12.3 Routing modes
-
-Each surface (API, admin UX, website) can be mounted on a path
-prefix, bound to a Host header, or both. Default is **path-prefix
-on the same host** — works on day one without DNS configuration.
-
-#### Default config (path-prefix mode)
-
-```toml
-[routing.api]
-mount = "/v1"
-
-[routing.admin_ui]
-mount = "/admin"
-
-[routing.website]
-mount = "/"          # catch-all, lowest priority
-```
-
-A single host serves everything. Route priority (highest first):
-
-1. `/health` (always)
-2. `/v1/*` → API
-3. `/admin/*` → admin UX (if enabled)
-4. `/v1/website/*` → website management API
-5. `/*` → public website (if enabled)
-
-#### Subdomain mode
-
-```toml
-[routing.api]
-host = "api.example.com"
-
-[routing.admin_ui]
-host = "admin.example.com"
-
-[routing.website]
-host = "example.com"
-```
-
-Tower middleware routes by `Host` header. Requests to a host that
-doesn't match any configured surface return 404.
-
-#### Mixed mode
-
-Any combination. Common pattern:
-
-```toml
-[routing.api]
-mount = "/v1"                        # same host as website
-host  = "example.com"
-
-[routing.admin_ui]
-host  = "admin.example.com"          # admin on its own subdomain
-
-[routing.website]
-mount = "/"
-host  = "example.com"
-```
-
-#### Combined vs separated daemon
-
-**MVP**: combined daemon only. One `vtc` process serves all three
-surfaces. The cargo features control what's compiled in; runtime
-config controls how each is exposed.
-
-**Separated daemons** (running multiple VTC binaries that share
-storage) is **not** in MVP. fjall is not multi-process-safe, so
-splitting requires either a proxy/cache architecture or a different
-storage backend. Documented as v2 work. Operators who need
-isolation today should:
-
-* Strip surfaces at compile time via cargo features per build.
-* Put a reverse proxy (nginx / Caddy / CloudFront) in front for
-  caching, TLS termination, and per-surface rate limiting.
-* Use subdomain routing with separate TLS certs.
-
-99% of communities never need to split.
-
-### 12.4 VRC graph
-
-* Self-issued only in MVP. Bilateral counter-signing v2.
-* `POST /v1/relationships` (or `relationships/1.0/publish`) — caller
-  submits a VRC they signed.
-* VTC verifies VRC signature against caller's known DID.
-* Run `relationships.rego` to decide whether to store.
-* `GET /v1/members/{did}/relationships` returns published VRCs where
-  the DID is issuer or subject. Pagination required.
-* On member departure: VRCs they issued are handled per departure
-  disposition (purged on `Purge`; retained on Tombstone/Historical
-  with status annotation).
-
-## 13. Storage (fjall keyspaces)
+## 13. Storage
 
 | Keyspace | Existing | Schema |
 |---|---|---|
 | `sessions` | ✓ | unchanged |
-| `acl` | ✓ | extended: `VtcRole` enum + `extensions: Value` |
-| `community` | new | singleton key `profile` → `CommunityProfile` |
-| `policies` | new | `id → Policy`; `purpose_active/<purpose> → id` (secondary) |
+| `acl` | ✓ | extended: `VtcRole` enum + `extensions` |
+| `community` | new | singleton key `profile` |
+| `policies` | new | active + archived |
 | `members` | new | `did → Member` |
-| `join_requests` | new | `id → JoinRequest`; `status/<status>/<id>` (secondary) |
-| `invitations` | new | `id → Invitation` |
-| `relationships` | new | `vrc_id → VrcRecord`; `by_member/<did>/<vrc_id>` (secondary) |
-| `status_lists` | new | per-purpose state + index allocations |
-| `registry_records` | new | `member_did → RegistryRecord` |
-| `sync_queue` | new | pending `MembershipSyncer` jobs |
-| `audit` | new | `timestamp → AuditEnvelope`; indices by type/actor/target |
-| `idempotency` | new | `key → (request_hash, response, expires_at)` |
-| `config` | new | `key → ConfigValue` — DB-layer overrides for runtime config |
+| `join_requests` | new | with retention sweeper |
+| `invitations` | new | |
+| `relationships` | new | |
+| `status_lists` | new | per-purpose state + reserved index set |
+| `registry_records` | new | |
+| `sync_queue` | new | `MembershipSyncer` jobs |
+| `audit` | new | `AuditEnvelope` + secondary indices |
+| `audit_key` | new | per-community HMAC key + rotation history |
+| `idempotency` | new | `(session_id, key) → (request_hash, response, expires_at)` |
+| `config` | new | DB-layer overrides |
 
-Public website content is **not** in fjall — it lives on the local
-filesystem at `website.root_dir` (§12.1). This keeps the storage
-abstraction small and lets operators update site files with standard
-filesystem tools.
-
-All fjall keyspaces use the existing `KeyspaceHandle` enum. Because
-the VTC never targets TEE (§3), no vsock-store parity work is
-required for the VTC and `KeyspaceHandle::Vsock` variants stay
-unused on the VTC code path.
+Public website lives on filesystem at `website.root_dir`, not in
+fjall (§3-K).
 
 ## 14. Operational
 
 ### 14.1 Backup / restore
 
-Same pattern as VTA backup:
+`POST /v1/admin/backup/export` returns an encrypted dump (Argon2id +
+AES-256-GCM). Password strength enforced via `zxcvbn` (minimum
+score 3) — `≥12 chars` alone is too weak.
 
-* Argon2id KDF (≥12-char password) + AES-256-GCM.
-* `POST /v1/backup/export` returns the encrypted full state dump
-  (all keyspaces).
-* `POST /v1/backup/import` accepts a dump; refuses if `community_did`
-  doesn't match the running VTC's DID (`check_vtc_did_compatibility`
-  helper, mirror of VTA's check).
-* Fresh-install VTC accepts any backup (no DID set yet); a configured
-  VTC rejects mismatched backups.
+**Cross-VTC restore protection.** Each backup is wrapped under a key
+derived from the VTC's master seed (`HKDF(seed, "vtc-backup-key")`),
+not just the public DID. A spoofer who provisions a new VTC with the
+same DNS cannot restore a stolen backup — they would need the
+original master seed, which is OS-keyring-resident.
 
-### 14.2 Configuration export/import
+A fresh-install VTC accepts any backup once. A configured VTC refuses
+backups whose `community_did` doesn't match. Same primitive as VTA's
+`check_vta_did_compatibility`.
 
-Separate from data backup. Exports only configuration shape:
+**Scrub on export.** `sessions` and `idempotency` keyspaces are
+excluded from backups — they contain ephemeral state and may include
+secret-bearing cached responses.
 
-* Community profile.
-* Policy bundle (all policies + the active set per purpose).
-* CORS configured origins.
-* `community.membership.validity`, status-list capacities, audit
-  retention settings, registry endpoints.
+### 14.2 Runtime configuration
 
-Use case: promote-from-staging, migrate between hosts without copying
-member data, share a community template.
-
-`POST /v1/config/export` returns plain JSON.
-`POST /v1/config/import` applies it transactionally; on conflict with
-existing community profile, refuses (force flag = different endpoint).
-
-### 14.3 Telemetry
-
-Reuses `vti_common::telemetry::TelemetrySink` (existing ring-buffer
-default). New event kinds:
-
-* `JoinRequestSubmitted`, `JoinRequestDecided`
-* `MemberAdded`, `MemberRemoved`, `MembershipRenewed`, `RoleChanged`
-* `RegistrySyncPending`, `RegistrySyncFailed`, `StatusListUpdatePending`,
-  `StatusListUpdateFailed`
-* `StatusListOccupancyWarning`
-* `PolicyActivated`
-* `IdempotencyConflict`
-* `CrossCommunityRoleEvaluated`
-
-### 14.4 Health / diagnostics
-
-* `GET /health` — unauth, returns 200 if the daemon is up and storage
-  is reachable.
-* `GET /v1/health/diagnostics` — admin only. Returns:
-  * Status-list occupancy per purpose (count + percentage).
-  * MembershipSyncer queue depth, last-success/failure timestamps.
-  * Active policy ids per purpose with their SHA-256.
-  * Trust-registry last-publish timestamp + status.
-  * Telemetry ring-buffer snapshot summary.
-
-### 14.5 Runtime guards (preserve)
-
-* Rate limit on unauth routes via `tower-governor`: 5 rps + 10 burst
-  per source IP. Applies to `/v1/join-requests` (submit), `/v1/install/*`,
-  `/health`, and public website forms.
-* Body cap: 1 MB globally.
-* Audience isolation: VTC JWTs only — `aud: "VTC"`. Cross-audience
-  tokens rejected.
-* Install carve-out: single-use, like VTA's bootstrap carve-out.
-
-### 14.6 Runtime configuration management
-
-Every configurable VTC option is settable through the admin web UX
-via REST. Settings that can take effect without interrupting service
-(log level, CORS origins, rate limits, audit retention, membership
-validity defaults) apply on explicit reload. Settings that require a
-process restart to take effect (bind address, TLS certificates,
-storage path) are flagged in the UX response and applied via an
-explicit restart action.
-
-#### Persistence model
-
-Configuration is a three-layer overlay, evaluated right-to-left at
-boot and on reload:
-
-```
-effective = env_vars > db_overrides > config.toml > defaults
-```
-
-* `config.toml` is the on-disk seed loaded at boot (compatibility with
-  the existing config story).
-* `db_overrides` is a new `config` keyspace; the admin UX writes here.
-* Environment variables (`VTC_*`) win over everything for ops-style
-  emergency overrides.
+Three-layer overlay:
+`env_vars > db_overrides > config.toml > defaults`.
 
 `GET /v1/admin/config` returns the effective config with per-field
-annotations: `source: "env" | "db" | "toml" | "default"` and
-`requires_restart: bool`.
-
-#### REST surface
-
-```
-GET   /v1/admin/config
-PATCH /v1/admin/config            # partial update
-POST  /v1/admin/config/reload     # apply reloadable changes in-place
-POST  /v1/admin/config/restart    # graceful shutdown for restart-required changes
-```
-
-`PATCH` accepts a JSON object with any subset of mutable config keys.
-Writes to the `config` keyspace and returns:
-
-```json
-{
-  "applied":          ["log.level", "cors.allowed_origins"],
-  "pending_restart":  ["server.port"],
-  "rejected":         []
-}
-```
-
-`pending_restart` fields are persisted but not yet active. Calling
-`POST /v1/admin/config/reload` re-applies the effective config to
-running subsystems for hot-reloadable settings. Calling
-`POST /v1/admin/config/restart` initiates graceful shutdown:
-
-1. Stop accepting new HTTP / DIDComm requests.
-2. Drain in-flight requests with a configurable
-   `restart.drain_timeout` (default 30s).
-3. Flush `MembershipSyncer` queue (bounded wait, also 30s).
-4. Emit `RestartRequested` audit event.
-5. Exit with status 0.
-
-A process supervisor (systemd `Restart=always`, kubernetes,
-supervisord) is required to actually restart the binary; the spec
-documents this as an explicit operational dependency. CLI users get
-`vtc daemon` (existing) supervised by their init system; container
-users get a k8s `Deployment`.
-
-#### Config taxonomy
-
-| Key | Reload | Restart | UX-settable | Notes |
-|---|---|---|---|---|
-| `server.host` | | ✓ | ✓ | |
-| `server.port` | | ✓ | ✓ | |
-| `server.tls.cert_path` | | ✓ | ✓ | |
-| `server.tls.key_path` | | ✓ | ✓ | |
-| `log.level` | ✓ | | ✓ | |
-| `cors.allowed_origins` | ✓ | | ✓ | |
-| `audit.retention.*` | ✓ | | ✓ | |
-| `membership.validity` | ✓ | | ✓ | New value applies to *subsequent* VMC issuance; existing VMCs retain their issued validUntil. |
-| `status_list.capacity` | | ✓ | ✓ | Existing lists keep their capacity; new lists (on chaining) adopt the new value. |
-| `registry.endpoint` | ✓ | | ✓ | Triggers reconnect. |
-| `registry.publish_on_startup` | ✓ | | ✓ | |
-| `rate_limit.unauth_rps` | ✓ | | ✓ | |
-| `rate_limit.unauth_burst` | ✓ | | ✓ | |
-| `body_cap_bytes` | ✓ | | ✓ | |
-| `restart.drain_timeout` | ✓ | | ✓ | |
-| `storage.path` | | ✓ | ✓ | |
-| `community.profile.*` | ✓ | | ✓ | Goes through `/v1/community/profile`, not `/v1/admin/config`. |
-| `routing.api.{mount,host}` | | ✓ | ✓ | Affects URL surface. |
-| `routing.admin_ui.{mount,host}` | | ✓ | ✓ | |
-| `routing.website.{mount,host}` | | ✓ | ✓ | |
-| `admin_ui.mode` | | ✓ | ✓ | `"embedded"` vs `"external"`. |
-| `admin_ui.external_origin` | ✓ | | ✓ | Sets the CORS entry; only meaningful if mode = external. |
-| `website.enabled` | | ✓ | ✓ | Disabling unmounts the routes. |
-| `website.root_dir` | | ✓ | ✓ | Filesystem path. |
-| `website.deploy_mode` | ✓ | | ✓ | `"live"` vs `"managed"`. |
-| `website.spa_fallback` | ✓ | | ✓ | |
-| `website.max_*` | ✓ | | ✓ | Size limits on uploads. |
-| Secret backend (keyring / AWS / GCP / Azure) | | n/a | n/a | Selected by cargo feature at compile time; UX surfaces "active backend". |
-| Cargo features (`website`, etc.) | n/a | n/a | n/a | Compile-time only. UX surfaces "feature available" / "not built in". |
-
-#### Audit + telemetry
-
-Every mutation emits a versioned audit event (see §10.1
-additions). `ConfigChanged` carries the per-key change set;
-`ConfigReloaded` and `RestartRequested` mark control-plane actions.
-
-Telemetry counters: `config_patched`, `config_reloaded`,
-`config_restart_requested`, `config_reload_failed`.
-
-#### Relationship to `/v1/config/{export,import}`
-
-`/v1/config/export` (§14.2) returns the union of community profile +
-policy bundle + DB-layer config overrides — exactly what's needed to
-recreate a community on a fresh VTC. It does **not** include
-TOML-layer or env-layer values, since those are deployment-specific.
-`/v1/config/import` writes to the DB layer; restart-required fields
-take effect at next process start.
-
-## 15. CLI surface
-
-`cnm-cli` extension. The community-network-manager binary already
-exists; new subcommands added under `cnm community`:
-
-```
-cnm community setup
-cnm community status
-
-cnm community profile        {show, set}
-cnm community policies       {list, upload, activate, show, test}
-cnm community members        {list, show, role, remove}
-cnm community join           {list, approve, reject, defer, show}
-cnm community invitations    {list, issue, revoke}
-cnm community website        {publish, unpublish, list}     # feature-gated
-cnm community registry       {publish, refresh, status}
-cnm community status-lists   {show, occupancy}
-cnm community audit          {list, since, type, actor, target}
-cnm community backup         {export, import}
-cnm community config         {show, set, reload, restart, export, import}
-cnm community daemon         {reload, restart, status}
-```
-
-`cnm community config show` returns the effective config with source
-annotations. `cnm community config set <key> <value>` PATCHes a single
-key. `cnm community config reload` and `restart` map directly to the
-REST control-plane endpoints. `cnm community daemon` is a thin alias
-for the reload/restart actions, parallel to how operators think about
-the running process.
-
-CLI commands are thin wrappers over `vta-sdk` REST/DIDComm clients
-(workspace doctrine: CLI logic in `vta-cli-common`).
-
-## 16. Trust Tasks
-
-Every wire operation in the VTC — REST or DIDComm — is a registered
-Trust Task. A Trust Task is the formal, versioned definition of a
-task being requested. It combines:
-
-* **Operation semantics** — what the task does, and what success means.
-* **Inputs** — the credentials, claims, attestations, and parameters
-  the caller must present.
-* **Outputs** — the artefacts (records, credentials, audit events)
-  the task produces.
-* **Trust assumptions** — what the producer relies on about the
-  caller, the inputs, and the surrounding system.
-
-Trust Tasks are identified by a stable URL on
-[trusttasks.org](https://trusttasks.org) and referenced on the wire
-from day one. This is opt-in discipline applied **before MVP code
-ships**, not retrofitted later.
-
-### 16.1 Identifier scheme
-
-```
-https://trusttasks.org/{org}/{domain}/{path}/{major}.{minor}
-```
-
-For this workspace: `org = openvtc`, `domain = vtc`. Example:
-
-```
-https://trusttasks.org/openvtc/vtc/join/request/submit/1.0
-```
-
-Versioning:
-
-* Minor bumps are additive (new optional inputs, new response
-  fields). Backwards compatible.
-* Major bumps are breaking — a new registry entry, the old one stays
-  resolvable as Deprecated.
-
-### 16.2 Wire binding
-
-#### REST
-
-Every request carries a `Trust-Task` header naming the task it
-intends to invoke:
-
-```
-POST /v1/join-requests HTTP/1.1
-Host: vtc.example.com
-Trust-Task: https://trusttasks.org/openvtc/vtc/join/request/submit/1.0
-Idempotency-Key: 8a9c…
-Content-Type: application/json
-
-{ "applicant_did": "...", "vp": { ... } }
-```
-
-VTC checks the header matches the endpoint's registered task. A
-mismatch returns 415 `TrustTaskMismatch` with a structured payload
-identifying the expected task. Missing header on a registered
-endpoint returns 400 `TrustTaskMissing`. The header is not validated
-against trusttasks.org at request time — the URL is treated as an
-opaque identifier the workspace knows about. Network-resolution of
-the URL is the responsibility of operators inspecting traffic.
-
-Response bodies include `trust_task: "<resolved URL>"` so the caller
-sees which task the server actually invoked.
-
-#### DIDComm
-
-The DIDComm message `type` field **is** the Trust Task URL — same
-shape, same registry. The earlier-planned shorthand types like
-`community/1.0/join-request` are rewritten as:
-
-```
-https://trusttasks.org/openvtc/vtc/community/join-request/1.0
-```
-
-No additional envelope field is required; DIDComm v2 already routes
-by message type, and the Trust Task registry is just the canonical
-home for those types.
-
-### 16.3 Spec format
-
-Each Trust Task is two artefacts under a versioned directory in the
-workspace at `trust-tasks/{path}/{major}.{minor}/`:
-
-```
-trust-tasks/
-├── index.json                                    # registry manifest
-├── join/request/submit/1.0/
-│   ├── spec.md                                   # human-readable
-│   └── schema.json                               # JSON Schema for input/output
-├── members/renew/1.0/
-│   ├── spec.md
-│   └── schema.json
-└── …
-```
-
-`spec.md` carries structured frontmatter:
-
-```yaml
----
-id: https://trusttasks.org/openvtc/vtc/join/request/submit/1.0
-title: VTC — Submit join request
-status: Draft                       # Draft | Reviewing | Published | Deprecated
-version: "1.0"
-authors:
-  - did:webvh:openvtc.org
-created: 2026-05-11
-updated: 2026-05-11
-applies_to:
-  - rest: POST /v1/join-requests
-  - didcomm: https://trusttasks.org/openvtc/vtc/community/join-request/1.0
-inputs:
-  - name: applicant_did
-    type: did
-    required: true
-  - name: vp
-    type: VerifiablePresentation
-    required: true
-  - name: registry_consent
-    type: RegistryConsentRequest
-    required: false
-outputs:
-  - JoinRequestRecord
-  - AuditEvent[JoinRequestSubmitted]
-trust_assumptions:
-  - Caller's outer auth (REST bearer / DIDComm authcrypt sender) authenticates the relayer.
-  - VP DataIntegrityProof authenticates the holder.
-related:
-  - https://trusttasks.org/openvtc/vtc/policy/join/evaluation/1.0
-  - https://trusttasks.org/openvtc/vtc/credentials/vmc/issue/1.0
----
-```
-
-The body of `spec.md` is the narrative spec: motivation, normative
-behaviour, error vocabulary, examples, security considerations.
-
-`schema.json` is a JSON Schema covering the wire input + output. Used
-for runtime validation and for binding generation in client SDKs.
-
-`trust-tasks/index.json` is the workspace's registry manifest — a
-list of all task IDs the workspace defines, used by CI to publish to
-trusttasks.org and by the VTC at boot to register handlers.
-
-### 16.4 Catalog (VTC MVP)
-
-Approximately fifty Trust Tasks across the operation surface. Each
-entry below is a stable ID assigned at the time the corresponding
-endpoint is designed; the `spec.md` and `schema.json` may be skeletal
-at first and tightened during implementation.
-
-| Area | Trust Task IDs |
-|---|---|
-| Install | `install/claim/1.0`; `admin/bootstrap/1.0` |
-| Admin passkeys | `admin/passkeys/register/1.0`; `admin/passkeys/revoke/1.0`; `admin/passkeys/list/1.0` |
-| Admin config | `admin/config/show/1.0`; `admin/config/patch/1.0`; `admin/config/reload/1.0`; `admin/config/restart/1.0` |
-| Community profile | `community/profile/show/1.0`; `community/profile/update/1.0` |
-| Members | `members/list/1.0`; `members/show/1.0`; `members/role/update/1.0`; `members/remove-admin/1.0`; `members/remove-self/1.0`; `members/renew/1.0`; `members/rotate-did/1.0`; `members/personhood/assert/1.0`; `members/personhood/revoke/1.0`; `members/relationships/list/1.0` |
-| Join | `community/join-request/1.0`; `join/request/list/1.0`; `join/request/show/1.0`; `join/request/approve/1.0`; `join/request/reject/1.0`; `join/request/defer/1.0` |
-| Invitations | `invitations/issue/1.0`; `invitations/list/1.0`; `invitations/revoke/1.0`; `invitations/redeem/1.0` |
-| Policies | `policies/list/1.0`; `policies/upload/1.0`; `policies/activate/1.0`; `policies/test/1.0`; `policies/show-active/1.0` |
-| Relationships | `relationships/publish/1.0`; `relationships/list/1.0`; `relationships/remove/1.0`; `relationships/query/1.0` |
-| Credentials issued | `credentials/endorsement/issue/1.0` (VEC); `credentials/witness/issue/1.0` (VWC); `credentials/rcard/issue/1.0` |
-| Status lists | `status-lists/get/1.0` |
-| Audit | `audit/query/1.0` |
-| Backup | `backup/export/1.0`; `backup/import/1.0`; `config/export/1.0`; `config/import/1.0` |
-| Trust registry | `registry/profile/show/1.0`; `registry/refresh/1.0` |
-| Website | `website/files/list/1.0`; `website/files/get/1.0`; `website/files/upload/1.0`; `website/files/delete/1.0`; `website/deploy/1.0`; `website/generations/list/1.0`; `website/rollback/1.0` |
-| Health | `health/check/1.0`; `health/diagnostics/1.0` |
-
-(Full URLs in `trust-tasks/index.json`. The CLI surface §15 does not
-get its own Trust Task IDs — the CLI invokes the same REST tasks.)
-
-### 16.5 Publication workflow
-
-Source-of-truth for `openvtc/vtc/*` Trust Tasks lives in this
-workspace under `trust-tasks/`. trusttasks.org pulls published
-versions via a discovery manifest hosted at
-`https://openvtc.org/trust-tasks/manifest.json`. Status flow:
-
-```
-Draft ──── Reviewing ──── Published ──── Deprecated
-                            │                ▲
-                            └────(major bump)┘
-```
-
-* **Draft** — spec file exists with a stable ID. Wire surface may
-  reference it. `schema.json` may be incomplete.
-* **Reviewing** — open PR; schema stable; conformance tests in
-  progress. Visible publicly as Draft on trusttasks.org with a
-  "review" marker.
-* **Published** — ratified. Schema frozen. Promoted on the registry
-  site. Backwards-compatible minor revisions allowed; major changes
-  require a new registry entry.
-* **Deprecated** — superseded by a higher major. Stays resolvable for
-  a sunset window (default 1 year); registry entry includes a
-  `successor` pointer.
-
-CI publishes on every merge to main: Draft entries land as Draft;
-Reviewing entries get the review marker; Published entries are
-frozen-on-publish.
-
-### 16.6 Governance
-
-* Each `spec.md` has an `authors` list pinned to DIDs.
-* Changes to Draft / Reviewing tasks: PR against this repo.
-* Changes to Published tasks: only via deprecation + new major.
-* Adding a new Trust Task to `openvtc/vtc/*`: PR in this repo by an
-  author DID. Tasks under other paths (`openvtc/vta/*`,
-  `openvtc/dtg/*`, etc.) live in their own source repos.
-
-### 16.7 MVP gate (soft)
-
-Trust Tasks are a **soft gate** for MVP:
-
-* Every operation that ships in MVP must have a Trust Task with a
-  stable ID and at least a Draft `spec.md` before its endpoint
-  ships. ID assignment is non-negotiable; spec body can be skeletal.
-* No published-status requirement for MVP shipping. Promotion to
-  Published is a target for the v1.0 release of the VTC.
-* Published status for v1.0 requires: `schema.json` complete, at
-  least one conformance test in the workspace test suite, no breaking
-  changes since first Draft (or a clean major bump if there were).
-
-### 16.8 Workspace integration
-
-* New crate (or sub-module of `vti-common`) `vti-trust-tasks` holds
-  the registry manifest types + a `TrustTask` extractor for Axum.
-* REST routes register their expected `Trust-Task` value at handler
-  attach time. The extractor checks the header on each request and
-  emits structured 4xx on mismatch.
-* DIDComm dispatch already routes by message type; the trust-task
-  type URL replaces the previously planned shorthand.
-* The `vta-sdk` client gains a `with_trust_task(url)` builder method
-  for explicit task selection. SDK callers don't pick the task
-  manually — each client method sets the right one — but the API
-  surface allows it for protocol explorers.
-
-## 17. Phasing / milestones
-
-Phases are ordered by dependency. Each ships independently as an
-operator-visible increment.
-
-| Phase | Deliverable | Gates next phase by |
+`source` annotation and `requires_restart: bool`. `PATCH` writes to
+the `config` keyspace. `POST .../reload` re-applies hot-reloadable
+settings; `POST .../restart` initiates graceful shutdown.
+
+**Restart-endpoint supervisor handshake.** The restart endpoint
+refuses to exit unless a supervisor is detected — either
+`VTC_SUPERVISED=1` or the systemd notify socket (`NOTIFY_SOCKET`)
+or k8s downward-API marker present. Without a supervisor, restart
+would be a one-shot DoS.
+
+**Sensitive-path PATCH guard.** Mutable config keys carry a
+sensitivity flag. `server.tls.cert_path`, `server.tls.key_path`,
+and `storage.path` are configured to **a directory allowlist**;
+PATCH values outside the allowlist are rejected (refusing requests
+to point TLS at `/etc/shadow` or to relocate storage transparently).
+
+**Config import audit.** `POST /v1/admin/config/import` runs a
+diff-and-confirm flow: the response surfaces every changed field
+with a pre-apply preview; a second call with `confirm=true` applies.
+Per-field audit events emitted on apply.
+
+Full config taxonomy (which key reloads, which restarts, which is
+UX-settable, sensitive-flag) lives in `docs/04-reference/vtc-config.md`,
+not in this spec.
+
+**VTA oracle dependence.** Every VMC / VEC issuance blocks on the
+paired VTA's signing oracle. The VTC enforces a per-call timeout
+(`vta.signing_timeout_seconds`, default 5) and a circuit breaker
+(`vta.circuit_breaker_threshold`, default 5 consecutive failures).
+On breaker-open: join requests are queued (returned as `Deferred`
+instead of 500), renewals return 503, and `/v1/health/diagnostics`
+surfaces VTA health.
+
+### 14.3 Telemetry + diagnostics
+
+Reuses `vti_common::telemetry::TelemetrySink`. `/v1/health/diagnostics`
+(admin) surfaces:
+
+- VTA oracle health + last-success timestamp
+- Status-list occupancy per purpose
+- `MembershipSyncer` queue depth + last-success/failure
+- Active policy IDs + SHA-256 per purpose
+- Trust-registry sync status
+- Telemetry ring-buffer snapshot
+
+`/health` (unauthenticated, Trust-Task-exempt §9.4) returns 200 when
+the daemon is responsive and storage is reachable.
+
+### 14.4 Runtime guards (workspace doctrine)
+
+Inherited from the workspace's standard guards: tower-governor on
+unauth routes (5 rps + 10 burst per IP); 1 MB global body cap;
+audience-isolated JWTs; install carve-out is single-use (§4).
+
+**Body-cap exception.** Website upload routes
+(`POST /v1/website/deploy`, `PUT /v1/website/files/{path}`) override
+the global body cap with per-route caps from
+`website.max_bundle_size_mb` (default 50) and `max_file_size_mb`
+(default 10). All other routes inherit 1 MB.
+
+## 15. CLI
+
+`cnm-cli` gains `cnm community` subcommands grouped by area
+(`setup`, `status`, `profile`, `policies`, `members`, `join`,
+`invitations`, `website`, `registry`, `status-lists`, `audit`,
+`backup`, `config`, `daemon`).
+
+Commands are thin wrappers over `vta-sdk` REST/DIDComm clients —
+workspace doctrine. Detailed verb list lives in
+`docs/04-reference/cnm-vtc-cli.md`.
+
+## 16. Phasing
+
+| Phase | Deliverable | Gate |
 |---|---|---|
-| **0 — Provisioning + install** | `vtc-host` DID template, `vtc setup` CLI wizard, install-token + WebAuthn install flow, multi-passkey admin DID, community profile keyspace. | DID + auth foundation. |
-| **1 — IAM + member lifecycle** | Role enum + custom roles, ACL extension, member CRUD, join requests (manual approve/reject), self-removal + admin-removal (no policy yet), audit events v1, idempotency keys, cursor pagination, `/v1/` URL versioning. | The community can have members. |
-| **2 — Policy engine + DTG issuance** | regorus engine, policy upload/activate, `join.rego` driving the join flow, `removal.rego`, VMC + VEC issuance via VTA oracle, status-list publication, renewal endpoint, DID rotation (both methods). | The community has live policies and proper credential issuance. |
-| **3 — Trust-registry + extensibility** | Trust-registry publish on startup, three departure dispositions, `registry.rego`, `MembershipSyncer`, RTBF override path, hash-tagged audit envelopes, cross-community recognition policies. | The community is part of the wider DTG network. |
-| **4 — VRC + Personhood** | Self-issued VRC publishing + storage, `relationships.rego`, `personhood.rego` (deny-all stub) + assert/revoke endpoints, custom endorsement issuance (issuer role). | The graph and personhood semantics are live. |
-| **5 — Optional surfaces** | Public community website (filesystem-backed static hosting, `"live"` + `"managed"` deploy modes, bundle + per-file APIs), admin web UX (sibling repo `OpenVTC/vtc-admin-ui` consumed via `build.rs` tarball embed), routing config (path-prefix default + subdomain mode). Web UX repo can land in parallel with any prior phase once REST surface stabilises after phase 2. | MVP complete. |
+| **0** | `vtc-host` template, install wizard, WebAuthn install flow, multi-passkey admin DID, community profile, config plumbing | DID + auth foundation. |
+| **1** | Role enum + custom roles, ACL extension, member CRUD with manual approval, self/admin removal (no-last-admin), audit envelope + HMAC, idempotency, `/v1/` versioning, cursor pagination | Members can exist. |
+| **2** | `regorus`, policy upload + activate, `join.rego` + `removal.rego`, VMC + VEC issuance via VTA oracle (with timeout + breaker), status-list with reserved-index discipline, renewal, DID rotation (both methods, domain-tagged) | Live policy + credentials. |
+| **3** | Trust-registry publish, three departure dispositions, `registry.rego`, `MembershipSyncer` + diagnostic surfacing, RTBF override + batched timing, cross-community recognition (session-mint hardening) | Community on the wider network. |
+| **4** | VRC self-issuance + `relationships.rego`, `personhood.rego` (deny-all stub) + assert/revoke + renewal re-eval, custom endorsement issuance (issuer role) | Graph + personhood live. |
+| **5** | Public website (filesystem-backed, CSP, path safety), admin UX consumed via `build.rs` (release-key-signed tarball), path-prefix routing default + subdomain support | MVP complete. |
 
-Phase 5 sub-tasks parallelize with phases 3 and 4. Phases 0–4 are
-strictly serial.
+Phase 5 sub-tasks parallelise with phases 3–4. Phases 0–4 strictly
+serial. Each phase's PR set includes the Draft Trust Task spec files
+alongside the code that implements the operations (§9.4 soft gate).
 
-Each phase's PR set includes the Draft Trust Task spec files
-(`trust-tasks/.../{spec.md,schema.json}`) alongside the code that
-implements the operations. A phase doesn't ship until every wire op
-it introduces has a stable Trust Task ID assigned and at least a
-skeletal `spec.md` — see §16.7.
+## 17. Open questions
 
-## 18. Open questions
+These have proposed answers in the design history but remain to
+validate at implementation:
 
-These are *not* blockers — they have proposed answers documented in
-prior turns of design. Listed here so the spec is honest about what
-remains to validate during implementation.
+1. **Personhood policy reference implementation.** Stub ships
+   deny-all; the workspace should publish at least one reference
+   policy (`docs/04-reference/personhood-templates.md`) once Phase 4
+   lands so communities don't reinvent from scratch.
+2. **Status-list chaining strategy.** MVP alerts at 75% and refuses
+   beyond capacity. Production communities will exceed 131K members
+   eventually. Plan: chained-list pointer in the BitstringStatusList
+   credential header.
+3. **Trust Tasks source-of-truth location.** Currently
+   `trust-tasks/` in this workspace. May factor out to a dedicated
+   `OpenVTC/trust-tasks` repo when VTA-side tasks appear.
+4. **Conformance test pattern for Published Trust Tasks.** Probably
+   golden request/response pairs + schema validation. Land with the
+   first Published task and standardise.
+5. **Audit `audit_key` rotation cadence.** RTBF triggers rotation;
+   spec is silent on routine rotation. Default policy TBD —
+   probably annual + on every backup-export rekey.
+6. **VRC issuance over DIDComm vs REST UX.** Both work; member
+   wallets typically prefer DIDComm. No technical fork; UX call.
 
-1. **Personhood policy input schema beyond the minimal contract.**
-   Each community extends; the workspace does not standardize. Risk:
-   community implementations diverge wildly. Mitigation: publish at
-   least one reference personhood policy in `docs/04-reference/`
-   after Phase 4 lands.
+## 18. Explicitly NOT in MVP
 
-2. **Status-list chaining strategy.** MVP alerts at 75% occupancy and
-   declines beyond capacity. Production communities will exceed
-   131,072 members eventually. Plan: introduce a successor-list
-   pointer header in the BitstringStatusListCredential and a
-   `chained_status_lists` keyspace. Spec'd as a v2 add-on.
+- **TEE / Nitro Enclave deployment of the VTC binary** — permanent
+  non-goal (§3-K). Trust anchor for TEE remains the VTA.
+- **Multi-tenant** (one binary hosts multiple communities).
+- **Multi-process daemons sharing fjall storage.** Operator
+  isolation via cargo features + reverse proxy is the MVP path.
+- **N-of-M admin approvals.** Retrofit is bounded (insert a
+  `proposal` phase before ~8 endpoints).
+- **Webhooks / external event subscribers.** Stable audit event
+  vocabulary (§11.4) makes this a delivery layer on top.
+- **Bulk operations** (mass-invite, mass-remove, mass-export).
+- **WASM / plugin extensions.** Communities extend via Rego +
+  JSON blobs only.
+- **i18n at the resource layer** (translated profile fields, role
+  names). Additive migration via `name_translations` field with
+  fallback.
+- **VPC (Persona credentials)** beyond type-reservation.
+- **Bilateral VRC counter-signing.** Self-issued only in MVP.
+- **VTC-to-VTC community migration tooling.** Config export +
+  backup are the primitives; packaged scripts are a follow-up.
+- **Onboarding state machine** for new members. Encode in policy +
+  admin UX initially.
+- **Filesystem / S3 backends for fjall keyspaces** beyond the
+  public website root.
 
-3. **Member DID rotation atomicity under registry lag.** If a `did:key`
-   rotation succeeds locally but the trust-registry sync to update the
-   record's member DID lags, external verifiers briefly see the old
-   DID as active and the new DID as unknown. Workspace doctrine
-   accepts this: registry lag is a known property; verifiers should
-   re-query on mismatch.
+## 19. Related work
 
-4. **Audit hash function and salt strategy.** Currently spec'd as
-   plain SHA-256 over the DID string. Could be salted per-community
-   to prevent cross-community correlation attacks. v2 question.
-
-5. **DIDComm join-request DoS exposure.** Unlike REST (rate-limited by
-   IP), DIDComm doesn't have an obvious rate-limiting axis. Per-DID
-   rate-limit on `community/1.0/join-request` is the obvious answer
-   but adds state. Defer to a phase 2.5 hardening step.
-
-6. **CORS + WebAuthn `RP ID` coupling.** The admin UX origin must
-   match the WebAuthn `RP ID` set at passkey registration. With
-   subdomain routing (`admin.example.com`) the `RP ID` should be set
-   to the base domain (`example.com`) so credentials remain valid
-   across subdomains. Operators who migrate the admin UX to a new
-   base domain re-register all passkeys. Document as expected;
-   codify in operator runbook.
-
-7. **Admin UX release-tarball checksum management.** `build.rs`
-   pins the admin-ui release artifact by SHA-256. Bumping the admin
-   UX version requires an in-repo metadata change in `Cargo.toml`.
-   Operationally fine; tooling (`cargo xtask bump-admin-ui x.y.z`)
-   useful to write at phase 5.
-
-8. **Public website + filesystem reload semantics.** In
-   `deploy_mode = "live"`, files are served directly from disk. The
-   first request after an external edit pays an `mtime` stat
-   per-file; subsequent requests within a configurable window hit a
-   cached descriptor. Cache duration is a tradeoff between
-   live-reload-feel and per-request overhead. Spec'd as
-   `website.live_cache_ttl_seconds` (default 5).
-
-9. **Trust Task source-of-truth location.** Initial proposal: live
-   under `trust-tasks/` in this workspace, published from here to
-   trusttasks.org via CI. Alternative: a dedicated
-   `OpenVTC/trust-tasks` repo aggregating tasks across multiple
-   workspace projects (VTC, VTA, DTG). Decision deferred until the
-   VTA workspace also wants registry entries. If VTA-side Trust
-   Tasks land before we hit that decision, expect to factor out.
-
-10. **trusttasks.org formal spec evolving in parallel.** The
-    Trust Task concept itself is not yet fully formalised on
-    trusttasks.org. The shape used here (frontmatter, schema,
-    publication workflow) is a reasonable starting point but may
-    need to align with the registry's eventual canonical format.
-    Workspace impact: if the canonical format changes, the
-    `trust-tasks/` files migrate but the wire URLs (which are the
-    contract) stay stable.
-
-11. **Conformance test pattern.** Each Published task needs at least
-    one conformance test. Pattern not yet pinned: probably golden
-    request/response pairs validated against `schema.json` plus a
-    minimal behavioural assertion. Land with the first Published
-    task and standardise from there.
-
-## 19. Explicitly NOT in MVP
-
-To preserve clarity about scope, the following are out:
-
-* **N-of-M admin approvals** for sensitive operations. Retrofit cost
-  is bounded (insert a `proposal` phase ahead of ~8 endpoints); design
-  doesn't need to anticipate it now.
-* **Webhooks / external event subscribers.** Audit event vocabulary
-  is stable from MVP (§10), so this is delivery-layer additive.
-* **Bulk operations** (mass-invite, mass-remove, mass-export). Each
-  is a new endpoint on top of the per-item ones; additive.
-* **WASM / plugin extensions.** Communities extend via Rego + JSON
-  blobs, not custom code. Hard "no" in MVP.
-* **i18n at the resource layer** (translated profile fields, role
-  names, policy messages). Migration plan: introduce
-  `name_translations` field with fallback to `name`. Not
-  architecturally load-bearing — defer with confidence.
-* **VPC (Persona credentials)** beyond reserving the type. Land in
-  v2 when display-identity needs concrete.
-* **Bilateral VRC counter-signing.** Self-issued only in MVP.
-* **TEE / Nitro Enclave deployment of the VTC binary** — *permanent*
-  non-goal, not a deferral. Only the VTA targets TEE. The VTC stays
-  a regular service. Communities that need TEE-grade trust anchor
-  back through the VTA.
-* **Separated daemons sharing storage** (running multiple `vtc`
-  binaries off the same fjall path). fjall is not multi-process-safe;
-  this requires a proxy/cache architecture or different storage
-  backend. v2 work. Operators who need isolation today use cargo
-  features per build + reverse proxy.
-* **Filesystem / S3 backends for fjall keyspaces** beyond what is
-  already explicitly filesystem-based (the public website root).
-  Other keyspaces stay in fjall.
-* **VTC-to-VTC community migration tooling.** Config export +
-  community-data backup already give operators the primitives;
-  packaged migration scripts are a follow-up.
-* **Onboarding state machine** for new members ("welcome flow",
-  required first actions). Encode in policy + admin UX initially.
-* **Multi-tenant** (one VTC binary hosts multiple communities).
-  Architectural rewrite, intentionally out.
-
-## 20. Related work
-
-* [`trusttasks.org`](https://trusttasks.org) — the canonical
-  registry for Trust Task specifications referenced from the
-  VTC wire surface (§16).
-* `docs/05-design-notes/runtime-service-management.md` — the service-
+- [`trusttasks.org`](https://trusttasks.org) — canonical Trust Task
+  registry (§9.4).
+- `docs/05-design-notes/runtime-service-management.md` — service-
   advertisement primitives the VTC inherits via `vta-sdk`.
-* `docs/03-integrating/provision-integration.md` — how the VTC's own
+- `docs/03-integrating/provision-integration.md` — how the VTC's own
   DID is minted from its VTA.
-* `docs/05-design-notes/pnm-setup-deferred-vta-did.md` — the deferred-
+- `docs/05-design-notes/pnm-setup-deferred-vta-did.md` — deferred-
   DID pattern, useful reference for the VTC install flow.
-* [`openvtc/dtg-credentials`](https://github.com/OpenVTC/dtg-credentials)
-  — the credential catalog.
-* [`affinidi/affinidi-trust-registry-rs`](https://github.com/affinidi/affinidi-trust-registry-rs)
-  — TRQP v2.0 server + client.
-* [`affinidi/affinidi-tdk-rs`](https://github.com/affinidi/affinidi-tdk-rs)
+- [`openvtc/dtg-credentials`](https://github.com/OpenVTC/dtg-credentials)
+  — the credential catalog (§6).
+- [`affinidi/affinidi-trust-registry-rs`](https://github.com/affinidi/affinidi-trust-registry-rs)
+  — TRQP v2.0 server + client (§8).
+- [`affinidi/affinidi-tdk-rs`](https://github.com/affinidi/affinidi-tdk-rs)
   — `affinidi-status-list`, `affinidi-vc`, `affinidi-data-integrity`.
