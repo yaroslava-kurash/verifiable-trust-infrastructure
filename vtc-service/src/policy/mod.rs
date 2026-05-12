@@ -38,6 +38,7 @@
 //!    future changes (e.g. caching `data` alongside the engine) don't
 //!    ripple through every consumer.
 
+pub mod default;
 pub mod engine;
 pub mod model;
 pub mod storage;

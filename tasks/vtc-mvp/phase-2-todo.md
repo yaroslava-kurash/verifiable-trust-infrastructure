@@ -123,7 +123,7 @@ Every PR must be DCO-signed (`git commit -s`) and pass
 
 ## M2.5 — Default policies
 
-### `[ ]` M2.5.1 — Bundle deny-all / accept-all defaults
+### `[x]` M2.5.1 — Bundle deny-all / accept-all defaults
 
 - **Acceptance**
   - 9 default Rego policies shipped under
