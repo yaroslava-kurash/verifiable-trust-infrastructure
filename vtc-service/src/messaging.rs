@@ -1,10 +1,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use affinidi_messaging_didcomm::Message;
 use affinidi_messaging_didcomm_service::{
-    DIDCommService, DIDCommServiceConfig, ListenerConfig, ListenerEvent,
-    MESSAGE_PICKUP_STATUS_TYPE, RestartPolicy, RetryConfig, Router, TRUST_PING_TYPE, handler_fn,
-    ignore_handler, trust_ping_handler,
+    DIDCommResponse, DIDCommService, DIDCommServiceConfig, DIDCommServiceError, Extension,
+    HandlerContext, ListenerConfig, ListenerEvent, MESSAGE_PICKUP_STATUS_TYPE, RestartPolicy,
+    RetryConfig, Router, TRUST_PING_TYPE, handler_fn, ignore_handler, trust_ping_handler,
 };
 use affinidi_tdk::common::profiles::TDKProfile;
 use affinidi_tdk::secrets_resolver::{SecretsResolver, ThreadedSecretsResolver};
@@ -12,16 +13,30 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use vta_sdk::protocols::join_requests::{
+    JOIN_REQUEST_SUBMIT_RECEIPT_TYPE, JOIN_REQUEST_SUBMIT_TYPE, JoinRequestSubmitBody,
+    JoinRequestSubmitReceiptBody,
+};
+
 use crate::config::AppConfig;
+use crate::join::JoinTransport;
+use crate::routes::join_requests::submit::submit_inner;
+use crate::server::AppState;
 
 /// Start the DIDComm service and block until shutdown.
 ///
 /// Uses `DIDCommService` for automatic mediator connection management,
 /// reconnection with backoff, and typed message routing.
+///
+/// `state` is needed because the join-request handler writes
+/// rows into the keyspaces + audit log — same shared
+/// `AppState` the REST surface holds. Passed as a `Router`
+/// extension so handlers extract it via `Extension<AppState>`.
 pub async fn run_didcomm_service(
     config: &AppConfig,
     secrets_resolver: &Arc<ThreadedSecretsResolver>,
     vtc_did: &str,
+    state: AppState,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) {
     let mediator_did = match &config.messaging {
@@ -64,11 +79,19 @@ pub async fn run_didcomm_service(
         }],
     };
 
-    // Build a minimal router: trust-ping + ignore message-pickup-status
+    // Build the router: trust-ping + ignore-pickup-status + the
+    // VTC's protocol surface. `Extension<AppState>` is how the
+    // join-request handler reaches the keyspaces / audit writer.
     let router = match Router::new()
+        .extension(state)
         .route(TRUST_PING_TYPE, handler_fn(trust_ping_handler))
         .and_then(|r| r.route(MESSAGE_PICKUP_STATUS_TYPE, handler_fn(ignore_handler)))
-    {
+        .and_then(|r| {
+            r.route(
+                JOIN_REQUEST_SUBMIT_TYPE,
+                handler_fn(join_request_submit_handler),
+            )
+        }) {
         Ok(r) => r,
         Err(e) => {
             warn!("failed to build DIDComm router: {e}");
@@ -140,4 +163,44 @@ pub async fn run_didcomm_service(
     service.shutdown().await;
     event_task.abort();
     info!("DIDComm service stopped");
+}
+
+/// `join-requests/submit/1.0` over DIDComm (M1.8.2).
+///
+/// The applicant DID is the DIDComm `from` field — the
+/// authcrypt sender. No separate holder-binding signature
+/// needed (the envelope IS the proof). Calls into the same
+/// `submit_inner` the REST endpoint uses.
+async fn join_request_submit_handler(
+    ctx: HandlerContext,
+    message: Message,
+    Extension(state): Extension<AppState>,
+) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
+    let applicant_did = ctx.sender_did.clone().ok_or_else(|| {
+        DIDCommServiceError::Internal("join-request submit has no DIDComm sender".into())
+    })?;
+    let body: JoinRequestSubmitBody = serde_json::from_value(message.body.clone())
+        .map_err(|e| DIDCommServiceError::Internal(format!("malformed join-request body: {e}")))?;
+
+    let request = submit_inner(
+        &state,
+        applicant_did,
+        body.vp,
+        body.registry_consent,
+        body.extensions,
+        None,
+        JoinTransport::DIDComm,
+    )
+    .await
+    .map_err(|e| DIDCommServiceError::Internal(format!("submit failed: {e}")))?;
+
+    let receipt = JoinRequestSubmitReceiptBody {
+        request_id: request.id,
+        status: request.status.to_string(),
+    };
+    let body = serde_json::to_value(&receipt)
+        .map_err(|e| DIDCommServiceError::Internal(format!("receipt serialise: {e}")))?;
+    Ok(Some(
+        DIDCommResponse::new(JOIN_REQUEST_SUBMIT_RECEIPT_TYPE, body).thid(message.id),
+    ))
 }

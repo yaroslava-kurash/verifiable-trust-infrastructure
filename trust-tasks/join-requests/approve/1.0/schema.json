@@ -1,0 +1,16 @@
+{
+  "$id": "https://trusttasks.org/openvtc/vtc/join-requests/approve/1.0/schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VTC Join Requests — Approve",
+  "type": "object",
+  "properties": {
+    "response": {
+      "type": "object",
+      "required": ["requestId", "status"],
+      "properties": {
+        "requestId": { "type": "string", "format": "uuid" },
+        "status": { "type": "string", "enum": ["approved"] }
+      }
+    }
+  }
+}

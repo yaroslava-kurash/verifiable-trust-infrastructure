@@ -1,0 +1,28 @@
+{
+  "$id": "https://trusttasks.org/openvtc/vtc/join-requests/show/1.0/schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VTC Join Requests — Show",
+  "type": "object",
+  "properties": {
+    "response": { "$ref": "#/$defs/JoinRequest" }
+  },
+  "$defs": {
+    "JoinRequest": {
+      "type": "object",
+      "required": ["id", "applicantDid", "vp", "submittedAt", "status"],
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "applicantDid": { "type": "string" },
+        "vp": {},
+        "submittedAt": { "type": "string", "format": "date-time" },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "approved", "rejected", "withdrawn", "deferred"]
+        },
+        "policyDecision": {},
+        "registryConsent": { "type": "boolean" },
+        "extensions": {}
+      }
+    }
+  }
+}

@@ -148,6 +148,37 @@
       "status": "Draft",
       "path": "members/promote-to-admin/1.0",
       "rest": "POST /v1/members/{did}/promote-to-admin/{start,finish}"
+    },
+    {
+      "id": "https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0",
+      "status": "Draft",
+      "path": "join-requests/submit/1.0",
+      "rest": "POST /v1/join-requests",
+      "didcomm": "https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0"
+    },
+    {
+      "id": "https://trusttasks.org/openvtc/vtc/join-requests/list/1.0",
+      "status": "Draft",
+      "path": "join-requests/list/1.0",
+      "rest": "GET /v1/join-requests"
+    },
+    {
+      "id": "https://trusttasks.org/openvtc/vtc/join-requests/show/1.0",
+      "status": "Draft",
+      "path": "join-requests/show/1.0",
+      "rest": "GET /v1/join-requests/{id}"
+    },
+    {
+      "id": "https://trusttasks.org/openvtc/vtc/join-requests/approve/1.0",
+      "status": "Draft",
+      "path": "join-requests/approve/1.0",
+      "rest": "POST /v1/join-requests/{id}/approve"
+    },
+    {
+      "id": "https://trusttasks.org/openvtc/vtc/join-requests/reject/1.0",
+      "status": "Draft",
+      "path": "join-requests/reject/1.0",
+      "rest": "POST /v1/join-requests/{id}/reject"
     }
   ]
 }

@@ -22,6 +22,7 @@ pub mod did_key;
 pub mod emergency;
 pub mod error;
 pub mod install;
+pub mod join;
 pub mod keys;
 pub mod members;
 pub mod messaging;

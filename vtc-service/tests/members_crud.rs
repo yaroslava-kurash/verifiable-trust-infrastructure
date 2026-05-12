@@ -49,6 +49,8 @@ struct Fixture {
     admin_token: String,
     acl_ks: KeyspaceHandle,
     members_ks: KeyspaceHandle,
+    #[allow(dead_code)]
+    join_requests_ks: KeyspaceHandle,
     _dir: tempfile::TempDir,
 }
 
@@ -67,6 +69,7 @@ async fn build_fixture() -> Fixture {
     let passkey_ks = store.keyspace("passkey").unwrap();
     let install_ks = store.keyspace("install").unwrap();
     let members_ks = store.keyspace("members").unwrap();
+    let join_requests_ks = store.keyspace("join_requests").unwrap();
     let audit_ks = store.keyspace("audit").unwrap();
     let audit_key_ks = store.keyspace("audit_key").unwrap();
 
@@ -143,6 +146,7 @@ async fn build_fixture() -> Fixture {
         passkey_ks,
         install_ks,
         members_ks: members_ks.clone(),
+        join_requests_ks: join_requests_ks.clone(),
         audit_ks,
         audit_key_ks,
         config: Arc::new(RwLock::new(config)),
@@ -166,6 +170,7 @@ async fn build_fixture() -> Fixture {
         admin_token,
         acl_ks,
         members_ks,
+        join_requests_ks,
         _dir: dir,
     }
 }
