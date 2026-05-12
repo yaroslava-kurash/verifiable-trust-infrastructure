@@ -258,7 +258,7 @@ ships; assert / revoke endpoints are Phase 4.
 
 ## M2.11 — Status-list publication route
 
-### `[ ]` M2.11.1 — `GET /v1/status-lists/{purpose}`
+### `[x]` M2.11.1 — `GET /v1/status-lists/{purpose}`
 
 - **Acceptance**
   - Public, unauthenticated, Trust-Task-exempt (verifier-
