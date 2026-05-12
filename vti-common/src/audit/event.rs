@@ -117,6 +117,34 @@ pub enum AuditEvent {
     /// rules can target it; admin elevation is the highest-
     /// privilege grant the community emits.
     AdminPromoted(AdminPromotedData),
+
+    /// `POST /v1/join-requests` (REST or DIDComm) accepted a
+    /// well-formed submission and persisted it as `Pending`. The
+    /// actor on this event is the applicant DID — they're the
+    /// principal, even though the daemon's authenticated identity
+    /// did not vouch for them.
+    JoinRequestSubmitted(JoinRequestData),
+
+    /// An admin / moderator approved a pending join request via
+    /// `POST /v1/join-requests/{id}/approve`. Always paired with a
+    /// `MemberAdded` emission in the same transaction (the
+    /// approve flow writes the ACL + Member rows atomically).
+    JoinRequestApproved(JoinRequestData),
+
+    /// An admin / moderator rejected a pending join request. The
+    /// `reason` field is operator-supplied and may be empty.
+    JoinRequestRejected(JoinRequestRejectedData),
+
+    /// New member row written. Companion event to
+    /// `JoinRequestApproved` — the latter is what an audit
+    /// query for "who approved this" matches, the former is
+    /// what "when did <did> join" matches. Spec §10.1.
+    MemberAdded(MemberAddedData),
+
+    /// Member row removed (or anonymised) per spec §10.2. Spec §5
+    /// `Disposition` decides whether the row is purged outright,
+    /// tombstoned with the DID retained, or kept historical.
+    MemberRemoved(MemberRemovedData),
 }
 
 // ---------------------------------------------------------------------------
@@ -283,6 +311,52 @@ pub struct AdminPromotedData {
     /// out the UV requirement; recording the credential id makes
     /// the chain of authority auditable.
     pub authorising_credential_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinRequestData {
+    /// UUID of the JoinRequest row in the `join_requests:` keyspace.
+    pub request_id: String,
+    /// Transport the request arrived over (`"rest"` / `"didcomm"`),
+    /// recorded for diagnostics.
+    pub transport: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinRequestRejectedData {
+    pub request_id: String,
+    /// Operator-supplied reason, capped at 1024 chars at the
+    /// route layer. May be empty.
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberAddedData {
+    /// Role assigned at admission. Phase 1 always emits
+    /// `"member"` (the default role on approve); future phases
+    /// may emit `"moderator"` / `"issuer"` etc. when invite
+    /// flows admit at higher tiers.
+    pub role: String,
+    /// `request_id` of the JoinRequest the admission resolved.
+    /// `None` for out-of-band additions (e.g. emergency bootstrap)
+    /// that don't pass through a join request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via_join_request_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberRemovedData {
+    /// `disposition` after resolving `PolicyDefault`. One of
+    /// `"purge"`, `"tombstone"`, `"historical"`.
+    pub disposition: String,
+    /// Optional operator-supplied reason on admin removal. Empty
+    /// for self-removal.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
 }
 
 // ---------------------------------------------------------------------------

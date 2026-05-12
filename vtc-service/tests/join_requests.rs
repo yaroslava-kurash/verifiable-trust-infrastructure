@@ -1,0 +1,637 @@
+//! Integration coverage for `/v1/join-requests/*` (M1.7–M1.10).
+//!
+//! Exercises the REST surface end-to-end through `Router::oneshot`.
+//! DIDComm twin is covered separately by unit-testing the
+//! handler's `submit_inner` invocation pattern; an end-to-end
+//! DIDComm round-trip needs the mediator harness and lives in
+//! `vti-e2e-tests`.
+
+mod common;
+
+use std::sync::Arc;
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use ed25519_dalek::{Signer, SigningKey};
+use http_body_util::BodyExt;
+use serde_json::{Value, json};
+use tokio::sync::RwLock;
+use tower::ServiceExt;
+use uuid::Uuid;
+use vti_common::audit::{AuditKeyStore, AuditWriter};
+use vti_common::auth::jwt::JwtKeys;
+use vti_common::auth::passkey::build_webauthn;
+use vti_common::auth::session::{Session, SessionState, store_session};
+use vti_common::config::StoreConfig;
+use vti_common::store::{KeyspaceHandle, Store};
+
+use vtc_service::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
+use vtc_service::config::AppConfig;
+use vtc_service::install::InstallTokenStore;
+use vtc_service::members::get_member;
+use vtc_service::routes;
+use vtc_service::server::AppState;
+
+/// Mirror of the constant in `vtc_service::routes::join_requests::submit`
+/// — the route module is `pub(crate)` so we can't import it from a
+/// test. Keeping a single-line copy here is cheaper than widening
+/// the module's visibility for one test.
+const JOIN_REQUEST_SUBMIT_DOMAIN_TAG: &[u8] = b"vtc-join-request/v1\0";
+
+const RP_ORIGIN: &str = "https://vtc.example.com";
+const SUBMIT_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0";
+const SHOW_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/show/1.0";
+const APPROVE_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/approve/1.0";
+const REJECT_TASK: &str = "https://trusttasks.org/openvtc/vtc/join-requests/reject/1.0";
+
+const ADMIN_DID: &str = "did:key:zAdmin1";
+
+fn init_jwt_provider() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let _ = jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.install_default();
+    });
+}
+
+struct Fixture {
+    router: axum::Router,
+    admin_token: String,
+    acl_ks: KeyspaceHandle,
+    members_ks: KeyspaceHandle,
+    #[allow(dead_code)]
+    join_requests_ks: KeyspaceHandle,
+    _dir: tempfile::TempDir,
+}
+
+async fn build_fixture() -> Fixture {
+    init_jwt_provider();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = Store::open(&StoreConfig {
+        data_dir: dir.path().to_path_buf(),
+    })
+    .expect("open store");
+
+    let sessions_ks = store.keyspace("sessions").unwrap();
+    let acl_ks = store.keyspace("acl").unwrap();
+    let community_ks = store.keyspace("community").unwrap();
+    let config_ks = store.keyspace("config").unwrap();
+    let passkey_ks = store.keyspace("passkey").unwrap();
+    let install_ks = store.keyspace("install").unwrap();
+    let members_ks = store.keyspace("members").unwrap();
+    let join_requests_ks = store.keyspace("join_requests").unwrap();
+    let audit_ks = store.keyspace("audit").unwrap();
+    let audit_key_ks = store.keyspace("audit_key").unwrap();
+    let install_store = InstallTokenStore::new(install_ks.clone());
+
+    let webauthn = Some(Arc::new(build_webauthn(RP_ORIGIN).expect("build webauthn")));
+
+    let key_store = AuditKeyStore::new(audit_key_ks.clone());
+    key_store.ensure_initial(&[0xAB; 32]).await.unwrap();
+    let audit_writer = Some(AuditWriter::new(audit_ks.clone(), key_store));
+
+    let jwt_seed = [0x42u8; 32];
+    let jwt_keys = Arc::new(JwtKeys::from_ed25519_bytes(&jwt_seed, "VTC").unwrap());
+
+    let now = vtc_service::auth::session::now_epoch();
+    store_acl_entry(
+        &acl_ks,
+        &VtcAclEntry {
+            did: ADMIN_DID.into(),
+            role: VtcRole::Admin,
+            label: Some("test admin".into()),
+            allowed_contexts: vec![],
+            created_at: now,
+            created_by: "did:key:vtc-install".into(),
+            expires_at: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let session_id = "test-admin-session";
+    store_session(
+        &sessions_ks,
+        &Session {
+            session_id: session_id.into(),
+            did: ADMIN_DID.into(),
+            challenge: "test".into(),
+            state: SessionState::Authenticated,
+            created_at: now,
+            refresh_token: None,
+            refresh_expires_at: None,
+            tee_attested: false,
+        },
+    )
+    .await
+    .unwrap();
+
+    let admin_claims = jwt_keys.new_claims(
+        ADMIN_DID.into(),
+        session_id.into(),
+        "admin".into(),
+        vec![],
+        3600,
+        true,
+    );
+    let admin_token = jwt_keys.encode(&admin_claims).unwrap();
+
+    let config: AppConfig = toml::from_str(&format!(
+        r#"
+        vtc_did = "did:webvh:vtc.example.com:abc"
+        public_url = "{RP_ORIGIN}"
+        [store]
+        data_dir = "{}"
+        "#,
+        dir.path().display(),
+    ))
+    .expect("parse config");
+
+    let state = AppState {
+        sessions_ks,
+        acl_ks: acl_ks.clone(),
+        community_ks,
+        config_ks,
+        passkey_ks,
+        install_ks,
+        members_ks: members_ks.clone(),
+        join_requests_ks: join_requests_ks.clone(),
+        audit_ks,
+        audit_key_ks,
+        config: Arc::new(RwLock::new(config)),
+        did_resolver: None,
+        secrets_resolver: None,
+        jwt_keys: Some(jwt_keys),
+        atm: None,
+        webauthn,
+        public_url: Some(RP_ORIGIN.to_string()),
+        install_signer: None,
+        install_store,
+        audit_writer,
+        shutdown_tx: tokio::sync::watch::channel(false).0,
+        supervisor: None,
+    };
+
+    let router = routes::router().with_state(state);
+
+    Fixture {
+        router,
+        admin_token,
+        acl_ks,
+        members_ks,
+        join_requests_ks,
+        _dir: dir,
+    }
+}
+
+/// Build a canonical-signing-payload signature for the holder-
+/// binding check. Mirrors the verifier's payload construction.
+fn sign_holder_payload(
+    sk: &SigningKey,
+    applicant_did: &str,
+    vp: &Value,
+    registry_consent: bool,
+    extensions: &Value,
+) -> String {
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Payload<'a> {
+        applicant_did: &'a str,
+        vp: &'a Value,
+        registry_consent: bool,
+        extensions: &'a Value,
+    }
+    let payload = serde_json::to_vec(&Payload {
+        applicant_did,
+        vp,
+        registry_consent,
+        extensions,
+    })
+    .unwrap();
+    let mut signing = Vec::with_capacity(JOIN_REQUEST_SUBMIT_DOMAIN_TAG.len() + payload.len());
+    signing.extend_from_slice(JOIN_REQUEST_SUBMIT_DOMAIN_TAG);
+    signing.extend_from_slice(&payload);
+    hex::encode(sk.sign(&signing).to_bytes())
+}
+
+fn applicant_pair() -> (SigningKey, String) {
+    let sk = SigningKey::from_bytes(&[0xCD; 32]);
+    let pub_bytes = sk.verifying_key().to_bytes();
+    let did = affinidi_crypto::did_key::ed25519_pub_to_did_key(&pub_bytes);
+    (sk, did)
+}
+
+async fn send(
+    router: &axum::Router,
+    method: &str,
+    uri: &str,
+    trust_task: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let mut req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("Trust-Task", trust_task);
+    if let Some(t) = token {
+        req = req.header("Authorization", format!("Bearer {t}"));
+    }
+    let res = router
+        .clone()
+        .oneshot(
+            req.body(
+                body.map(|v| Body::from(v.to_string()))
+                    .unwrap_or(Body::empty()),
+            )
+            .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    };
+    (status, json)
+}
+
+// ---------------------------------------------------------------------------
+// M1.8.1 — REST submit
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn rest_submit_happy_path_persists_pending() {
+    let fix = build_fixture().await;
+    let (sk, applicant_did) = applicant_pair();
+    let vp = json!({ "type": "VerifiablePresentation", "holder": applicant_did });
+    let signature = sign_holder_payload(&sk, &applicant_did, &vp, false, &Value::Null);
+
+    let (status, body) = send(
+        &fix.router,
+        "POST",
+        "/v1/join-requests",
+        SUBMIT_TASK,
+        None,
+        Some(json!({
+            "applicantDid": applicant_did,
+            "vp": vp,
+            "signature": signature,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "got {body}");
+    assert_eq!(body["status"], "pending");
+    assert!(body["requestId"].is_string());
+}
+
+#[tokio::test]
+async fn rest_submit_rejects_wrong_signer() {
+    let fix = build_fixture().await;
+    let (_a_sk, applicant_did) = applicant_pair();
+    let other = SigningKey::from_bytes(&[0xEE; 32]);
+    let vp = json!({});
+    let bad_sig = sign_holder_payload(&other, &applicant_did, &vp, false, &Value::Null);
+
+    let (status, body) = send(
+        &fix.router,
+        "POST",
+        "/v1/join-requests",
+        SUBMIT_TASK,
+        None,
+        Some(json!({
+            "applicantDid": applicant_did,
+            "vp": vp,
+            "signature": bad_sig,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "got {body}");
+}
+
+#[tokio::test]
+async fn rest_submit_rejects_non_did_key_applicant() {
+    let fix = build_fixture().await;
+    let (status, _) = send(
+        &fix.router,
+        "POST",
+        "/v1/join-requests",
+        SUBMIT_TASK,
+        None,
+        Some(json!({
+            "applicantDid": "did:web:not-supported.example.com",
+            "vp": {},
+            "signature": "00",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+// ---------------------------------------------------------------------------
+// M1.9.1 — list + show
+// ---------------------------------------------------------------------------
+
+async fn submit_pending(fix: &Fixture) -> Uuid {
+    let (sk, applicant_did) = applicant_pair();
+    let vp = json!({"a":"b"});
+    let sig = sign_holder_payload(&sk, &applicant_did, &vp, false, &Value::Null);
+    let (_, body) = send(
+        &fix.router,
+        "POST",
+        "/v1/join-requests",
+        SUBMIT_TASK,
+        None,
+        Some(json!({
+            "applicantDid": applicant_did,
+            "vp": vp,
+            "signature": sig,
+        })),
+    )
+    .await;
+    Uuid::parse_str(body["requestId"].as_str().unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn list_returns_pending_by_default() {
+    let fix = build_fixture().await;
+    let id = submit_pending(&fix).await;
+    let (status, body) = send(
+        &fix.router,
+        "GET",
+        "/v1/join-requests",
+        SUBMIT_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], id.to_string());
+    assert_eq!(items[0]["status"], "pending");
+}
+
+#[tokio::test]
+async fn show_returns_full_request_including_vp() {
+    let fix = build_fixture().await;
+    let id = submit_pending(&fix).await;
+    let (status, body) = send(
+        &fix.router,
+        "GET",
+        &format!("/v1/join-requests/{id}"),
+        SHOW_TASK,
+        Some(&fix.admin_token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(body["status"], "pending");
+    assert!(body["vp"].is_object());
+}
+
+// ---------------------------------------------------------------------------
+// M1.10.1 — approve + reject
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn approve_writes_acl_and_member_atomically() {
+    let fix = build_fixture().await;
+    let (sk, applicant_did) = applicant_pair();
+    let vp = json!({});
+    let sig = sign_holder_payload(&sk, &applicant_did, &vp, false, &Value::Null);
+    let (_, body) = send(
+        &fix.router,
+        "POST",
+        "/v1/join-requests",
+        SUBMIT_TASK,
+        None,
+        Some(json!({
+            "applicantDid": applicant_did,
+            "vp": vp,
+            "signature": sig,
+        })),
+    )
+    .await;
+    let id = body["requestId"].as_str().unwrap();
+
+    let (status, body) = send(
+        &fix.router,
+        "POST",
+        &format!("/v1/join-requests/{id}/approve"),
+        APPROVE_TASK,
+        Some(&fix.admin_token),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(body["status"], "approved");
+
+    let acl = get_acl_entry(&fix.acl_ks, &applicant_did)
+        .await
+        .unwrap()
+        .expect("ACL row written");
+    assert_eq!(acl.role, VtcRole::Member);
+
+    let member = get_member(&fix.members_ks, &applicant_did)
+        .await
+        .unwrap()
+        .expect("Member row written");
+    assert_eq!(member.did, applicant_did);
+}
+
+#[tokio::test]
+async fn approve_409_when_duplicate_acl_exists() {
+    let fix = build_fixture().await;
+    let (sk, applicant_did) = applicant_pair();
+    let vp = json!({});
+    let sig = sign_holder_payload(&sk, &applicant_did, &vp, false, &Value::Null);
+    let (_, body) = send(
+        &fix.router,
+        "POST",
+        "/v1/join-requests",
+        SUBMIT_TASK,
+        None,
+        Some(json!({
+            "applicantDid": applicant_did,
+            "vp": vp,
+            "signature": sig,
+        })),
+    )
+    .await;
+    let id = body["requestId"].as_str().unwrap();
+
+    // Pre-existing ACL row collides with the approve write.
+    let now = vtc_service::auth::session::now_epoch();
+    store_acl_entry(
+        &fix.acl_ks,
+        &VtcAclEntry {
+            did: applicant_did.clone(),
+            role: VtcRole::Member,
+            label: None,
+            allowed_contexts: vec![],
+            created_at: now,
+            created_by: "did:key:vtc-install".into(),
+            expires_at: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let (status, _) = send(
+        &fix.router,
+        "POST",
+        &format!("/v1/join-requests/{id}/approve"),
+        APPROVE_TASK,
+        Some(&fix.admin_token),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn reject_leaves_no_acl_or_member_rows() {
+    let fix = build_fixture().await;
+    let (sk, applicant_did) = applicant_pair();
+    let vp = json!({});
+    let sig = sign_holder_payload(&sk, &applicant_did, &vp, false, &Value::Null);
+    let (_, body) = send(
+        &fix.router,
+        "POST",
+        "/v1/join-requests",
+        SUBMIT_TASK,
+        None,
+        Some(json!({
+            "applicantDid": applicant_did,
+            "vp": vp,
+            "signature": sig,
+        })),
+    )
+    .await;
+    let id = body["requestId"].as_str().unwrap();
+
+    let (status, body) = send(
+        &fix.router,
+        "POST",
+        &format!("/v1/join-requests/{id}/reject"),
+        REJECT_TASK,
+        Some(&fix.admin_token),
+        Some(json!({ "reason": "policy says no" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "got {body}");
+    assert_eq!(body["status"], "rejected");
+
+    assert!(
+        get_acl_entry(&fix.acl_ks, &applicant_did)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        get_member(&fix.members_ks, &applicant_did)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn approve_404_for_unknown_id() {
+    let fix = build_fixture().await;
+    let id = Uuid::new_v4();
+    let (status, _) = send(
+        &fix.router,
+        "POST",
+        &format!("/v1/join-requests/{id}/approve"),
+        APPROVE_TASK,
+        Some(&fix.admin_token),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn approve_409_when_request_already_decided() {
+    let fix = build_fixture().await;
+    let (sk, applicant_did) = applicant_pair();
+    let vp = json!({});
+    let sig = sign_holder_payload(&sk, &applicant_did, &vp, false, &Value::Null);
+    let (_, body) = send(
+        &fix.router,
+        "POST",
+        "/v1/join-requests",
+        SUBMIT_TASK,
+        None,
+        Some(json!({
+            "applicantDid": applicant_did,
+            "vp": vp,
+            "signature": sig,
+        })),
+    )
+    .await;
+    let id = body["requestId"].as_str().unwrap();
+
+    // First approve — succeeds.
+    let _ = send(
+        &fix.router,
+        "POST",
+        &format!("/v1/join-requests/{id}/approve"),
+        APPROVE_TASK,
+        Some(&fix.admin_token),
+        Some(json!({})),
+    )
+    .await;
+    // Second approve — 409.
+    let (status, _) = send(
+        &fix.router,
+        "POST",
+        &format!("/v1/join-requests/{id}/approve"),
+        APPROVE_TASK,
+        Some(&fix.admin_token),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn reject_rejects_overlong_reason() {
+    let fix = build_fixture().await;
+    let id = submit_pending(&fix).await;
+
+    let huge = "x".repeat(1025);
+    let (status, _) = send(
+        &fix.router,
+        "POST",
+        &format!("/v1/join-requests/{id}/reject"),
+        REJECT_TASK,
+        Some(&fix.admin_token),
+        Some(json!({ "reason": huge })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+// ---------------------------------------------------------------------------
+// Auth gating sanity check
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn list_requires_authentication() {
+    let fix = build_fixture().await;
+    let (status, _) = send(
+        &fix.router,
+        "GET",
+        "/v1/join-requests",
+        SUBMIT_TASK,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}

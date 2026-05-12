@@ -6,6 +6,7 @@ mod config;
 pub(crate) mod did_log;
 mod health;
 pub(crate) mod install;
+pub(crate) mod join_requests;
 mod members;
 
 use axum::Router;
@@ -96,6 +97,21 @@ pub fn router() -> Router<AppState> {
     let members_promote =
         TrustTask::new("https://trusttasks.org/openvtc/vtc/members/promote-to-admin/1.0")
             .expect("static Trust-Task URL");
+    // POST + GET share `/v1/join-requests`. The `join-requests/list/1.0`
+    // Trust Task exists in index.json + on-disk spec/schema so the
+    // soft-gate surface stays complete; the wire enforcement here
+    // collapses to `join-requests/submit/1.0` until TrustTaskRouter
+    // gains per-method selectors (same workaround community/profile,
+    // admin/config, members/{did} use).
+    let join_submit = TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0")
+        .expect("static Trust-Task URL");
+    let join_show = TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/show/1.0")
+        .expect("static Trust-Task URL");
+    let join_approve =
+        TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/approve/1.0")
+            .expect("static Trust-Task URL");
+    let join_reject = TrustTask::new("https://trusttasks.org/openvtc/vtc/join-requests/reject/1.0")
+        .expect("static Trust-Task URL");
 
     TrustTaskRouter::<AppState>::new()
         .route_exempt("/health", get(health::health))
@@ -256,6 +272,31 @@ pub fn router() -> Router<AppState> {
             "/v1/members/{did}/promote-to-admin/finish",
             post(members::promote::promote_finish),
             members_promote,
+        )
+        // Join requests (Phase 1 M1.7–M1.10).
+        .route_with_task(
+            "/v1/join-requests",
+            // Submit (unauth) + admin list share the mount; the
+            // submit Trust Task `join-requests/submit/1.0` covers
+            // both methods here. Per-method selectors land
+            // alongside the same router work admin/config awaits.
+            post(join_requests::submit::submit).get(join_requests::read::list_join_requests),
+            join_submit,
+        )
+        .route_with_task(
+            "/v1/join-requests/{id}",
+            get(join_requests::read::show_join_request),
+            join_show,
+        )
+        .route_with_task(
+            "/v1/join-requests/{id}/approve",
+            post(join_requests::decide::approve),
+            join_approve,
+        )
+        .route_with_task(
+            "/v1/join-requests/{id}/reject",
+            post(join_requests::decide::reject),
+            join_reject,
         )
         .into_router()
 }

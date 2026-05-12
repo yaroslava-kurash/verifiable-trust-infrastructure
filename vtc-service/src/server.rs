@@ -48,6 +48,7 @@ pub struct AppState {
     pub passkey_ks: KeyspaceHandle,
     pub install_ks: KeyspaceHandle,
     pub members_ks: KeyspaceHandle,
+    pub join_requests_ks: KeyspaceHandle,
     pub audit_ks: KeyspaceHandle,
     pub audit_key_ks: KeyspaceHandle,
     pub config: Arc<RwLock<AppConfig>>,
@@ -149,6 +150,7 @@ pub async fn run(
     let install_ks = store.keyspace("install")?;
     let install_store = InstallTokenStore::new(install_ks.clone());
     let members_ks = store.keyspace("members")?;
+    let join_requests_ks = store.keyspace("join_requests")?;
     let audit_ks = store.keyspace("audit")?;
     let audit_key_ks = store.keyspace("audit_key")?;
 
@@ -220,6 +222,7 @@ pub async fn run(
         passkey_ks,
         install_ks,
         members_ks,
+        join_requests_ks,
         audit_ks,
         audit_key_ks,
         config: Arc::new(RwLock::new(config)),
@@ -279,12 +282,14 @@ pub async fn run(
 
     // Spawn three named OS threads
     let mut rest_shutdown_rx = shutdown_rx.clone();
+    let rest_state = state.clone();
     let rest_handle = std::thread::Builder::new()
         .name("vtc-rest".into())
-        .spawn(move || run_rest_thread(std_listener, state, rest_cors, &mut rest_shutdown_rx))
+        .spawn(move || run_rest_thread(std_listener, rest_state, rest_cors, &mut rest_shutdown_rx))
         .map_err(|e| AppError::Internal(format!("failed to spawn REST thread: {e}")))?;
 
     let mut didcomm_shutdown_rx = shutdown_rx.clone();
+    let didcomm_state = state.clone();
     let didcomm_handle = std::thread::Builder::new()
         .name("vtc-didcomm".into())
         .spawn(move || {
@@ -292,6 +297,7 @@ pub async fn run(
                 didcomm_config,
                 didcomm_secrets,
                 didcomm_vtc_did,
+                didcomm_state,
                 &mut didcomm_shutdown_rx,
             )
         })
@@ -516,6 +522,7 @@ fn run_didcomm_thread(
     config: AppConfig,
     secrets_resolver: Option<Arc<ThreadedSecretsResolver>>,
     vtc_did: Option<String>,
+    state: AppState,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) {
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -536,7 +543,7 @@ fn run_didcomm_thread(
             }
         };
 
-        messaging::run_didcomm_service(&config, sr, did, shutdown_rx).await;
+        messaging::run_didcomm_service(&config, sr, did, state, shutdown_rx).await;
 
         info!("DIDComm thread shutting down");
     });

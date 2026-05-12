@@ -1,0 +1,35 @@
+{
+  "$id": "https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0/schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VTC Join Requests — Submit",
+  "type": "object",
+  "properties": {
+    "restRequest": {
+      "type": "object",
+      "required": ["applicantDid", "vp", "signature"],
+      "properties": {
+        "applicantDid": { "type": "string", "pattern": "^did:key:" },
+        "vp": {},
+        "registryConsent": { "type": "boolean" },
+        "extensions": {},
+        "signature": { "type": "string", "pattern": "^[0-9a-fA-F]+$" }
+      }
+    },
+    "didcommBody": {
+      "type": "object",
+      "properties": {
+        "vp": {},
+        "registryConsent": { "type": "boolean" },
+        "extensions": {}
+      }
+    },
+    "response": {
+      "type": "object",
+      "required": ["requestId", "status"],
+      "properties": {
+        "requestId": { "type": "string", "format": "uuid" },
+        "status": { "type": "string", "enum": ["pending"] }
+      }
+    }
+  }
+}

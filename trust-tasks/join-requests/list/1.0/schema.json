@@ -1,0 +1,20 @@
+{
+  "$id": "https://trusttasks.org/openvtc/vtc/join-requests/list/1.0/schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VTC Join Requests — List",
+  "type": "object",
+  "properties": {
+    "response": {
+      "type": "object",
+      "required": ["items"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": { "$ref": "../../show/1.0/schema.json#/$defs/JoinRequest" }
+        },
+        "nextCursor": { "type": ["string", "null"] },
+        "totalEstimate": { "type": ["integer", "null"] }
+      }
+    }
+  }
+}

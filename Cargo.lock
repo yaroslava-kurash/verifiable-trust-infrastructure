@@ -8901,7 +8901,9 @@ dependencies = [
 name = "vtc-service"
 version = "0.6.0"
 dependencies = [
+ "affinidi-crypto",
  "affinidi-did-resolver-cache-sdk",
+ "affinidi-messaging-didcomm",
  "affinidi-messaging-didcomm-service",
  "affinidi-tdk",
  "async-trait",

@@ -50,6 +50,11 @@ vta-sdk = { path = "../vta-sdk", version = "0.6", features = [
 ] }
 affinidi-tdk = { workspace = true }
 affinidi-messaging-didcomm-service = { workspace = true }
+# Lower-level DIDComm message types — needed for the join-request
+# message handler in `messaging.rs` (M1.8.2). The service crate
+# accepts `Message` / `UnpackMetadata` by value but doesn't
+# re-export them.
+affinidi-messaging-didcomm = "0.13"
 tokio-util = { workspace = true, features = ["rt"] }
 affinidi-did-resolver-cache-sdk = { workspace = true }
 base64 = { workspace = true }
@@ -105,6 +110,9 @@ webauthn-rs-proto = "0.5"
 # `emergency::VtaRecoveryProver` trait so production code +
 # integration tests can swap in their own provers.
 async-trait = "0.1"
+# did:key → Ed25519 public-key conversion for the join-request
+# holder-binding signature verifier (M1.8.1).
+affinidi-crypto = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
