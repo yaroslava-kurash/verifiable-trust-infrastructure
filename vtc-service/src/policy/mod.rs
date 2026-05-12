@@ -40,6 +40,7 @@
 
 pub mod default;
 pub mod engine;
+pub mod extract;
 pub mod model;
 pub mod storage;
 

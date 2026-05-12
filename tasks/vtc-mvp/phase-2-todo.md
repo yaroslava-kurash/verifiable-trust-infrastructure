@@ -152,7 +152,7 @@ Every PR must be DCO-signed (`git commit -s`) and pass
 
 ## M2.6 — Wire `join.rego` into submit
 
-### `[ ]` M2.6.1 — Policy step at submit time
+### `[x]` M2.6.1 — Policy step at submit time
 
 - **Acceptance**
   - `submit_inner` (existing) extracts `vp_claims` from the
