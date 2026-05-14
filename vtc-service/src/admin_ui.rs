@@ -82,6 +82,14 @@ pub async fn serve(req: Request<Body>) -> Response {
     let rel = req.uri().path().trim_start_matches("/admin");
     let rel = if rel.is_empty() || rel == "/" {
         "/index.html"
+    } else if rel == "/install" {
+        // Install-claim ceremony. The wizard mints URLs of the shape
+        // `{base}/admin/install?token=…`; this is the page that runs
+        // the WebAuthn registration ceremony in the browser. Map
+        // before the lookup so the extensionless path resolves to
+        // the actual file rather than falling through to
+        // `index.html` (which would lose the page-specific JS).
+        "/install.html"
     } else {
         rel
     };
@@ -140,6 +148,30 @@ mod tests {
     #[test]
     fn lookup_returns_none_for_unknown() {
         assert!(lookup("/missing.html").is_none());
+    }
+
+    #[test]
+    fn install_page_is_embedded() {
+        // The wizard mints install URLs of shape `{base}/admin/install?
+        // token=…` and the route handler maps `/install` → `install.html`.
+        // If the file ever drifts out of the directory the ceremony breaks
+        // silently — fail loud at build time instead.
+        let bytes = lookup("/install.html").expect("install.html present");
+        let body = std::str::from_utf8(bytes).unwrap();
+        assert!(
+            body.contains("Claim Admin Passkey"),
+            "install.html drifted: {body}"
+        );
+    }
+
+    #[test]
+    fn install_js_is_embedded() {
+        let bytes = lookup("/install.js").expect("install.js present");
+        let body = std::str::from_utf8(bytes).unwrap();
+        assert!(
+            body.contains("navigator.credentials.create"),
+            "install.js drifted — WebAuthn ceremony missing"
+        );
     }
 
     #[test]
