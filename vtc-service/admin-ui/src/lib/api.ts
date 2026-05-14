@@ -1,8 +1,9 @@
 // Tiny fetch wrapper for the daemon's JSON endpoints.
 //
-// All calls send credentials so cookie-based sessions (post-login)
-// ride along. Future expansion: CSRF double-submit cookie, refresh
-// retry, typed error variants.
+// Every call sends credentials so the `vtc_admin_session` cookie
+// rides along. Mutating requests (POST/PUT/DELETE/PATCH) mirror the
+// `csrf` cookie's value into the `X-CSRF-Token` header for the
+// double-submit check in `routing::csrf`.
 
 export interface HealthResponse {
   status: string;
@@ -18,16 +19,90 @@ export interface BuildInfo {
   indexSha256: string;
 }
 
-async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(path, { credentials: "include" });
+export interface ApiError {
+  status: number;
+  /** Daemon-formatted error message when the body is JSON. */
+  message: string;
+}
+
+function csrfTokenFromCookie(): string | null {
+  // The CSRF cookie is set by login (`/v1/auth/passkey-login/finish`
+  // or `/v1/auth/admin-login`). HttpOnly is **not** set on this
+  // cookie precisely so JS can read it.
+  const match = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/);
+  return match?.[1] ?? null;
+}
+
+async function request<T>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const method = (init.method ?? "GET").toUpperCase();
+  const headers = new Headers(init.headers);
+  if (method !== "GET" && method !== "HEAD") {
+    const csrf = csrfTokenFromCookie();
+    if (csrf) headers.set("X-CSRF-Token", csrf);
+  }
+  if (init.body && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+
+  const res = await fetch(path, {
+    ...init,
+    method,
+    credentials: "include",
+    headers,
+  });
+
   if (!res.ok) {
-    throw new Error(`${path} → ${res.status} ${res.statusText}`);
+    let message = `${res.status} ${res.statusText}`;
+    try {
+      const body = (await res.json()) as { error?: string; message?: string };
+      if (body.error) message = body.error;
+      else if (body.message) message = body.message;
+    } catch {
+      /* non-JSON body */
+    }
+    const err: ApiError = { status: res.status, message };
+    throw err;
+  }
+
+  if (res.status === 204) {
+    return undefined as T;
   }
   return (await res.json()) as T;
 }
+
+export const getJson = <T>(path: string): Promise<T> =>
+  request<T>(path, { method: "GET" });
+
+export const postJson = <T>(
+  path: string,
+  body: unknown,
+  extra: { trustTask?: string } = {},
+): Promise<T> =>
+  request<T>(path, {
+    method: "POST",
+    body: body === undefined ? undefined : JSON.stringify(body),
+    headers: extra.trustTask ? { "Trust-Task": extra.trustTask } : undefined,
+  });
 
 export const fetchHealth = (): Promise<HealthResponse> =>
   getJson<HealthResponse>("/health");
 
 export const fetchBuildInfo = (): Promise<BuildInfo> =>
   getJson<BuildInfo>("/admin/build-info.json");
+
+/** Probe: returns true if the current cookie session is valid. */
+export async function isSignedIn(): Promise<boolean> {
+  try {
+    await getJson<unknown>("/v1/community/profile");
+    return true;
+  } catch (e) {
+    const err = e as ApiError;
+    if (err.status === 401 || err.status === 403) return false;
+    // Anything else (e.g. 404 "profile not initialised") still means
+    // the auth layer let us through. Treat as signed-in.
+    return err.status !== 404 ? true : true;
+  }
+}

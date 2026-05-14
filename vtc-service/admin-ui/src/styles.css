@@ -135,3 +135,81 @@ code {
 a {
   color: var(--accent);
 }
+
+/* ── Login + Install pages: centred full-page cards ─────────────── */
+
+.login-page,
+.install-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  text-align: center;
+}
+
+.login-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 2rem 2.5rem;
+  max-width: 28rem;
+  width: 100%;
+  text-align: left;
+}
+
+.login-card h2 {
+  margin-top: 0;
+}
+
+.login-card .lead {
+  color: var(--text-dim);
+}
+
+button.primary {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 0.375rem;
+  padding: 0.75rem 1.25rem;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  margin-block: 1rem;
+  width: 100%;
+}
+
+button.primary:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+
+button.primary:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.install-page {
+  /* The install page renders content sections directly inside .page —
+     give it width and don't centre vertically (the success state may
+     be tall). */
+  justify-content: flex-start;
+  text-align: left;
+  align-items: center;
+}
+
+.install-page > * {
+  width: 100%;
+  max-width: 36rem;
+}
+
+pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  padding: 0.75rem;
+  overflow-x: auto;
+  font-size: 0.85em;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
