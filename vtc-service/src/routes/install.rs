@@ -12,16 +12,19 @@
 //! - `start` verifies the install token, takes the install-keyspace
 //!   ceremony lock (`InstallTokenStore::start_claim`), and returns a
 //!   WebAuthn `CreationChallengeResponse` constrained to Ed25519 via
-//!   `vtc_service::webauthn::start_eddsa_passkey_registration`. It
-//!   also returns a server-issued 32-byte "DID-binding challenge"
-//!   that the operator must sign with their newly-minted Ed25519 key.
+//!   `vtc_service::webauthn::start_eddsa_passkey_registration`.
 //! - `finish` verifies the WebAuthn response, derives the candidate
 //!   admin `did:key` from the credential's Ed25519 public key,
-//!   verifies the DID-binding signature with that same key (proves
-//!   single-key control over both signing paths — spec §4.2 third
-//!   bullet), consumes the install token, persists the passkey,
-//!   and mints a short-lived setup-session token consumed by M0.6's
+//!   consumes the install token, persists the passkey, and mints a
+//!   short-lived setup-session token consumed by M0.6's
 //!   `/v1/admin/bootstrap`.
+//!
+//! The WebAuthn attestation already proves the operator controls the
+//! Ed25519 keypair that materialises the candidate did:key — modelled
+//! on `affinidi-webvh-service`'s `enroll_finish` (no extra raw-bytes
+//! binding signature). The previous design required a raw Ed25519
+//! signature over a server challenge, which is impossible to produce
+//! in a real browser (WebAuthn never exposes the private key).
 //!
 //! The carve-out *stays open* until admin bootstrap; until then the
 //! install token is consumed but the `InstallTokenStore::close_carveout`
@@ -36,7 +39,6 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 use uuid::Uuid;
@@ -75,12 +77,6 @@ pub struct ClaimStartResponse {
     /// The WebAuthn `PublicKeyCredentialCreationOptions` payload —
     /// the operator's UA passes this to `navigator.credentials.create()`.
     pub options: CreationChallengeResponse,
-    /// 32 random server bytes (base64url-no-pad). The operator
-    /// signs these with the Ed25519 private key materialised inside
-    /// their authenticator and returns the signature in
-    /// `claim/finish` — proves the WebAuthn key and the candidate
-    /// `did:key` are the same keypair.
-    pub did_binding_challenge: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,9 +84,6 @@ pub struct ClaimFinishRequest {
     pub install_token: String,
     pub registration_id: String,
     pub webauthn_response: RegisterPublicKeyCredential,
-    /// Base64url-no-pad Ed25519 signature over the raw 32 bytes the
-    /// server returned in `did_binding_challenge`.
-    pub did_binding_signature: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -98,14 +91,6 @@ pub struct ClaimFinishRequest {
 pub struct ClaimFinishResponse {
     pub admin_did: String,
     pub setup_session_token: String,
-}
-
-// ---------------------------------------------------------------------------
-// Storage key helpers
-// ---------------------------------------------------------------------------
-
-fn did_binding_key(jti: &Uuid) -> Vec<u8> {
-    format!("install_did_binding:{jti}").into_bytes()
 }
 
 // ---------------------------------------------------------------------------
@@ -146,14 +131,6 @@ pub async fn claim_start(
     // the PasskeyUser by registration_id without re-deriving it.
     store_registration_user(&state.passkey_ks, &jti.to_string(), &user_uuid).await?;
 
-    // 32 random bytes for the DID-binding challenge.
-    let mut challenge_bytes = [0u8; 32];
-    rand::fill(&mut challenge_bytes);
-    state
-        .passkey_ks
-        .insert_raw(did_binding_key(&jti), challenge_bytes.to_vec())
-        .await?;
-
     info!(jti = %jti, "install claim ceremony started");
 
     Ok((
@@ -161,7 +138,6 @@ pub async fn claim_start(
         Json(ClaimStartResponse {
             registration_id: jti.to_string(),
             options: ccr,
-            did_binding_challenge: B64.encode(challenge_bytes),
         }),
     ))
 }
@@ -192,37 +168,25 @@ pub async fn claim_finish(
             )
         })?;
 
-    let challenge_bytes = state
-        .passkey_ks
-        .get_raw(did_binding_key(&jti))
-        .await?
-        .ok_or_else(|| AppError::Internal("missing DID-binding challenge".into()))?;
-    let challenge: [u8; 32] = challenge_bytes
-        .try_into()
-        .map_err(|_| AppError::Internal("DID-binding challenge malformed".into()))?;
-
     // Run the WebAuthn ceremony. EdDSA enforcement happens here and
     // is asserted twice — once by webauthn-rs against the rewritten
     // `credential_algorithms` list, once by
     // `finish_eddsa_passkey_registration` checking `cred_algorithm()`.
+    //
+    // The attestation proves the authenticator generated the
+    // Ed25519 keypair and possesses the private key. The `did:key`
+    // is derived from the same public key the WebAuthn protocol
+    // already attested to, so the WebAuthn ceremony alone proves
+    // single-key control over both signing paths — no separate
+    // raw-bytes binding signature is needed.
     let passkey = finish_eddsa_passkey_registration(webauthn, &req.webauthn_response, &reg_state)?;
 
     let ed25519_pub = extract_ed25519_public_key(&passkey)?;
     let admin_did = ed25519_pub_to_did_key(&ed25519_pub);
 
-    // Verify the DID-binding signature: proves the operator can sign
-    // raw bytes with the same Ed25519 key that the authenticator
-    // generated. Without this an attacker who acquired only the
-    // WebAuthn assertion couldn't reproduce the candidate did:key's
-    // signing path.
-    verify_did_binding(&ed25519_pub, &challenge, &req.did_binding_signature)?;
-
     // Consume the install token (Issued → Consumed). Carve-out stays
     // open until M0.6's bootstrap closes it.
     store.finish_claim(&jti).await?;
-
-    // Drop the one-shot DID-binding challenge.
-    state.passkey_ks.remove(did_binding_key(&jti)).await?;
 
     // Persist the passkey + credential mapping so M0.6's bootstrap
     // and subsequent passkey login can find the credential.
@@ -355,27 +319,6 @@ fn ed25519_pub_to_did_key(pubkey: &[u8; 32]) -> String {
     )
 }
 
-/// Verify a base64url-no-pad Ed25519 signature over `challenge`
-/// using `pubkey`.
-fn verify_did_binding(
-    pubkey: &[u8; 32],
-    challenge: &[u8; 32],
-    signature_b64u: &str,
-) -> Result<(), AppError> {
-    let sig_bytes = B64
-        .decode(signature_b64u)
-        .map_err(|_| AppError::Unauthorized("invalid DID-binding signature encoding".into()))?;
-    let sig_arr: [u8; 64] = sig_bytes
-        .try_into()
-        .map_err(|_| AppError::Unauthorized("DID-binding signature must be 64 bytes".into()))?;
-    let verifying = VerifyingKey::from_bytes(pubkey)
-        .map_err(|_| AppError::Internal("malformed Ed25519 public key".into()))?;
-    verifying
-        .verify(challenge, &Signature::from_bytes(&sig_arr))
-        .map_err(|_| AppError::Unauthorized("DID-binding signature does not verify".into()))?;
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
@@ -383,7 +326,6 @@ fn verify_did_binding(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{Signer, SigningKey};
 
     #[test]
     fn eddsa_alg_constant_matches_cose() {
@@ -402,50 +344,5 @@ mod tests {
         let mb = did.strip_prefix("did:key:").unwrap();
         let decoded = vta_sdk::did_key::decode_ed25519_public_key_multibase(mb).unwrap();
         assert_eq!(decoded, pubkey);
-    }
-
-    #[test]
-    fn verify_did_binding_accepts_valid_signature() {
-        let signing = SigningKey::from_bytes(&[0x11; 32]);
-        let pubkey = signing.verifying_key().to_bytes();
-        let challenge = [0x42u8; 32];
-        let sig = signing.sign(&challenge).to_bytes();
-        verify_did_binding(&pubkey, &challenge, &B64.encode(sig)).unwrap();
-    }
-
-    #[test]
-    fn verify_did_binding_rejects_wrong_pubkey() {
-        let signing = SigningKey::from_bytes(&[0x11; 32]);
-        let other = SigningKey::from_bytes(&[0x22; 32]);
-        let challenge = [0x42u8; 32];
-        let sig = signing.sign(&challenge).to_bytes();
-        let err = verify_did_binding(
-            &other.verifying_key().to_bytes(),
-            &challenge,
-            &B64.encode(sig),
-        )
-        .expect_err("must reject");
-        assert!(matches!(err, AppError::Unauthorized(_)));
-    }
-
-    #[test]
-    fn verify_did_binding_rejects_tampered_challenge() {
-        let signing = SigningKey::from_bytes(&[0x11; 32]);
-        let pubkey = signing.verifying_key().to_bytes();
-        let challenge = [0x42u8; 32];
-        let sig = signing.sign(&challenge).to_bytes();
-        let mut tampered = challenge;
-        tampered[0] ^= 0x01;
-        let err =
-            verify_did_binding(&pubkey, &tampered, &B64.encode(sig)).expect_err("must reject");
-        assert!(matches!(err, AppError::Unauthorized(_)));
-    }
-
-    #[test]
-    fn verify_did_binding_rejects_short_signature() {
-        let pubkey = [0u8; 32];
-        let err = verify_did_binding(&pubkey, &[0u8; 32], &B64.encode([0u8; 16]))
-            .expect_err("must reject");
-        assert!(matches!(err, AppError::Unauthorized(_)));
     }
 }
