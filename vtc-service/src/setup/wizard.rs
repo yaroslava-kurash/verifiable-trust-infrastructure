@@ -211,14 +211,30 @@ fn refuse_if_already_set_up(config_path: &std::path::Path) -> Result<(), AppErro
 
 fn prompt_inputs() -> Result<WizardInputs, AppError> {
     println!();
-    println!("Provisioning a fresh VTC requires four URLs and the VTA's DID + context.");
+    println!("Provisioning a fresh VTC requires the VTC + admin UX URLs, the VTA's");
+    println!("URL + DID, and the context name.");
+    println!();
+    println!("The VTC daemon serves three surfaces — API, admin UX, public website.");
+    println!("They can share one domain (path mode, the default) or sit on separate");
+    println!("subdomains (subdomain mode). Pick one before answering:");
+    println!();
+    println!("  Path mode (default — no extra DNS, no config changes):");
+    println!("    VTC URL       https://vtc.example.com/v1");
+    println!("    Admin UX URL  https://vtc.example.com/admin");
+    println!("    Website       https://vtc.example.com/");
+    println!();
+    println!("  Subdomain mode (separate certs; set [routing.*].host in config.toml");
+    println!("  after setup — see docs/03-vtc/website-and-admin.md):");
+    println!("    VTC URL       https://api.vtc.example.com/v1");
+    println!("    Admin UX URL  https://admin.vtc.example.com");
+    println!("    Website       https://vtc.example.com/");
     println!();
     let vtc_url: String = Input::new()
-        .with_prompt("VTC URL (e.g. https://vtc.example.com/v1)")
+        .with_prompt("VTC URL (API base, ends in /v1)")
         .interact_text()
         .map_err(prompt_err)?;
     let admin_ux_url: String = Input::new()
-        .with_prompt("Admin UX URL (e.g. https://admin.vtc.example.com)")
+        .with_prompt("Admin UX URL")
         .interact_text()
         .map_err(prompt_err)?;
     let vta_url: String = Input::new()
