@@ -15,6 +15,8 @@ import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, ArrowRight, Inbox } from "lucide-react";
 
 import { getJson, postJson } from "@/lib/api";
+import { useConfirm } from "@/components/ConfirmDialog";
+import { formatIso as formatDate } from "@/lib/format";
 
 const TRUST_TASK_SUBMIT =
   "https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0";
@@ -233,6 +235,7 @@ function JoinRequestDetail() {
   const { id = "" } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const confirm = useConfirm();
   const [rejectReason, setRejectReason] = useState("");
 
   const query = useQuery({
@@ -324,14 +327,13 @@ function JoinRequestDetail() {
                   disabled={
                     approveMutation.isPending || rejectMutation.isPending
                   }
-                  onClick={() => {
-                    if (
-                      window.confirm(
-                        `Approve join request for ${query.data.applicantDid}? This creates an ACL + member row and issues credentials.`,
-                      )
-                    ) {
-                      approveMutation.mutate(id);
-                    }
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: "Approve join request?",
+                      message: `${query.data.applicantDid} gets an ACL + member row, and credentials (VMC + role VEC) are issued.`,
+                      confirmLabel: "Approve",
+                    });
+                    if (ok) approveMutation.mutate(id);
                   }}
                 >
                   {approveMutation.isPending ? "Approving…" : "Approve"}
@@ -356,14 +358,14 @@ function JoinRequestDetail() {
                   disabled={
                     approveMutation.isPending || rejectMutation.isPending
                   }
-                  onClick={() => {
-                    if (
-                      window.confirm(
-                        `Reject join request for ${query.data.applicantDid}?`,
-                      )
-                    ) {
-                      rejectMutation.mutate({ id, reason: rejectReason });
-                    }
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: "Reject join request?",
+                      message: `${query.data.applicantDid} will be told the application was declined. They may resubmit.`,
+                      confirmLabel: "Reject",
+                      destructive: true,
+                    });
+                    if (ok) rejectMutation.mutate({ id, reason: rejectReason });
                   }}
                 >
                   {rejectMutation.isPending ? "Rejecting…" : "Reject"}
@@ -400,10 +402,3 @@ function JoinRequestDetail() {
   );
 }
 
-function formatDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
-}

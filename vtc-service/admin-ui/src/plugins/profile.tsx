@@ -8,6 +8,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { Field } from "@/components/Field";
 import { getJson, putJson } from "@/lib/api";
 
 const TRUST_TASK =
@@ -283,17 +284,3 @@ function buildPatch(
   return patch;
 }
 
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <label className="field">
-      <span className="field-label">{label}</span>
-      {children}
-    </label>
-  );
-}

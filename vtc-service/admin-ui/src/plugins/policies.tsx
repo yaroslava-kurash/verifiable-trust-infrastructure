@@ -19,6 +19,8 @@ import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, ArrowRight, Check, Plus, ScrollText, X } from "lucide-react";
 
 import { getJson, postJson } from "@/lib/api";
+import { useConfirm } from "@/components/ConfirmDialog";
+import { formatIso as formatDate } from "@/lib/format";
 
 // `policies/upload/1.0` is the only registered Trust-Task on the
 // `/v1/policies` and `/v1/policies/{id}` mounts today —
@@ -295,6 +297,7 @@ function PolicyDetail() {
   const { id = "" } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const confirm = useConfirm();
 
   const query = useQuery({
     queryKey: ["policy", id],
@@ -380,12 +383,13 @@ function PolicyDetail() {
                   type="button"
                   className="primary"
                   disabled={activate.isPending}
-                  onClick={() => {
-                    if (
-                      window.confirm(
-                        `Activate ${query.data.purpose} v${query.data.version}? The current active policy for this purpose becomes archived.`,
-                      )
-                    ) {
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: `Activate ${query.data.purpose} v${query.data.version}?`,
+                      message: `The current active policy for "${query.data.purpose}" becomes archived. Switching back means activating its predecessor.`,
+                      confirmLabel: "Activate",
+                    });
+                    if (ok) {
                       activate.mutate(id);
                     }
                   }}
@@ -471,10 +475,3 @@ function UploadPolicyForm({ onSuccess }: { onSuccess: () => void }) {
   );
 }
 
-function formatDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
-}

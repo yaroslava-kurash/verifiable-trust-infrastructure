@@ -6,7 +6,7 @@
 // DELETE on the entry's DID. Edit (PATCH) lands in a follow-up if
 // needed — operators can also revoke + recreate today.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   useMutation,
   useQuery,
@@ -15,6 +15,9 @@ import {
 import { Copy, Mail, Pencil, Plus, RefreshCw, ShieldCheck, X } from "lucide-react";
 
 import { deleteJson, getJson, patchJson, postJson } from "@/lib/api";
+import { useConfirm } from "@/components/ConfirmDialog";
+import { Field } from "@/components/Field";
+import { formatEpoch, formatIso, shorten } from "@/lib/format";
 import { useToast } from "@/lib/toast";
 
 const TRUST_TASK_MANAGE =
@@ -143,6 +146,7 @@ export function Acl() {
   const [showCreate, setShowCreate] = useState(false);
   const queryClient = useQueryClient();
   const toast = useToast();
+  const confirm = useConfirm();
 
   const query = useQuery({
     queryKey: ["acl", contextFilter],
@@ -281,14 +285,14 @@ export function Acl() {
                     type="button"
                     className="secondary destructive"
                     disabled={revoke.isPending}
-                    onClick={() => {
-                      if (
-                        window.confirm(
-                          `Revoke ACL entry for ${e.did}? This is immediate and cannot be undone.`,
-                        )
-                      ) {
-                        revoke.mutate(e.did);
-                      }
+                    onClick={async () => {
+                      const ok = await confirm({
+                        title: "Revoke ACL entry?",
+                        message: `${e.did} loses access immediately. This cannot be undone.`,
+                        confirmLabel: "Revoke",
+                        destructive: true,
+                      });
+                      if (ok) revoke.mutate(e.did);
                     }}
                   >
                     Revoke
@@ -312,6 +316,7 @@ export function Acl() {
 function InvitesPanel() {
   const queryClient = useQueryClient();
   const toast = useToast();
+  const confirm = useConfirm();
   const [showCreate, setShowCreate] = useState(false);
   const [regenerated, setRegenerated] = useState<CreateInviteResponse | null>(
     null,
@@ -325,7 +330,7 @@ function InvitesPanel() {
   const revoke = useMutation({
     mutationFn: revokeInvite,
     onSuccess: (_, jti) => {
-      toast.push("success", `Removed invite ${shortJti(jti)}`);
+      toast.push("success", `Removed invite ${shorten(jti)}`);
       void queryClient.invalidateQueries({ queryKey: ["admin-invites"] });
     },
     onError: (err) => toast.pushFromError(err, "Remove failed"),
@@ -347,7 +352,7 @@ function InvitesPanel() {
         // claim either one).
         toast.push(
           "info",
-          `New invite minted but old one (${shortJti(args.oldJti)}) wasn't revoked: ${
+          `New invite minted but old one (${shorten(args.oldJti)}) wasn't revoked: ${
             (err as Error).message
           }`,
         );
@@ -446,7 +451,7 @@ function InvitesPanel() {
                 </td>
                 <td>
                   <code className="truncate" title={i.jti}>
-                    {shortJti(i.jti)}
+                    {shorten(i.jti)}
                   </code>
                 </td>
                 <td>
@@ -478,13 +483,14 @@ function InvitesPanel() {
                             ? "Legacy invite — no stored target DID, revoke instead"
                             : "Revoke this invite and mint a fresh URL + claim code for the same DID"
                       }
-                      onClick={() => {
+                      onClick={async () => {
                         if (!i.targetDid) return;
-                        if (
-                          window.confirm(
-                            `Regenerate invite for ${i.targetDid}?\n\nThis revokes ${shortJti(i.jti)} and mints a fresh URL + claim code. The old install URL stops working immediately.`,
-                          )
-                        ) {
+                        const ok = await confirm({
+                          title: `Regenerate invite for ${i.targetDid}?`,
+                          message: `Revokes ${shorten(i.jti)} and mints a fresh URL + claim code. The old install URL stops working immediately.`,
+                          confirmLabel: "Regenerate",
+                        });
+                        if (ok) {
                           regenerate.mutate({
                             oldJti: i.jti,
                             targetDid: i.targetDid,
@@ -504,14 +510,19 @@ function InvitesPanel() {
                           ? "Revoke this invite — the install URL stops working immediately"
                           : "Remove this row from the list (the install URL is already inert)"
                       }
-                      onClick={() => {
-                        const prompt =
-                          i.status === "issued"
-                            ? `Revoke invite ${shortJti(i.jti)}? The install URL stops working immediately.`
-                            : `Remove ${i.status} invite ${shortJti(i.jti)} from the list?`;
-                        if (window.confirm(prompt)) {
-                          revoke.mutate(i.jti);
-                        }
+                      onClick={async () => {
+                        const isIssued = i.status === "issued";
+                        const ok = await confirm({
+                          title: isIssued
+                            ? `Revoke invite ${shorten(i.jti)}?`
+                            : `Remove ${i.status} invite?`,
+                          message: isIssued
+                            ? "The install URL stops working immediately."
+                            : `${shorten(i.jti)} will be cleared from the list. The install URL is already inert.`,
+                          confirmLabel: isIssued ? "Revoke" : "Remove",
+                          destructive: true,
+                        });
+                        if (ok) revoke.mutate(i.jti);
                       }}
                     >
                       {i.status === "issued" ? "Revoke" : "Remove"}
@@ -737,10 +748,6 @@ function RegeneratedInviteCard({
   );
 }
 
-function shortJti(jti: string): string {
-  return jti.length > 13 ? `${jti.slice(0, 8)}…${jti.slice(-4)}` : jti;
-}
-
 function chipForStatus(status: InviteSummary["status"]): string {
   switch (status) {
     case "issued":
@@ -749,14 +756,6 @@ function chipForStatus(status: InviteSummary["status"]): string {
       return "success";
     case "expired":
       return "warning";
-  }
-}
-
-function formatIso(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
   }
 }
 
@@ -848,29 +847,6 @@ function CreateAclForm({ onSuccess }: { onSuccess: () => void }) {
   );
 }
 
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <label className="field">
-      <span className="field-label">{label}</span>
-      {children}
-    </label>
-  );
-}
-
-function formatEpoch(epoch: number): string {
-  try {
-    return new Date(epoch * 1000).toLocaleString();
-  } catch {
-    return String(epoch);
-  }
-}
-
 function EditableLabelCell({
   did,
   label,
@@ -899,9 +875,17 @@ function EditableLabelCell({
   // Seed the draft whenever the prop changes from below (e.g.
   // another browser updated the entry) — but only when not
   // actively editing, so we don't clobber the operator's typing.
-  if (!editing && draft !== (label ?? "")) {
-    setDraft(label ?? "");
-  }
+  // Previously a setState-during-render which fires a second
+  // render every time `label` arrived fresh and loops under
+  // StrictMode. useEffect runs after commit so the loop closes.
+  useEffect(() => {
+    if (!editing) {
+      setDraft(label ?? "");
+    }
+    // `editing` is intentionally excluded — re-syncing while the
+    // operator is typing would clobber their input.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [label]);
 
   const commit = () => {
     const next = draft.trim();

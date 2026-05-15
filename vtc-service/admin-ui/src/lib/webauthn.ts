@@ -72,32 +72,70 @@ export function serializeAssertion(credential: PublicKeyCredential): unknown {
 }
 
 /**
+ * Server-shape of the `publicKey` field webauthn-rs returns at the
+ * `/start` endpoint of both registration and assertion flows.
+ *
+ * `webauthn-rs` serialises `ArrayBuffer`-typed fields as
+ * base64url-encoded strings; we walk the known shapes below and
+ * convert each in-place into a real `BufferSource` so the browser
+ * `navigator.credentials.{create,get}` calls accept them.
+ *
+ * Typed as a narrow shape rather than `any` so a future drift in
+ * the server payload trips the compiler instead of silently
+ * skipping a field. Anything we don't recognise stays untouched.
+ */
+export interface JsonPublicKeyOptions {
+  challenge: string | ArrayBuffer;
+  user?: {
+    id: string | ArrayBuffer;
+    [key: string]: unknown;
+  };
+  excludeCredentials?: Array<{ id: string | ArrayBuffer; [key: string]: unknown }>;
+  allowCredentials?: Array<{ id: string | ArrayBuffer; [key: string]: unknown }>;
+  // Everything else (rp, pubKeyCredParams, timeout, attestation,
+  // authenticatorSelection, …) passes through unchanged.
+  [key: string]: unknown;
+}
+
+/**
  * Decode the `publicKey` field of a server-issued creation/request
  * challenge: convert the base64url-encoded `challenge`, `user.id`,
  * `excludeCredentials[].id`, and `allowCredentials[].id` to real
  * `ArrayBuffer`s so the browser WebAuthn API accepts them.
  *
- * Operates in-place + returns the same object for convenience.
- * The narrow `unknown` typing reflects what webauthn-rs serialises;
- * callers cast at the boundary where they invoke
- * `navigator.credentials.{create,get}`.
+ * Returns a **new** object (shallow clone of the top level + each
+ * touched nested field) so the original server response can be
+ * retried by the caller if the WebAuthn ceremony fails. The
+ * previous in-place mutation forced callers to refetch on every
+ * retry, which raced the install token's claim-window.
  */
-export function decodePublicKeyOptions(publicKey: any): any {
-  if (publicKey.challenge && typeof publicKey.challenge === "string") {
-    publicKey.challenge = base64urlToBuffer(publicKey.challenge);
+export function decodePublicKeyOptions(
+  publicKey: JsonPublicKeyOptions,
+): PublicKeyCredentialCreationOptions | PublicKeyCredentialRequestOptions {
+  const out: Record<string, unknown> = { ...publicKey };
+  if (typeof publicKey.challenge === "string") {
+    out.challenge = base64urlToBuffer(publicKey.challenge);
   }
-  if (publicKey.user?.id && typeof publicKey.user.id === "string") {
-    publicKey.user.id = base64urlToBuffer(publicKey.user.id);
+  if (publicKey.user && typeof publicKey.user.id === "string") {
+    out.user = { ...publicKey.user, id: base64urlToBuffer(publicKey.user.id) };
   }
   if (Array.isArray(publicKey.excludeCredentials)) {
-    for (const c of publicKey.excludeCredentials) {
-      if (typeof c.id === "string") c.id = base64urlToBuffer(c.id);
-    }
+    out.excludeCredentials = publicKey.excludeCredentials.map((c) =>
+      typeof c.id === "string" ? { ...c, id: base64urlToBuffer(c.id) } : c,
+    );
   }
   if (Array.isArray(publicKey.allowCredentials)) {
-    for (const c of publicKey.allowCredentials) {
-      if (typeof c.id === "string") c.id = base64urlToBuffer(c.id);
-    }
+    out.allowCredentials = publicKey.allowCredentials.map((c) =>
+      typeof c.id === "string" ? { ...c, id: base64urlToBuffer(c.id) } : c,
+    );
   }
-  return publicKey;
+  // The webauthn-rs shape matches the browser type once the
+  // base64-encoded fields are buffers; the union return type
+  // covers both create (`Creation`) and get (`Request`) ceremonies
+  // from a single helper. Cast via `unknown` because the
+  // intersection of our open `Record<string, unknown>` with the
+  // closed browser DOM types isn't structurally provable.
+  return out as unknown as
+    | PublicKeyCredentialCreationOptions
+    | PublicKeyCredentialRequestOptions;
 }

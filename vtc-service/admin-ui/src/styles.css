@@ -1304,6 +1304,74 @@ dd .copy-icon-btn {
   margin-left: var(--space-2);
 }
 
+/* ── Confirm dialog ──────────────────────────────────────────── */
+
+.confirm-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 2147482000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  background: rgb(0 0 0 / 0.45);
+  animation: confirm-scrim-in var(--motion-medium);
+}
+
+@keyframes confirm-scrim-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.confirm-dialog {
+  background: var(--bg-elev);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  padding: var(--space-6);
+  width: min(28rem, 100%);
+  box-shadow: var(--elev-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  animation: confirm-dialog-in var(--motion-medium);
+}
+
+@keyframes confirm-dialog-in {
+  from {
+    transform: translateY(var(--space-2));
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.confirm-dialog h3 {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: var(--tracking-tighter);
+  color: var(--text);
+  text-transform: none;
+}
+
+.confirm-dialog p {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.confirm-dialog .form-actions {
+  justify-content: flex-end;
+  margin-top: var(--space-2);
+}
+
 /* ── Toast ───────────────────────────────────────────────────── */
 
 .toast-viewport {

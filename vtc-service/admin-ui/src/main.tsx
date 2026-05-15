@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 
 import App from "@/App";
+import { ConfirmDialogProvider } from "@/components/ConfirmDialog";
 import { loadThirdPartyPlugins } from "@/lib/plugin-loader";
 import { applyStoredTheme } from "@/lib/theme";
 import { ToastProvider } from "@/lib/toast";
@@ -53,9 +54,11 @@ loadThirdPartyPlugins().finally(() => {
     <StrictMode>
       <QueryClientProvider client={queryClient}>
         <ToastProvider>
-          <BrowserRouter basename="/admin">
-            <App />
-          </BrowserRouter>
+          <ConfirmDialogProvider>
+            <BrowserRouter basename="/admin">
+              <App />
+            </BrowserRouter>
+          </ConfirmDialogProvider>
         </ToastProvider>
       </QueryClientProvider>
     </StrictMode>,

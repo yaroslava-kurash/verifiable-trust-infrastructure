@@ -21,9 +21,12 @@ import {
 } from "lucide-react";
 
 import { deleteJson, getJson, postJson } from "@/lib/api";
+import { useConfirm } from "@/components/ConfirmDialog";
+import { formatIso as formatDate } from "@/lib/format";
 import {
   decodePublicKeyOptions,
   serializeAssertion,
+  type JsonPublicKeyOptions,
 } from "@/lib/webauthn";
 
 const TRUST_TASK_LIST =
@@ -82,7 +85,7 @@ async function fetchMember(did: string): Promise<MemberRow> {
 
 interface PromoteStartResponse {
   registrationId: string;
-  options: { publicKey: unknown };
+  options: { publicKey: JsonPublicKeyOptions };
 }
 
 async function promoteToAdmin(targetDid: string): Promise<void> {
@@ -97,8 +100,8 @@ async function promoteToAdmin(targetDid: string): Promise<void> {
   );
 
   const publicKey = decodePublicKeyOptions(
-    (start.options as { publicKey: unknown }).publicKey,
-  );
+    start.options.publicKey,
+  ) as PublicKeyCredentialRequestOptions;
   const credential = (await navigator.credentials.get({
     publicKey,
   })) as PublicKeyCredential | null;
@@ -278,6 +281,7 @@ function MemberDetail() {
   const { did = "" } = useParams<{ did: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const confirm = useConfirm();
   const decoded = decodeURIComponent(did);
   const [removeReason, setRemoveReason] = useState("");
 
@@ -428,14 +432,13 @@ function MemberDetail() {
                   promoteMutation.isPending ||
                   removeMutation.isPending
                 }
-                onClick={() => {
-                  if (
-                    window.confirm(
-                      `Promote ${query.data.did} to admin? You'll need to verify with your passkey.`,
-                    )
-                  ) {
-                    promoteMutation.mutate(decoded);
-                  }
+                onClick={async () => {
+                  const ok = await confirm({
+                    title: "Promote to admin?",
+                    message: `${query.data.did} will gain admin role. You'll need to verify with your passkey first.`,
+                    confirmLabel: "Promote",
+                  });
+                  if (ok) promoteMutation.mutate(decoded);
                 }}
               >
                 {promoteMutation.isPending
@@ -464,12 +467,14 @@ function MemberDetail() {
                 disabled={
                   promoteMutation.isPending || removeMutation.isPending
                 }
-                onClick={() => {
-                  if (
-                    window.confirm(
-                      `Remove ${query.data.did} from the community? This deletes their member + ACL rows.`,
-                    )
-                  ) {
+                onClick={async () => {
+                  const ok = await confirm({
+                    title: "Remove member?",
+                    message: `${query.data.did} loses access immediately. Their member + ACL rows are deleted.`,
+                    confirmLabel: "Remove member",
+                    destructive: true,
+                  });
+                  if (ok) {
                     removeMutation.mutate({
                       did: decoded,
                       reason: removeReason,
@@ -487,10 +492,3 @@ function MemberDetail() {
   );
 }
 
-function formatDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
-}

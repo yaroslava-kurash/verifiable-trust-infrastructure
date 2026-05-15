@@ -15,7 +15,9 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, ArrowUpDown, Smartphone } from "lucide-react";
 
-import { deleteJson, fetchWhoami, getJson } from "@/lib/api";
+import { deleteJson, getJson, WhoamiResponse } from "@/lib/api";
+import { useConfirm } from "@/components/ConfirmDialog";
+import { formatEpoch, shorten as shortId } from "@/lib/format";
 import { useToast } from "@/lib/toast";
 
 type SortKey = "did" | "state" | "createdAt" | "refreshExpiresAt";
@@ -59,6 +61,7 @@ async function revokeAllForDid(did: string): Promise<void> {
 export function Sessions() {
   const qc = useQueryClient();
   const toast = useToast();
+  const confirm = useConfirm();
   const [filterText, setFilterText] = useState("");
   // Default sort = newest first by created time. Click a header to
   // toggle direction; clicking a different header switches the sort
@@ -71,14 +74,20 @@ export function Sessions() {
     queryFn: fetchSessions,
   });
 
-  // Whoami is already cached by the App shell — re-using the same
-  // key (with a `staleTime` carry-over) avoids a duplicate round-trip
-  // and lets us mark the caller's own row.
-  const whoamiQuery = useQuery({
-    queryKey: ["whoami"],
-    queryFn: fetchWhoami,
-    staleTime: 30_000,
-  });
+  // Whoami is already populated by the App shell via
+  // `probeSession`. Reading the cached value via `getQueryData`
+  // (rather than declaring our own `useQuery({queryKey:["whoami"]})`
+  // with `fetchWhoami` as `queryFn`) avoids two pitfalls:
+  //   1. Two `useQuery`s sharing a key but with different `queryFn`s
+  //      race each other on cache miss; whichever fires first wins
+  //      and the other view gets stale data.
+  //   2. `fetchWhoami` throws on 401, but `probeSession` returns
+  //      null. A stale-cache refetch here on a logged-out session
+  //      would surface a misleading toast.
+  // The session-expiry handler in App.tsx invalidates this key, so
+  // any change to the live session re-flows through that path
+  // before reaching us.
+  const whoami = qc.getQueryData<WhoamiResponse | null>(["whoami"]);
 
   const revokeOne = useMutation({
     mutationFn: revokeSession,
@@ -103,8 +112,8 @@ export function Sessions() {
   });
 
   const allSessions = sessionsQuery.data ?? [];
-  const myDid = whoamiQuery.data?.did;
-  const mySessionId = whoamiQuery.data?.sessionId;
+  const myDid = whoami?.did;
+  const mySessionId = whoami?.sessionId;
 
   // Filter on substring match against either identifier, then sort.
   // useMemo so revoke-button clicks (which mutate React Query
@@ -290,13 +299,18 @@ export function Sessions() {
                           className="secondary destructive"
                           disabled={revokeOne.isPending}
                           aria-busy={revokeOne.isPending}
-                          onClick={() => {
-                            const msg = isMine
-                              ? "Revoke YOUR session? You'll be signed out of this tab."
-                              : `Revoke session ${shortId(s.sessionId)} for ${s.did}?`;
-                            if (window.confirm(msg)) {
-                              revokeOne.mutate(s.sessionId);
-                            }
+                          onClick={async () => {
+                            const ok = await confirm({
+                              title: isMine
+                                ? "Revoke your own session?"
+                                : `Revoke session ${shortId(s.sessionId)}?`,
+                              message: isMine
+                                ? "You'll be signed out of this tab."
+                                : `${s.did} loses this session immediately.`,
+                              confirmLabel: "Revoke",
+                              destructive: true,
+                            });
+                            if (ok) revokeOne.mutate(s.sessionId);
                           }}
                         >
                           Revoke
@@ -308,14 +322,14 @@ export function Sessions() {
                             disabled={revokeMany.isPending}
                             aria-busy={revokeMany.isPending}
                             title={`Revoke all ${sameDidCount} sessions for ${s.did}`}
-                            onClick={() => {
-                              if (
-                                window.confirm(
-                                  `Revoke ALL ${sameDidCount} sessions for ${s.did}?`,
-                                )
-                              ) {
-                                revokeMany.mutate(s.did);
-                              }
+                            onClick={async () => {
+                              const ok = await confirm({
+                                title: `Revoke all sessions for ${s.did}?`,
+                                message: `${sameDidCount} active sessions will be terminated immediately.`,
+                                confirmLabel: "Revoke all",
+                                destructive: true,
+                              });
+                              if (ok) revokeMany.mutate(s.did);
                             }}
                           >
                             Revoke all for DID
@@ -332,19 +346,6 @@ export function Sessions() {
       )}
     </section>
   );
-}
-
-function shortId(id: string): string {
-  if (id.length <= 12) return id;
-  return `${id.slice(0, 8)}…${id.slice(-4)}`;
-}
-
-function formatEpoch(epoch: number): string {
-  try {
-    return new Date(epoch * 1000).toLocaleString();
-  } catch {
-    return String(epoch);
-  }
 }
 
 function SortableTh({

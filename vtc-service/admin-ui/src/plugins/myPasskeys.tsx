@@ -14,10 +14,13 @@ import {
 import { KeyRound, Plus, X } from "lucide-react";
 
 import { getJson, postJson } from "@/lib/api";
+import { useConfirm } from "@/components/ConfirmDialog";
+import { formatIso as formatDate } from "@/lib/format";
 import {
   decodePublicKeyOptions,
   serializeAssertion,
   serializeRegistration,
+  type JsonPublicKeyOptions,
 } from "@/lib/webauthn";
 
 const TRUST_TASK_LIST =
@@ -42,13 +45,13 @@ interface ListResponse {
 
 interface RegisterStartResponse {
   registrationId: string;
-  registerOptions: { publicKey: unknown };
-  uvOptions: { publicKey: unknown };
+  registerOptions: { publicKey: JsonPublicKeyOptions };
+  uvOptions: { publicKey: JsonPublicKeyOptions };
 }
 
 interface RevokeStartResponse {
   revocationId: string;
-  uvOptions: { publicKey: unknown };
+  uvOptions: { publicKey: JsonPublicKeyOptions };
 }
 
 async function fetchPasskeys(): Promise<ListResponse> {
@@ -71,8 +74,8 @@ async function registerPasskey(args: {
   );
 
   const createPublicKey = decodePublicKeyOptions(
-    (start.registerOptions as { publicKey: unknown }).publicKey,
-  );
+    start.registerOptions.publicKey,
+  ) as PublicKeyCredentialCreationOptions;
   const newCred = (await navigator.credentials.create({
     publicKey: createPublicKey,
   })) as PublicKeyCredential | null;
@@ -81,8 +84,8 @@ async function registerPasskey(args: {
   }
 
   const uvPublicKey = decodePublicKeyOptions(
-    (start.uvOptions as { publicKey: unknown }).publicKey,
-  );
+    start.uvOptions.publicKey,
+  ) as PublicKeyCredentialRequestOptions;
   const uvCred = (await navigator.credentials.get({
     publicKey: uvPublicKey,
   })) as PublicKeyCredential | null;
@@ -113,8 +116,8 @@ async function revokePasskey(args: {
   );
 
   const uvPublicKey = decodePublicKeyOptions(
-    (start.uvOptions as { publicKey: unknown }).publicKey,
-  );
+    start.uvOptions.publicKey,
+  ) as PublicKeyCredentialRequestOptions;
   const uvCred = (await navigator.credentials.get({
     publicKey: uvPublicKey,
   })) as PublicKeyCredential | null;
@@ -134,6 +137,7 @@ async function revokePasskey(args: {
 
 export function MyPasskeys() {
   const queryClient = useQueryClient();
+  const confirm = useConfirm();
   const [showRegister, setShowRegister] = useState(false);
   const [label, setLabel] = useState("");
 
@@ -309,12 +313,15 @@ export function MyPasskeys() {
                         ? "Cannot revoke your last passkey"
                         : undefined
                     }
-                    onClick={() => {
-                      if (
-                        window.confirm(
-                          `Revoke "${p.label}"? You'll need to verify with another passkey.`,
-                        )
-                      ) {
+                    onClick={async () => {
+                      const ok = await confirm({
+                        title: `Revoke "${p.label}"?`,
+                        message:
+                          "You'll need to verify with another passkey. The revoked passkey can no longer sign in.",
+                        confirmLabel: "Revoke",
+                        destructive: true,
+                      });
+                      if (ok) {
                         revokeMutation.mutate({
                           credentialId: p.credentialId,
                         });
@@ -339,10 +346,3 @@ export function MyPasskeys() {
   );
 }
 
-function formatDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
-}

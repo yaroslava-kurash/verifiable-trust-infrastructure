@@ -14,6 +14,7 @@ import { postJson } from "@/lib/api";
 import {
   decodePublicKeyOptions,
   serializeAssertion,
+  type JsonPublicKeyOptions,
 } from "@/lib/webauthn";
 
 const TRUST_TASK_START =
@@ -36,14 +37,14 @@ export function Login() {
       // ── /passkey-login/start ──
       const start = await postJson<{
         authId: string;
-        options: { publicKey: unknown };
+        options: { publicKey: JsonPublicKeyOptions };
       }>("/v1/auth/passkey-login/start", undefined, {
         trustTask: TRUST_TASK_START,
       });
 
       const publicKey = decodePublicKeyOptions(
-        (start.options as { publicKey: unknown }).publicKey,
-      );
+        start.options.publicKey,
+      ) as PublicKeyCredentialRequestOptions;
 
       // ── navigator.credentials.get ──
       const credential = (await navigator.credentials.get({

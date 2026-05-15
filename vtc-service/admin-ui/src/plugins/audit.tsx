@@ -15,6 +15,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ClipboardList, RefreshCw } from "lucide-react";
 
 import { getJson } from "@/lib/api";
+import { formatIso } from "@/lib/format";
 import { useToast } from "@/lib/toast";
 
 // Human-readable label per event kind. Falls through to the
@@ -385,10 +386,3 @@ function formatEvent(env: AuditEnvelope): string {
   }
 }
 
-function formatIso(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
-}

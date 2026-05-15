@@ -17,6 +17,7 @@ import { useSearchParams } from "react-router-dom";
 import {
   decodePublicKeyOptions,
   serializeRegistration,
+  type JsonPublicKeyOptions,
 } from "@/lib/webauthn";
 
 const TRUST_TASK_START =
@@ -137,13 +138,13 @@ export function Install() {
 
     const startBody = start.body as {
       registrationId: string;
-      options: { publicKey: unknown };
+      options: { publicKey: JsonPublicKeyOptions };
     };
 
     // ── browser WebAuthn create ──
     const publicKey = decodePublicKeyOptions(
-      (startBody.options as { publicKey: unknown }).publicKey,
-    );
+      startBody.options.publicKey,
+    ) as PublicKeyCredentialCreationOptions;
 
     let credential: PublicKeyCredential | null = null;
     try {

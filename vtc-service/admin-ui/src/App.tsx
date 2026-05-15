@@ -65,21 +65,28 @@ export default function App() {
     };
   }, [qc, toast]);
 
-  // `/install` is the unauthenticated install-claim ceremony. It
-  // renders standalone (no nav, no plugins) because the operator
-  // who hits it doesn't have a session yet.
-  if (pathname.startsWith("/install")) {
-    return <Install />;
-  }
-
   // Probe the session cookie via `/v1/auth/whoami`. Returning the
   // claim payload (not just a bool) lets the navbar show "Signed
   // in as …" without a second round trip. 401/403 → show Login.
+  //
+  // Rules-of-Hooks discipline: every `use*` hook in this function
+  // body lives *above* every conditional early return. A previous
+  // version short-circuited `/install` before reaching this
+  // `useQuery`, which flipped the hook count between routes and
+  // would trip React's mount-time hook-order check on the first
+  // navigation away from `/install`. Conditional rendering moves
+  // strictly after the hook block.
   const probe = useQuery({
     queryKey: ["whoami"],
     queryFn: probeSession,
     staleTime: 30_000,
     retry: false,
+    // Skip the network call when we're on the install ceremony —
+    // there's no session yet and the 401 would just trigger the
+    // expired-session toast we already filter out. The hook is
+    // still invoked unconditionally; `enabled` is a runtime
+    // property, not a hook-shape change.
+    enabled: !pathname.startsWith("/install"),
   });
 
   // Re-arm the session-expiry guard whenever a fresh session lands.
@@ -111,6 +118,15 @@ export default function App() {
       window.removeEventListener("focus", tick);
     };
   }, [probe.data]);
+
+  // ── Conditional rendering only happens after every hook above. ──
+
+  // `/install` is the unauthenticated install-claim ceremony. It
+  // renders standalone (no nav, no plugins) because the operator
+  // who hits it doesn't have a session yet.
+  if (pathname.startsWith("/install")) {
+    return <Install />;
+  }
 
   if (probe.isPending) {
     return <SignInLoading />;
