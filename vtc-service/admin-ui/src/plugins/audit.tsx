@@ -100,11 +100,24 @@ export function Audit() {
             className="secondary"
             disabled={query.isFetching && cursor === null}
             aria-busy={query.isFetching && cursor === null}
-            onClick={() => {
+            onClick={async () => {
+              // Refresh resets the accumulator + re-fetches the first
+              // page. We can't lean on the `useEffect` below to wire
+              // the response into state: React Query's default
+              // `structuralSharing` keeps `query.data` byte-stable
+              // when the response is identical, so the effect's
+              // dependency array never sees a new reference and the
+              // post-clear `setItems([])` would stick. Pull the
+              // result out of `refetch()`'s promise and assign
+              // explicitly instead.
               setCursor(null);
               setItems([]);
               setNextCursor(null);
-              void query.refetch();
+              const result = await query.refetch();
+              if (result.data) {
+                setItems(result.data.items);
+                setNextCursor(result.data.next_cursor ?? null);
+              }
             }}
           >
             <RefreshCw size={14} aria-hidden="true" />
