@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { ExternalLink } from "lucide-react";
 
+import { CopyButton } from "@/components/CopyButton";
 import { fetchHealth, fetchBuildInfo } from "@/lib/api";
 
 export function Dashboard() {
@@ -63,16 +64,31 @@ export function Dashboard() {
           <dt>VTC DID</dt>
           <dd>
             <code>{health.data?.vtc_did ?? "…"}</code>
+            <CopyButton
+              value={health.data?.vtc_did}
+              label="Copy VTC DID"
+              successMessage="VTC DID copied"
+            />
           </dd>
           <dt>VTA DID</dt>
           <dd>
             <code>{health.data?.vta_did ?? "(not configured)"}</code>
+            <CopyButton
+              value={health.data?.vta_did}
+              label="Copy VTA DID"
+              successMessage="VTA DID copied"
+            />
           </dd>
           <dt>Mediator DID</dt>
           <dd>
             <code>
               {health.data?.mediator_did ?? "(none configured)"}
             </code>
+            <CopyButton
+              value={health.data?.mediator_did}
+              label="Copy mediator DID"
+              successMessage="Mediator DID copied"
+            />
           </dd>
           <dt>Health endpoint</dt>
           <dd>

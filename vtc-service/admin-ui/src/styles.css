@@ -1221,6 +1221,58 @@ pre {
   line-height: 1.5;
 }
 
+/* ── Inline copy button ──────────────────────────────────────── */
+
+.copy-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  margin-left: var(--space-2);
+  padding: 0;
+  vertical-align: middle;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition:
+    background var(--motion-fast),
+    color var(--motion-fast),
+    border-color var(--motion-fast);
+}
+
+.copy-icon-btn:hover:not(:disabled) {
+  color: var(--brand);
+  background: var(--brand-tint);
+  border-color: color-mix(in srgb, var(--brand) 30%, var(--border));
+}
+
+.copy-icon-btn:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.copy-icon-btn.copied {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 10%, transparent);
+  border-color: color-mix(in srgb, var(--success) 40%, var(--border));
+}
+
+.copy-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* `dd` entries that pair a long mono value with an inline copy
+ * button — keep the button glued to the end of the value rather
+ * than wrapping onto its own line. */
+dd .copy-icon-btn {
+  margin-left: var(--space-2);
+}
+
 /* ── Toast ───────────────────────────────────────────────────── */
 
 .toast-viewport {
