@@ -16,6 +16,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { ArrowLeft, ArrowRight, Check, Plus, ScrollText, X } from "lucide-react";
 
 import { getJson, postJson } from "@/lib/api";
 
@@ -165,12 +166,21 @@ function PoliciesList() {
               <option value="archived">Archived</option>
             </select>
           </label>
+          <div className="spacer" />
           <button
             type="button"
             className={showUpload ? "secondary" : "primary"}
             onClick={() => setShowUpload((v) => !v)}
           >
-            {showUpload ? "Cancel" : "+ Upload policy"}
+            {showUpload ? (
+              <>
+                <X size={14} aria-hidden="true" /> Cancel
+              </>
+            ) : (
+              <>
+                <Plus size={14} aria-hidden="true" /> Upload policy
+              </>
+            )}
           </button>
         </div>
       </section>
@@ -212,9 +222,16 @@ function PoliciesList() {
             {query.data?.items.length === 0 && (
               <tr>
                 <td colSpan={6}>
-                  No policies match this filter. Use{" "}
-                  <strong>+ Upload policy</strong> to add the first
-                  revision for a purpose.
+                  <div className="empty-state">
+                    <span className="empty-icon" aria-hidden="true">
+                      <ScrollText />
+                    </span>
+                    <h4>No policies match this filter</h4>
+                    <p>
+                      Use <strong>Upload policy</strong> to add the
+                      first revision for a purpose.
+                    </p>
+                  </div>
                 </td>
               </tr>
             )}
@@ -239,9 +256,11 @@ function PoliciesList() {
                 <td>{formatDate(p.createdAt)}</td>
                 <td>
                   {p.isActive ? (
-                    <span title="Active">✓ active</span>
+                    <span className="chip success">
+                      <Check size={12} aria-hidden="true" /> active
+                    </span>
                   ) : (
-                    <span className="muted">archived</span>
+                    <span className="chip">archived</span>
                   )}
                 </td>
               </tr>
@@ -264,7 +283,7 @@ function PoliciesList() {
             disabled={!query.data?.next_cursor}
             onClick={() => setCursor(query.data?.next_cursor ?? null)}
           >
-            Next page →
+            Next page <ArrowRight size={12} aria-hidden="true" />
           </button>
         </div>
       </section>
@@ -294,7 +313,7 @@ function PolicyDetail() {
   return (
     <section className="page">
       <button type="button" className="link" onClick={() => navigate("..")}>
-        ← Back to policies
+        <ArrowLeft size={14} aria-hidden="true" /> Back to policies
       </button>
       <h2>Policy detail</h2>
 
@@ -340,9 +359,11 @@ function PolicyDetail() {
               <dt>Status</dt>
               <dd>
                 {query.data.isActive ? (
-                  "✓ active"
+                  <span className="chip success">
+                    <Check size={12} aria-hidden="true" /> active
+                  </span>
                 ) : (
-                  <span className="muted">archived</span>
+                  <span className="chip">archived</span>
                 )}
               </dd>
             </dl>

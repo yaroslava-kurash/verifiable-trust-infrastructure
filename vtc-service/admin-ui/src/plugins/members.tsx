@@ -12,6 +12,13 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Check,
+  Minus,
+  Users as UsersIcon,
+} from "lucide-react";
 
 import { deleteJson, getJson, postJson } from "@/lib/api";
 import {
@@ -191,7 +198,18 @@ function MembersList() {
             )}
             {query.data?.items.length === 0 && (
               <tr>
-                <td colSpan={5}>No members match this filter.</td>
+                <td colSpan={5}>
+                  <div className="empty-state">
+                    <span className="empty-icon" aria-hidden="true">
+                      <UsersIcon />
+                    </span>
+                    <h4>No members match this filter</h4>
+                    <p>
+                      Adjust the role filter to widen the result, or
+                      wait for join requests to be approved.
+                    </p>
+                  </div>
+                </td>
               </tr>
             )}
             {query.data?.items.map((m) => (
@@ -208,11 +226,19 @@ function MembersList() {
                 <td>{formatDate(m.joinedAt)}</td>
                 <td>
                   {m.personhood ? (
-                    <span title="Asserted">✓</span>
+                    <Check
+                      size={16}
+                      strokeWidth={1.75}
+                      aria-label="Asserted"
+                      className="status-icon ok"
+                    />
                   ) : (
-                    <span title="Not asserted" className="muted">
-                      —
-                    </span>
+                    <Minus
+                      size={16}
+                      strokeWidth={1.75}
+                      aria-label="Not asserted"
+                      className="status-icon muted"
+                    />
                   )}
                 </td>
               </tr>
@@ -235,7 +261,7 @@ function MembersList() {
             disabled={!query.data?.next_cursor}
             onClick={() => setCursor(query.data?.next_cursor ?? null)}
           >
-            Next page →
+            Next page <ArrowRight size={12} aria-hidden="true" />
           </button>
           {query.data?.total_estimate !== undefined && (
             <span className="muted">
@@ -280,7 +306,7 @@ function MemberDetail() {
   return (
     <section className="page">
       <button type="button" className="link" onClick={() => navigate("..")}>
-        ← Back to members
+        <ArrowLeft size={14} aria-hidden="true" /> Back to members
       </button>
       <h2>Member detail</h2>
 

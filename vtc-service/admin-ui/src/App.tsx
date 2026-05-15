@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { Menu, RefreshCw, X } from "lucide-react";
 
-import { getPlugins, subscribePlugins } from "@/plugin-api";
+import { getPlugins, subscribePlugins, type PluginManifest } from "@/plugin-api";
 import { PluginHost } from "@/components/PluginHost";
+import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { probeSession, signOut, WhoamiResponse } from "@/lib/api";
 import { reloadThirdPartyPlugins } from "@/lib/plugin-loader";
 import { useToast } from "@/lib/toast";
@@ -99,19 +101,23 @@ export default function App() {
         aria-controls="admin-nav"
         onClick={() => setNavOpen((v) => !v)}
       >
-        {navOpen ? "✕" : "☰"} Menu
+        <span className="button-icon" aria-hidden="true">
+          {navOpen ? <X /> : <Menu />}
+        </span>
+        Menu
       </button>
       <aside className="nav" id="admin-nav">
         <header>
           <h1>VTC Admin</h1>
           <SessionBadge whoami={probe.data} />
+          <ThemeSwitcher />
         </header>
         <ul>
           {plugins.map((p) => (
             <li key={p.id}>
               <NavLink to={p.path}>
                 <span className="nav-icon" aria-hidden="true">
-                  {p.icon ?? p.label.charAt(0).toUpperCase()}
+                  <PluginIcon plugin={p} />
                 </span>
                 <span className="nav-label">{p.label}</span>
               </NavLink>
@@ -141,6 +147,29 @@ export default function App() {
   );
 }
 
+function PluginIcon({ plugin }: { plugin: PluginManifest }) {
+  // Built-in plugins ship a lucide-react component; third-party
+  // plugins fall back to the `icon` string (inline SVG or single
+  // glyph). If neither is set, fall back to the label's first
+  // letter so the nav row stays balanced.
+  if (plugin.iconComponent) {
+    const Icon = plugin.iconComponent;
+    return <Icon aria-hidden="true" />;
+  }
+  if (plugin.icon) {
+    if (plugin.icon.trim().startsWith("<")) {
+      return (
+        <span
+          className="plugin-icon-raw"
+          dangerouslySetInnerHTML={{ __html: plugin.icon }}
+        />
+      );
+    }
+    return <span aria-hidden="true">{plugin.icon}</span>;
+  }
+  return <span aria-hidden="true">{plugin.label.charAt(0).toUpperCase()}</span>;
+}
+
 function SessionBadge({ whoami }: { whoami: WhoamiResponse }) {
   const qc = useQueryClient();
   const toast = useToast();
@@ -158,7 +187,7 @@ function SessionBadge({ whoami }: { whoami: WhoamiResponse }) {
   return (
     <div className="session-badge">
       <div className="session-did" title={whoami.did}>
-        <span className="muted">Signed in as</span>
+        <span className="session-label">Signed in as</span>
         <code>{shortDid(whoami.did)}</code>
       </div>
       <button
@@ -204,6 +233,9 @@ function ReloadPluginsButton() {
           }
         }}
       >
+        <span className="button-icon" aria-hidden="true">
+          <RefreshCw />
+        </span>
         {pending ? "Reloading plugins…" : "Reload plugins"}
       </button>
     </div>
@@ -233,7 +265,7 @@ function NotFound() {
   return (
     <section className="page">
       <h2>Not found</h2>
-      <p>
+      <p className="lead">
         The URL didn't match a registered plugin. The nav on the left
         shows what's available.
       </p>

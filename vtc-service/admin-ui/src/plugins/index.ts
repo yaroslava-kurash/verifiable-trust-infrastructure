@@ -11,6 +11,18 @@
 // validates the API every build — if writing a built-in feels
 // awkward, the API is wrong.
 
+import {
+  ClipboardList,
+  Inbox,
+  KeyRound,
+  LayoutDashboard,
+  ScrollText,
+  ShieldCheck,
+  Smartphone,
+  Tag,
+  Users,
+} from "lucide-react";
+
 import { registerPlugin } from "@/plugin-api";
 import { Acl } from "@/plugins/acl";
 import { Audit } from "@/plugins/audit";
@@ -27,7 +39,7 @@ export function registerBuiltinPlugins(): void {
     id: "dashboard",
     label: "Dashboard",
     path: "/",
-    icon: "🏠",
+    iconComponent: LayoutDashboard,
     reactComponent: Dashboard,
   });
 
@@ -35,7 +47,7 @@ export function registerBuiltinPlugins(): void {
     id: "join-requests",
     label: "Join requests",
     path: "/join-requests",
-    icon: "📥",
+    iconComponent: Inbox,
     reactComponent: JoinRequests,
   });
 
@@ -43,7 +55,7 @@ export function registerBuiltinPlugins(): void {
     id: "members",
     label: "Members",
     path: "/members",
-    icon: "👥",
+    iconComponent: Users,
     reactComponent: Members,
   });
 
@@ -51,7 +63,7 @@ export function registerBuiltinPlugins(): void {
     id: "acl",
     label: "Access control",
     path: "/acl",
-    icon: "🔐",
+    iconComponent: ShieldCheck,
     reactComponent: Acl,
   });
 
@@ -59,7 +71,7 @@ export function registerBuiltinPlugins(): void {
     id: "policies",
     label: "Policies",
     path: "/policies",
-    icon: "📜",
+    iconComponent: ScrollText,
     reactComponent: Policies,
   });
 
@@ -67,7 +79,7 @@ export function registerBuiltinPlugins(): void {
     id: "profile",
     label: "Community profile",
     path: "/profile",
-    icon: "🏷",
+    iconComponent: Tag,
     reactComponent: Profile,
   });
 
@@ -75,7 +87,7 @@ export function registerBuiltinPlugins(): void {
     id: "my-passkeys",
     label: "My passkeys",
     path: "/my-passkeys",
-    icon: "🔑",
+    iconComponent: KeyRound,
     reactComponent: MyPasskeys,
   });
 
@@ -83,7 +95,7 @@ export function registerBuiltinPlugins(): void {
     id: "sessions",
     label: "Sessions",
     path: "/sessions",
-    icon: "🪪",
+    iconComponent: Smartphone,
     reactComponent: Sessions,
     scopes: ["super-admin"],
   });
@@ -92,7 +104,7 @@ export function registerBuiltinPlugins(): void {
     id: "audit",
     label: "Audit trail",
     path: "/audit",
-    icon: "📜",
+    iconComponent: ClipboardList,
     reactComponent: Audit,
     scopes: ["super-admin"],
   });

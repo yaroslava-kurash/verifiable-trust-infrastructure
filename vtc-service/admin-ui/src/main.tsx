@@ -5,9 +5,16 @@ import { BrowserRouter } from "react-router-dom";
 
 import App from "@/App";
 import { loadThirdPartyPlugins } from "@/lib/plugin-loader";
+import { applyStoredTheme } from "@/lib/theme";
 import { ToastProvider } from "@/lib/toast";
 import { registerBuiltinPlugins } from "@/plugins";
+import "@fontsource-variable/inter";
+import "@fontsource-variable/jetbrains-mono";
 import "@/styles.css";
+
+// Apply the persisted theme before first paint so the cascade picks
+// the right `color-scheme` without a flash.
+applyStoredTheme();
 
 // Single QueryClient instance per page load. Sane defaults: short
 // stale time so the operator's view stays fresh, no automatic

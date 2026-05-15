@@ -11,6 +11,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { KeyRound, Plus, X } from "lucide-react";
 
 import { getJson, postJson } from "@/lib/api";
 import {
@@ -179,12 +180,21 @@ export function MyPasskeys() {
 
       <section className="card">
         <div className="toolbar">
+          <div className="spacer" />
           <button
             type="button"
             className={showRegister ? "secondary" : "primary"}
             onClick={() => setShowRegister((v) => !v)}
           >
-            {showRegister ? "Cancel" : "+ Register new passkey"}
+            {showRegister ? (
+              <>
+                <X size={14} aria-hidden="true" /> Cancel
+              </>
+            ) : (
+              <>
+                <Plus size={14} aria-hidden="true" /> Register new passkey
+              </>
+            )}
           </button>
         </div>
       </section>
@@ -262,7 +272,15 @@ export function MyPasskeys() {
             )}
             {passkeys.length === 0 && !query.isPending && (
               <tr>
-                <td colSpan={5}>No passkeys registered.</td>
+                <td colSpan={5}>
+                  <div className="empty-state">
+                    <span className="empty-icon" aria-hidden="true">
+                      <KeyRound />
+                    </span>
+                    <h4>No passkeys registered</h4>
+                    <p>Claim the install URL or register a new passkey.</p>
+                  </div>
+                </td>
               </tr>
             )}
             {passkeys.map((p) => (

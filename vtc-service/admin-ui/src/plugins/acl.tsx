@@ -12,6 +12,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { Plus, ShieldCheck, X } from "lucide-react";
 
 import { deleteJson, getJson, postJson } from "@/lib/api";
 import { useToast } from "@/lib/toast";
@@ -98,12 +99,21 @@ export function Acl() {
               onChange={(e) => setContextFilter(e.target.value)}
             />
           </label>
+          <div className="spacer" />
           <button
             type="button"
             className={showCreate ? "secondary" : "primary"}
             onClick={() => setShowCreate((v) => !v)}
           >
-            {showCreate ? "Cancel" : "+ Add entry"}
+            {showCreate ? (
+              <>
+                <X size={14} aria-hidden="true" /> Cancel
+              </>
+            ) : (
+              <>
+                <Plus size={14} aria-hidden="true" /> Add entry
+              </>
+            )}
           </button>
         </div>
       </section>
@@ -145,8 +155,16 @@ export function Acl() {
             {query.data?.entries.length === 0 && (
               <tr>
                 <td colSpan={6}>
-                  No ACL entries match this filter. Use{" "}
-                  <strong>+ Add entry</strong> to grant access.
+                  <div className="empty-state">
+                    <span className="empty-icon" aria-hidden="true">
+                      <ShieldCheck />
+                    </span>
+                    <h4>No ACL entries match this filter</h4>
+                    <p>
+                      Use <strong>Add entry</strong> to grant access,
+                      or clear the context filter to see every entry.
+                    </p>
+                  </div>
                 </td>
               </tr>
             )}

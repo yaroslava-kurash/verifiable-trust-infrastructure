@@ -8,6 +8,7 @@
 
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { Fingerprint } from "lucide-react";
 
 import { postJson } from "@/lib/api";
 import {
@@ -98,13 +99,16 @@ export function Login() {
     <section className="page login-page">
       <div className="login-card">
         <h2>VTC Admin</h2>
-        <p className="lead">Sign in with the passkey you registered at install.</p>
+        <p className="lead">
+          Sign in with the passkey you registered at install.
+        </p>
         <button
           type="button"
           className="primary"
           onClick={signIn}
           disabled={phase.kind === "running"}
         >
+          <Fingerprint size={16} aria-hidden="true" />
           {phase.kind === "running"
             ? "Waiting for passkey…"
             : "Sign in with passkey"}
@@ -117,7 +121,7 @@ export function Login() {
           </section>
         )}
         <footer>
-          <p className="lead">
+          <p>
             No passkey yet? Open the install URL the daemon operator
             shared, or ask them to mint a fresh one via{" "}
             <code>vtc admin invite</code>.

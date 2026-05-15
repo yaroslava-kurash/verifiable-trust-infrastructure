@@ -12,6 +12,7 @@
 
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { ClipboardList, RefreshCw } from "lucide-react";
 
 import { getJson } from "@/lib/api";
 import { useToast } from "@/lib/toast";
@@ -89,9 +90,14 @@ export function Audit() {
 
       <section className="card">
         <div className="toolbar">
+          <span className="muted">
+            {items.length} entr{items.length === 1 ? "y" : "ies"}
+            {nextCursor ? " (more available)" : ""}
+          </span>
+          <div className="spacer" />
           <button
             type="button"
-            className="primary"
+            className="secondary"
             disabled={query.isFetching && cursor === null}
             aria-busy={query.isFetching && cursor === null}
             onClick={() => {
@@ -101,12 +107,9 @@ export function Audit() {
               void query.refetch();
             }}
           >
+            <RefreshCw size={14} aria-hidden="true" />
             {query.isFetching && cursor === null ? "Refreshing…" : "Refresh"}
           </button>
-          <span className="muted">
-            {items.length} entr{items.length === 1 ? "y" : "ies"}
-            {nextCursor ? " (more available)" : ""}
-          </span>
         </div>
       </section>
 
@@ -124,7 +127,18 @@ export function Audit() {
           <tbody>
             {items.length === 0 && !query.isPending && (
               <tr>
-                <td colSpan={5}>No audit entries.</td>
+                <td colSpan={5}>
+                  <div className="empty-state">
+                    <span className="empty-icon" aria-hidden="true">
+                      <ClipboardList />
+                    </span>
+                    <h4>No audit entries yet</h4>
+                    <p>
+                      Audit envelopes appear here once the community
+                      starts emitting events.
+                    </p>
+                  </div>
+                </td>
               </tr>
             )}
             {query.isPending && cursor === null && (

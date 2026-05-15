@@ -12,6 +12,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { Link, Route, Routes, useNavigate, useParams } from "react-router-dom";
+import { ArrowLeft, ArrowRight, Inbox } from "lucide-react";
 
 import { getJson, postJson } from "@/lib/api";
 
@@ -165,7 +166,16 @@ function JoinRequestsList() {
             {query.data?.items.length === 0 && (
               <tr>
                 <td colSpan={4}>
-                  No {status} join requests.
+                  <div className="empty-state">
+                    <span className="empty-icon" aria-hidden="true">
+                      <Inbox />
+                    </span>
+                    <h4>No {status} join requests</h4>
+                    <p>
+                      Switch the status filter to inspect historical
+                      requests, or wait for a new applicant to submit.
+                    </p>
+                  </div>
                 </td>
               </tr>
             )}
@@ -187,7 +197,9 @@ function JoinRequestsList() {
                   )}
                 </td>
                 <td>
-                  <Link to={r.id}>Review →</Link>
+                  <Link to={r.id}>
+                    Review <ArrowRight size={12} aria-hidden="true" />
+                  </Link>
                 </td>
               </tr>
             ))}
@@ -209,7 +221,7 @@ function JoinRequestsList() {
             disabled={!query.data?.next_cursor}
             onClick={() => setCursor(query.data?.next_cursor ?? null)}
           >
-            Next page →
+            Next page <ArrowRight size={12} aria-hidden="true" />
           </button>
         </div>
       </section>
@@ -248,7 +260,7 @@ function JoinRequestDetail() {
   return (
     <section className="page">
       <button type="button" className="link" onClick={() => navigate("..")}>
-        ← Back to join requests
+        <ArrowLeft size={14} aria-hidden="true" /> Back to join requests
       </button>
       <h2>Join request detail</h2>
 

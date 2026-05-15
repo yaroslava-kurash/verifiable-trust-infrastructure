@@ -55,8 +55,22 @@ export interface PluginManifest {
    * `reactComponent`.
    */
   readonly elementTag?: string;
-  /** Optional SVG / emoji shown in nav. */
+  /**
+   * Optional icon shown in the nav. Strings (single emoji / inline
+   * SVG markup) are the framework-agnostic surface for third-party
+   * plugins. Built-in React plugins should prefer `iconComponent`,
+   * which renders a proper lucide-react icon and inherits the shell's
+   * 16px stroke-1.75 styling. Set at most one.
+   */
   readonly icon?: string;
+  /**
+   * Built-in plugins only: a React component rendered inside the
+   * nav's icon slot. Typically a lucide-react icon. Takes precedence
+   * over `icon` when both are set.
+   */
+  readonly iconComponent?: ComponentType<{
+    "aria-hidden"?: boolean | "true" | "false";
+  }>;
   /** UX-only scope hint. Server still enforces. */
   readonly scopes?: ReadonlyArray<"admin" | "super-admin">;
   /**

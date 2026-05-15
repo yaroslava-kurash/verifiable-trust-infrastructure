@@ -12,6 +12,7 @@
 // can only revoke your own sessions unless you're admin.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Smartphone } from "lucide-react";
 
 import { deleteJson, fetchWhoami, getJson } from "@/lib/api";
 import { useToast } from "@/lib/toast";
@@ -115,7 +116,13 @@ export function Sessions() {
 
       {sessions.length === 0 && !sessionsQuery.isPending && (
         <section className="card">
-          <p>No active sessions.</p>
+          <div className="empty-state">
+            <span className="empty-icon" aria-hidden="true">
+              <Smartphone />
+            </span>
+            <h4>No active sessions</h4>
+            <p>Sessions appear here when an operator signs in.</p>
+          </div>
         </section>
       )}
 
@@ -147,7 +154,7 @@ export function Sessions() {
                         {s.did}
                       </code>
                       {s.did === myDid && (
-                        <span className="chip" title="Your DID">
+                        <span className="chip accent" title="Your DID">
                           you
                         </span>
                       )}
@@ -157,7 +164,7 @@ export function Sessions() {
                         {shortId(s.sessionId)}
                       </code>
                       {isMine && (
-                        <span className="chip" title="This browser tab">
+                        <span className="chip accent" title="This browser tab">
                           this tab
                         </span>
                       )}
