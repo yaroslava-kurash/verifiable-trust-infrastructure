@@ -28,11 +28,12 @@
 //! signature over a server challenge, which is impossible to produce
 //! in a real browser (WebAuthn never exposes the private key).
 //!
-//! The carve-out *stays open* until admin bootstrap; until then the
-//! install token is consumed but the `InstallTokenStore::close_carveout`
-//! call lives in M0.6. A second `start` on the same token after a
-//! successful `finish` returns 401 because the state machine sees
-//! `Consumed`.
+//! Per-row state machine is the only gate on claim. A second
+//! `start` on the same token after a successful `finish` returns
+//! 401 because the row is now `Consumed`. The earlier global
+//! "carve-out" lockdown is gone — each invite carries its own
+//! Argon2id-hashed claim secret which `claim_start` verifies
+//! before issuing the WebAuthn challenge.
 
 use std::sync::Arc;
 
@@ -49,8 +50,9 @@ use vti_common::auth::passkey::store::{
 use vti_common::error::AppError;
 use webauthn_rs::prelude::{CreationChallengeResponse, RegisterPublicKeyCredential, Webauthn};
 
+use crate::acl::admin::{AdminEntry, RegisteredPasskey, get_admin_entry, store_admin_entry};
 use crate::install::{
-    INSTALL_SESSION_DEFAULT_TTL_SECS, InstallTokenSigner, mint_install_session_token,
+    INSTALL_SESSION_DEFAULT_TTL_SECS, InstallTokenSigner, claim_secret, mint_install_session_token,
     parse_install_token,
 };
 use crate::server::AppState;
@@ -62,6 +64,15 @@ use crate::server::AppState;
 #[derive(Debug, Deserialize)]
 pub struct ClaimStartRequest {
     pub install_token: String,
+    /// Out-of-band claim code the operator received alongside the
+    /// install URL. Required when the persisted token row has a
+    /// `claim_secret_hash`; ignored otherwise so legacy tokens
+    /// (and tests) keep working. The route handler verifies the
+    /// code against the hash before issuing the WebAuthn challenge
+    /// — a wrong or missing code returns 401 with discriminated
+    /// error codes (`claim_secret_required` / `claim_secret_invalid`).
+    #[serde(default)]
+    pub claim_secret: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -106,9 +117,29 @@ pub async fn claim_start(
     let jti = parse_jti(&claims.jti)?;
 
     // Take the ceremony lock. `start_claim` validates `Issued`, not
-    // expired, carve-out open; on success the `claimed_at` window is
-    // set to "now" so a second concurrent start sees the lock.
-    let _outcome = store.start_claim(&jti).await?;
+    // expired; on success the `claimed_at` window is set to "now"
+    // so a second concurrent start sees the lock.
+    let outcome = store.start_claim(&jti).await?;
+
+    // Per-invite claim secret: if the persisted row carries an
+    // Argon2id hash, the operator must supply the matching plaintext
+    // here. Discriminated 401 codes let the browser surface the right
+    // hint (missing code vs wrong code). Tokens without a hash skip
+    // this check — covers legacy rows and tests.
+    if let Some(stored_hash) = outcome.claim_secret_hash.as_deref() {
+        let Some(supplied) = req.claim_secret.as_deref() else {
+            return Err(AppError::ServiceError {
+                status: StatusCode::UNAUTHORIZED,
+                message: "claim_secret_required".into(),
+            });
+        };
+        if !claim_secret::verify(supplied, stored_hash)? {
+            return Err(AppError::ServiceError {
+                status: StatusCode::UNAUTHORIZED,
+                message: "claim_secret_invalid".into(),
+            });
+        }
+    }
 
     let user_uuid = jti;
     // Show the operator their admin DID in the authenticator's UI —
@@ -201,6 +232,42 @@ pub async fn claim_finish(
     store_passkey_user(&state.passkey_ks, &user).await?;
     let cred_id_hex = hex::encode(passkey.cred_id().as_ref() as &[u8]);
     store_credential_mapping(&state.passkey_ks, &cred_id_hex, user_uuid).await?;
+
+    // Create or append to the AdminEntry so `GET /v1/admin/passkeys`
+    // can list the just-registered device. The first-admin install
+    // flow then takes the same AdminEntry through `/v1/admin/bootstrap`;
+    // the `vtc admin invite` flow never reaches bootstrap (carve-out
+    // already closed by the first admin), so this write is the only
+    // place the AdminEntry is populated for invited admins.
+    let now = chrono::Utc::now();
+    let registered = RegisteredPasskey {
+        credential_id: cred_id_hex.clone(),
+        label: "install".into(),
+        transports: Vec::new(),
+        registered_at: now,
+        last_used_at: None,
+    };
+    let admin_entry = match get_admin_entry(&state.passkey_ks, &admin_did).await? {
+        Some(mut existing) => {
+            // Dedupe by credential_id — a retry of the same ceremony
+            // must not double-list the device.
+            if !existing
+                .passkeys
+                .iter()
+                .any(|p| p.credential_id == cred_id_hex)
+            {
+                existing.passkeys.push(registered);
+            }
+            existing
+        }
+        None => AdminEntry {
+            did: admin_did.clone(),
+            passkeys: vec![registered],
+            extensions: serde_json::Value::Null,
+            created_at: now,
+        },
+    };
+    store_admin_entry(&state.passkey_ks, &admin_entry).await?;
 
     let issuer_did = state
         .config

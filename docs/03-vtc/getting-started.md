@@ -59,7 +59,7 @@ sequenceDiagram
     participant VTC as vtc daemon
 
     Op->>CLI: vtc setup
-    CLI->>Op: Prompt config path<br/>VTC URL<br/>admin UX URL<br/>VTA URL + DID<br/>context name
+    CLI->>Op: Prompt config path<br/>VTC base URL<br/>VTA DID<br/>context<br/>webvh path<br/>secrets backend
     Op->>CLI: Confirm
     CLI->>CLI: Mint ephemeral did:key<br/>(round-trip identity)
     CLI->>Op: Print ephemeral DID
@@ -86,12 +86,11 @@ The wizard prompts:
 | # | Prompt | Notes |
 |---|---|---|
 | 1 | Config path | Default `config.toml` |
-| 2 | VTC URL | The base URL the daemon will publish (e.g. `https://community.example.com`) |
-| 3 | Admin UX URL | Optional — the admin SPA's origin if you host it externally; press Enter to use the embedded one |
-| 4 | VTA URL | Where to call `provision-integration` |
-| 5 | VTA DID | The VTA's `did:webvh:...` identifier |
-| 6 | Context name | The context inside the VTA that will own this VTC (created via `cnm contexts create` if it doesn't already exist) |
-| 7 | Secrets backend | `keyring` (default) / `aws` / `gcp` / `azure` / `inline` / `plaintext` |
+| 2 | VTC base URL | The URL the daemon will publish (e.g. `https://community.example.com`) |
+| 3 | VTA DID | The VTA's `did:webvh:...` identifier. Transport endpoints are resolved from the DID document — no separate VTA URL prompt |
+| 4 | Context name | The context inside the VTA that will own this VTC (created via `cnm contexts create` if it doesn't already exist) |
+| 5 | WebVH path | Optional. Blank lets the WebVH server auto-assign |
+| 6 | Secrets backend | `keyring` (default) / `aws` / `gcp` / `azure` / `inline` / `plaintext` |
 
 The wizard prints an ephemeral `did:key` and pauses. **Authorise it
 on the VTA** (this is the operator's choice — it's how you prove
@@ -137,11 +136,15 @@ curl http://localhost:8200/health
 Open the install URL from step 1 in a browser. The page is the
 embedded admin SPA serving the install flow:
 
-1. The browser registers a passkey via WebAuthn (Ed25519-only — the
-   passkey public key is projected directly into a `did:key`).
-2. The SPA submits `POST /v1/install/claim/start` and `…/finish`.
-3. The carve-out closes atomically on first success.
-4. The page prints the admin DID + a one-time admin credential
+1. You type the **claim code** the wizard printed alongside the URL.
+   URL + code travel through separate channels — a leaked URL alone
+   doesn't grant admin.
+2. The browser registers a passkey via WebAuthn (any algorithm the
+   authenticator supports — ES256, RS256, EdDSA all work).
+3. The SPA submits `POST /v1/install/claim/start` and `…/finish`.
+4. The token row transitions `Issued` → `Consumed` and can never be
+   redeemed again.
+5. The page prints the admin DID + a one-time admin credential
    bundle.
 
 Import the bundle into the CNM CLI:

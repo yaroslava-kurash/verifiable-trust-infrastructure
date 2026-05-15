@@ -19,11 +19,13 @@
 //!
 //! ## What gets cleared
 //!
-//! - `install:carveout:closed` marker (so a fresh claim can run).
 //! - Every `Role::Admin` ACL entry.
 //! - Every `admin:<did>` sister record (M0.6.1 metadata).
 //! - The full set of `PasskeyUser` + credential mapping records
 //!   for admin DIDs.
+//!
+//! The earlier "install carve-out closed" marker is no longer
+//! emitted (the carve-out concept is gone); no cleanup needed.
 //!
 //! ## What persists
 //!
@@ -74,6 +76,9 @@ pub struct EmergencyBootstrapArgs {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmergencyBootstrapOutcome {
     pub install_url: String,
+    /// Out-of-band claim code the operator types alongside the
+    /// install URL. Printed by the CLI; never persisted.
+    pub claim_code: String,
     pub admin_entries_cleared: usize,
     pub admin_records_cleared: usize,
 }
@@ -279,10 +284,12 @@ pub async fn run_emergency_bootstrap_with_store(
         }
     }
 
-    // --- reopen the carve-out ---------------------------------------
-    install_store.reopen_carveout().await?;
-
     // --- mint a fresh install token ---------------------------------
+    //
+    // The earlier "carve-out reopen" step is gone — install tokens
+    // are gated per-row by the out-of-band claim secret, so emergency
+    // recovery just mints a fresh URL + code pair the operator types
+    // alongside.
     let ed25519 = bundle.ed25519_private_bytes()?;
     let signer = InstallTokenSigner::from_master_seed(&*ed25519)?;
     let issuer = bundle.integration_did.clone();
@@ -297,6 +304,8 @@ pub async fn run_emergency_bootstrap_with_store(
         &setup_key.did,
         INSTALL_TOKEN_DEFAULT_TTL_SECS,
     )?;
+    let claim_code = crate::install::claim_secret::generate();
+    let claim_code_hash = crate::install::claim_secret::hash(&claim_code)?;
     let exp = Utc::now() + chrono::Duration::seconds(INSTALL_TOKEN_DEFAULT_TTL_SECS as i64);
     install_store
         .record_issued(
@@ -304,6 +313,8 @@ pub async fn run_emergency_bootstrap_with_store(
             minted.cnonce_bytes,
             *minted.ephemeral_signing_key,
             exp,
+            Some(claim_code_hash),
+            Some(setup_key.did.clone()),
         )
         .await?;
 
@@ -347,6 +358,7 @@ pub async fn run_emergency_bootstrap_with_store(
 
     Ok(EmergencyBootstrapOutcome {
         install_url,
+        claim_code,
         admin_entries_cleared,
         admin_records_cleared,
     })

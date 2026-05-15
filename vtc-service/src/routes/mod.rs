@@ -2,6 +2,7 @@ mod acl;
 mod admin;
 #[cfg(feature = "admin-ui")]
 mod admin_ui;
+mod audit;
 mod auth;
 mod community;
 mod config;
@@ -128,6 +129,18 @@ fn build_api_chain(_routing: &RoutingConfig) -> Router<AppState> {
     let auth_sessions_revoke =
         TrustTask::new("https://trusttasks.org/openvtc/vtc/auth/legacy/sessions/revoke/1.0")
             .expect("static Trust-Task URL");
+    // Browser-SPA convenience surface: `whoami` + `sign-out`. Both
+    // are bound to the access-token session (cookie or bearer);
+    // sign-out revokes the server-side session and clears the
+    // browser cookies in one trip.
+    let auth_whoami = TrustTask::new("https://trusttasks.org/openvtc/vtc/auth/whoami/1.0")
+        .expect("static Trust-Task URL");
+    let auth_sign_out = TrustTask::new("https://trusttasks.org/openvtc/vtc/auth/sign-out/1.0")
+        .expect("static Trust-Task URL");
+    // Audit log list — super-admin only since envelopes carry
+    // plaintext DIDs.
+    let audit_list = TrustTask::new("https://trusttasks.org/openvtc/vtc/audit/list/1.0")
+        .expect("static Trust-Task URL");
     let config_manage =
         TrustTask::new("https://trusttasks.org/openvtc/vtc/config/legacy/manage/1.0")
             .expect("static Trust-Task URL");
@@ -162,6 +175,17 @@ fn build_api_chain(_routing: &RoutingConfig) -> Router<AppState> {
             .expect("static Trust-Task URL");
     let admin_passkeys_revoke =
         TrustTask::new("https://trusttasks.org/openvtc/vtc/admin/passkeys/revoke/1.0")
+            .expect("static Trust-Task URL");
+    // Admin invites — REST surface for `vtc admin invite`. Single
+    // Trust Task covers GET + POST on `/admin/invites` (same Phase-0
+    // workaround community/profile + admin/config use); DELETE on
+    // `/admin/invites/{jti}` has its own Trust Task since it's on a
+    // distinct mount.
+    let admin_invites_manage =
+        TrustTask::new("https://trusttasks.org/openvtc/vtc/admin/invites/manage/1.0")
+            .expect("static Trust-Task URL");
+    let admin_invites_revoke =
+        TrustTask::new("https://trusttasks.org/openvtc/vtc/admin/invites/revoke/1.0")
             .expect("static Trust-Task URL");
     let members_list = TrustTask::new("https://trusttasks.org/openvtc/vtc/members/list/1.0")
         .expect("static Trust-Task URL");
@@ -282,9 +306,14 @@ fn build_api_chain(_routing: &RoutingConfig) -> Router<AppState> {
     let health_diagnostics =
         TrustTask::new("https://trusttasks.org/openvtc/vtc/health/diagnostics/1.0")
             .expect("static Trust-Task URL");
-    // Phase 3 M3.10 — cross-community session mint.
-    let auth_recognise = TrustTask::new("https://trusttasks.org/openvtc/vtc/auth/recognise/1.0")
-        .expect("static Trust-Task URL");
+    // Phase 3 M3.10 — cross-community session mint. The Trust
+    // Task declaration moved to `build_unauth_routes` so the
+    // handler sits behind the tower-governor + the 64 KB body
+    // cap — it's an unauthenticated endpoint that does DID
+    // resolution + outbound HTTP fetch + Rego policy eval +
+    // session-JWT mint, all driven by attacker-controlled VEC/VMC
+    // JSON, and it was previously exposed on the 1 MB / no-rate-
+    // limit main chain.
     // Read endpoints (M2.4). GET /v1/policies and
     // GET /v1/policies/{id} share their mounts with the POST
     // /v1/policies upload and POST /v1/policies/{id}/activate
@@ -301,11 +330,6 @@ fn build_api_chain(_routing: &RoutingConfig) -> Router<AppState> {
             "/health/diagnostics",
             get(health::diagnostics),
             health_diagnostics,
-        )
-        .route_with_task(
-            "/auth/recognise",
-            post(recognise::recognise),
-            auth_recognise,
         )
         // `did:webvh` log publication (Trust-Task-exempt — DID
         // resolvers don't carry our extension header). The VTC is
@@ -332,6 +356,10 @@ fn build_api_chain(_routing: &RoutingConfig) -> Router<AppState> {
             delete(auth::revoke_session),
             auth_sessions_revoke,
         )
+        .route_with_task("/auth/whoami", get(auth::whoami), auth_whoami)
+        .route_with_task("/auth/sign-out", post(auth::sign_out), auth_sign_out)
+        // Audit log read (super-admin only).
+        .route_with_task("/audit", get(audit::list_audit), audit_list)
         // Config
         .route_with_task(
             "/config",
@@ -355,6 +383,15 @@ fn build_api_chain(_routing: &RoutingConfig) -> Router<AppState> {
             "/community/profile",
             get(community::profile::get_profile).put(community::profile::put_profile),
             community_profile,
+        )
+        // Public read of the community profile. Trust-Task-exempt and
+        // unauthenticated — visitors landing on the default public
+        // website need the community's name + description + DIDs to
+        // render before any session exists. Curated subset only (no
+        // extensions, no registry status).
+        .route_exempt(
+            "/community/public-profile",
+            get(community::profile::get_public_profile),
         )
         // Admin config (M0.8 — GET + PATCH share one task; will
         // split into admin/config/show/1.0 + patch/1.0 when
@@ -431,6 +468,20 @@ fn build_api_chain(_routing: &RoutingConfig) -> Router<AppState> {
             "/admin/passkeys/revoke/finish",
             post(admin::passkeys::revoke_finish),
             admin_passkeys_revoke,
+        )
+        // Admin invites — REST mirror of `vtc admin invite`. GET +
+        // POST share the same mount; DELETE on `/admin/invites/{jti}`
+        // revokes outstanding (Issued) invites. Consumed rows are
+        // immutable (audit history) — DELETE on those returns 409.
+        .route_with_task(
+            "/admin/invites",
+            get(admin::invites::list_invites).post(admin::invites::create_invite),
+            admin_invites_manage,
+        )
+        .route_with_task(
+            "/admin/invites/{jti}",
+            axum::routing::delete(admin::invites::revoke_invite),
+            admin_invites_revoke,
         )
         // Members (Phase 1 M1.4–M1.6).
         .route_with_task("/members", get(members::read::list_members), members_list)
@@ -731,12 +782,30 @@ fn build_unauth_routes() -> Router<AppState> {
     let auth_admin_login =
         TrustTask::new("https://trusttasks.org/openvtc/vtc/auth/admin-login/1.0")
             .expect("static Trust-Task URL");
+    // Browser-friendly passkey login. Separate start/finish so the
+    // WebAuthn ceremony can persist the auth_state between calls.
+    let auth_passkey_login_start =
+        TrustTask::new("https://trusttasks.org/openvtc/vtc/auth/passkey-login/start/1.0")
+            .expect("static Trust-Task URL");
+    let auth_passkey_login_finish =
+        TrustTask::new("https://trusttasks.org/openvtc/vtc/auth/passkey-login/finish/1.0")
+            .expect("static Trust-Task URL");
     let install_claim_start =
         TrustTask::new("https://trusttasks.org/openvtc/vtc/install/claim/start/1.0")
             .expect("static Trust-Task URL");
     let install_claim_finish =
         TrustTask::new("https://trusttasks.org/openvtc/vtc/install/claim/finish/1.0")
             .expect("static Trust-Task URL");
+    // Phase 3 M3.10 — cross-community session mint. Sits in the
+    // unauth chain (not the main API chain) so the tower-governor
+    // + 64 KB body cap apply: the handler runs DID resolution,
+    // outbound HTTP fetch of the foreign `statusListCredential`
+    // URL, Rego policy eval, and a session JWT mint, all driven by
+    // attacker-supplied JSON. Behind the rate limit, a sustained
+    // SSRF / CPU-amplification probe is throttled to 5 rps per
+    // source IP.
+    let auth_recognise = TrustTask::new("https://trusttasks.org/openvtc/vtc/auth/recognise/1.0")
+        .expect("static Trust-Task URL");
 
     let governor_config = Arc::new(
         GovernorConfigBuilder::default()
@@ -771,6 +840,16 @@ fn build_unauth_routes() -> Router<AppState> {
             auth_admin_login,
         )
         .route_with_task(
+            "/auth/passkey-login/start",
+            post(auth::passkey_login_start),
+            auth_passkey_login_start,
+        )
+        .route_with_task(
+            "/auth/passkey-login/finish",
+            post(auth::passkey_login_finish),
+            auth_passkey_login_finish,
+        )
+        .route_with_task(
             "/install/claim/start",
             post(install::claim_start),
             install_claim_start,
@@ -779,6 +858,11 @@ fn build_unauth_routes() -> Router<AppState> {
             "/install/claim/finish",
             post(install::claim_finish),
             install_claim_finish,
+        )
+        .route_with_task(
+            "/auth/recognise",
+            post(recognise::recognise),
+            auth_recognise,
         )
         .into_router()
         .layer(DefaultBodyLimit::max(UNAUTH_BODY_SIZE))
@@ -891,6 +975,8 @@ pub fn assemble_with_website(
     #[cfg(feature = "admin-ui")]
     let admin: Router<AppState> = Router::new()
         .route("/build-info.json", get(admin_ui::build_info))
+        .route("/plugins.json", get(admin_ui::plugins_manifest))
+        .route("/plugins/{id}/{*rel_path}", get(admin_ui::plugin_asset))
         .route("/", get(admin_ui::serve_spa))
         .route("/{*path}", get(admin_ui::serve_spa))
         .layer(from_fn(security_headers));

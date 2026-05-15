@@ -151,6 +151,14 @@ async fn build_fixture(public_url: Option<&str>, with_install_signer: bool) -> F
 }
 
 async fn mint_token_and_record(fix: &Fixture, ttl_seconds: u64) -> (String, Uuid) {
+    mint_token_and_record_with_secret(fix, ttl_seconds, None).await
+}
+
+async fn mint_token_and_record_with_secret(
+    fix: &Fixture,
+    ttl_seconds: u64,
+    claim_secret_hash: Option<String>,
+) -> (String, Uuid) {
     let minted = mint_install_token(
         &fix.install_signer,
         "did:webvh:vtc.example.com:abc",
@@ -165,6 +173,8 @@ async fn mint_token_and_record(fix: &Fixture, ttl_seconds: u64) -> (String, Uuid
             minted.cnonce_bytes,
             *minted.ephemeral_signing_key,
             exp,
+            claim_secret_hash,
+            Some("did:key:z6MkAdmin".into()),
         )
         .await
         .expect("record_issued");
@@ -261,6 +271,70 @@ async fn full_ceremony_completes_end_to_end() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+// ---------------------------------------------------------------------------
+// Claim-secret paths
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn claim_secret_happy_path_completes_ceremony() {
+    let fix = build_fixture(Some(RP_ORIGIN), true).await;
+    let secret = "ABCDEFGHJK";
+    let hash = vtc_service::install::claim_secret::hash(secret).unwrap();
+    let (token, _jti) = mint_token_and_record_with_secret(&fix, 600, Some(hash)).await;
+
+    let (status, body) = post_json(
+        &fix.router,
+        "/v1/install/claim/start",
+        START_TASK,
+        json!({ "install_token": token, "claim_secret": secret }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "start with correct secret: {body}");
+    assert!(body["registrationId"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn claim_secret_missing_returns_required_code() {
+    let fix = build_fixture(Some(RP_ORIGIN), true).await;
+    let hash = vtc_service::install::claim_secret::hash("WHATEVER12").unwrap();
+    let (token, _) = mint_token_and_record_with_secret(&fix, 600, Some(hash)).await;
+
+    let (status, body) = post_json(
+        &fix.router,
+        "/v1/install/claim/start",
+        START_TASK,
+        json!({ "install_token": token }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "body: {body}");
+    assert_eq!(
+        body["error"].as_str(),
+        Some("claim_secret_required"),
+        "discriminated error code; got {body}"
+    );
+}
+
+#[tokio::test]
+async fn claim_secret_wrong_returns_invalid_code() {
+    let fix = build_fixture(Some(RP_ORIGIN), true).await;
+    let hash = vtc_service::install::claim_secret::hash("CORRECT123").unwrap();
+    let (token, _) = mint_token_and_record_with_secret(&fix, 600, Some(hash)).await;
+
+    let (status, body) = post_json(
+        &fix.router,
+        "/v1/install/claim/start",
+        START_TASK,
+        json!({ "install_token": token, "claim_secret": "WRONGWRONG" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "body: {body}");
+    assert_eq!(
+        body["error"].as_str(),
+        Some("claim_secret_invalid"),
+        "discriminated error code; got {body}"
+    );
 }
 
 // ---------------------------------------------------------------------------

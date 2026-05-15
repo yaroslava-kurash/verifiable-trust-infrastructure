@@ -197,6 +197,8 @@ async fn mint_install(fix: &Fixture) -> String {
             minted.cnonce_bytes,
             *minted.ephemeral_signing_key,
             exp,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -484,7 +486,9 @@ async fn end_to_end_install_flow_phase_0_gate() {
 
     // ----------------------------------------------------------------
     // Step 10 — second claim/start with the same token is rejected
-    //           (carve-out closed by bootstrap; token also Consumed)
+    //           because the token has transitioned to `Consumed`.
+    //           The earlier carve-out global lockdown is gone — the
+    //           per-row state machine is the only gate.
     // ----------------------------------------------------------------
     let (status, body) = request(
         &fix.router,
@@ -498,11 +502,7 @@ async fn end_to_end_install_flow_phase_0_gate() {
     assert_eq!(
         status,
         StatusCode::UNAUTHORIZED,
-        "second claim/start must be refused: {body}",
-    );
-    assert!(
-        fix.install_store.carveout_is_closed().await.unwrap(),
-        "bootstrap should have closed the install carve-out"
+        "second claim/start must be refused (token Consumed): {body}",
     );
 
     // ----------------------------------------------------------------

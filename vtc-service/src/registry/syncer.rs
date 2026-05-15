@@ -286,15 +286,26 @@ impl MembershipSyncer {
         // gate: `publish_on_join` only governs new-member
         // publication, not lifecycle updates / departures.
         if job.kind == SyncJobKind::PublishMember && self.policy_skips_publish().await {
-            job.record_success();
-            self.emit_outcome(&job, true);
+            // Delete first, audit second. Emitting the success
+            // envelope before the delete used to mean: if the
+            // delete failed (transient fjall error, etc.), the job
+            // sat in the queue and re-fired next tick, emitting a
+            // *second* "succeeded" envelope for the same job_id —
+            // the audit log no longer matched reality.
+            //
+            // Order matters: a delete failure now leaves the row
+            // un-audited and queued for retry, which is the right
+            // outcome. A successful delete emits exactly once.
             if let Err(e) = delete_sync_job(&self.sync_queue_ks, job.id).await {
                 warn!(
                     error = %e,
                     job_id = %job.id,
-                    "failed to delete policy-skipped PublishMember job"
+                    "failed to delete policy-skipped PublishMember job — will retry next tick"
                 );
+                return;
             }
+            job.record_success();
+            self.emit_outcome(&job, true);
             debug!(
                 job_id = %job.id,
                 did = %job.member_did,
@@ -365,19 +376,32 @@ impl MembershipSyncer {
     }
 
     /// Resolve `data.vtc.registry.publish_on_join` against the
-    /// currently-active `registry.rego`. Returns `true` only
-    /// when the policy explicitly emits `false`; any other
-    /// outcome (no policy, compile error, rule missing) returns
-    /// `false` so we default to publishing. See
-    /// [`super::policy::evaluate_publish_on_join`] for the
-    /// failure-mode rationale.
+    /// currently-active `registry.rego`.
+    ///
+    /// Three outcomes:
+    /// - `Ok(SkipPublishOnJoin)` — operator policy explicitly
+    ///   says "don't publish". Return `true` (skip).
+    /// - `Ok(PublishOnJoin)` — policy emits `true` OR no active
+    ///   policy is installed (fresh-install default). Return
+    ///   `false` (publish).
+    /// - `Err(_)` — active policy exists but the bytes don't
+    ///   compile / evaluate. Return `true` (skip + warn). The
+    ///   earlier "default to publish on any error" path silently
+    ///   leaked members to the registry whenever an operator's
+    ///   policy upload was malformed; the dispatch backs off
+    ///   instead so the queue depth surfaces in
+    ///   `/v1/health/diagnostics` and the operator can fix the
+    ///   rego file before retrying.
     async fn policy_skips_publish(&self) -> bool {
         match evaluate_publish_on_join(&self.policies_ks, &self.active_policies_ks).await {
             Ok(PublishOnJoinDecision::SkipPublishOnJoin) => true,
             Ok(PublishOnJoinDecision::PublishOnJoin) => false,
             Err(e) => {
-                warn!(error = %e, "publish_on_join evaluation failed — defaulting to publish");
-                false
+                warn!(
+                    error = %e,
+                    "publish_on_join evaluation failed — skipping publish until policy is fixed"
+                );
+                true
             }
         }
     }

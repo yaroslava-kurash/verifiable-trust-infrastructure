@@ -162,6 +162,8 @@ mod tests {
             did: "did:key:z6Mk-context-admin".into(),
             role: Role::Admin,
             allowed_contexts: vec!["vta".into()],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
         };
 
         let err = list_services(&config, &webvh_ks, &context_admin)

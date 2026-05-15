@@ -5,11 +5,10 @@
 //! ceremony. Verifies the M0.6.2 acceptance criteria:
 //!
 //! - Happy path writes an `Admin` ACL entry, an `AdminEntry`, and a
-//!   `CommunityInstalled` audit envelope; closes the install carve-out.
+//!   `CommunityInstalled` audit envelope.
 //! - Bootstrap-after-bootstrap is rejected (409).
-//! - Replay of the same setup-session JWT is rejected after carve-out
-//!   closes (the JWT signature stays valid; the duplicate-admin check
-//!   catches it as 409).
+//! - Replay of the same setup-session JWT is rejected by the
+//!   duplicate-admin check (409).
 //! - Tampered / wrong-audience / expired tokens are rejected as 401.
 //! - 503 when install signer or audit writer aren't configured.
 
@@ -183,6 +182,8 @@ async fn mint_token_and_record(fix: &Fixture, ttl_seconds: u64) -> String {
             minted.cnonce_bytes,
             *minted.ephemeral_signing_key,
             exp,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -290,9 +291,6 @@ async fn full_install_to_bootstrap_succeeds() {
         .expect("admin entry persisted");
     assert_eq!(admin_entry.passkeys.len(), 1);
 
-    // Carve-out closed.
-    assert!(fix.install_store.carveout_is_closed().await.unwrap());
-
     // Audit envelope present and references the install jti.
     // `envelope_storage_key` formats as `<rfc3339-timestamp>:<event_id>`
     // — there's no fixed string prefix, so a `2` literal works for
@@ -313,6 +311,19 @@ async fn full_install_to_bootstrap_succeeds() {
         }
         other => panic!("expected CommunityInstalled, got {other:?}"),
     }
+
+    // Community profile singleton is initialised with the configured
+    // VTC DID. Spec §5.1: `community_did` is immutable, set at install
+    // time. The form-editable fields (name, description, etc.) default
+    // to empty so the operator fills them in via the admin UI.
+    let profile = vtc_service::community::load_profile(&fix.state.community_ks)
+        .await
+        .unwrap()
+        .expect("community profile initialised at bootstrap");
+    assert_eq!(profile.community_did, "did:webvh:vtc.example.com:abc");
+    assert_eq!(profile.name, "");
+    assert_eq!(profile.description, "");
+    assert_eq!(profile.language, "en");
 }
 
 // ---------------------------------------------------------------------------

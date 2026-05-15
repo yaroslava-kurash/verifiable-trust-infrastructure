@@ -308,6 +308,8 @@ mod tests {
             did: "did:key:z6Mk-test".into(),
             role: Role::Admin,
             allowed_contexts: vec!["vta".into()],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
         }
     }
 

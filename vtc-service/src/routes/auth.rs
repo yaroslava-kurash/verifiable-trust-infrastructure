@@ -3,6 +3,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
+use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use vta_sdk::protocols::auth::{
@@ -129,7 +130,15 @@ async fn authenticate_and_mint(
             "session already authenticated (replay)".into(),
         ));
     }
-    if session.challenge != challenge {
+    // Constant-time compare on the challenge bytes. `==` on a
+    // `String` short-circuits at the first mismatching byte, leaking
+    // prefix-match length via response timing. The challenge is
+    // server-generated 32-byte URL-safe base64, so the length check
+    // is effectively a no-op in practice but covers the
+    // wrong-length-attack edge.
+    if session.challenge.len() != challenge.len()
+        || !bool::from(session.challenge.as_bytes().ct_eq(challenge.as_bytes()))
+    {
         warn!(session_id, "authentication rejected: challenge mismatch");
         return Err(AppError::Authentication("challenge mismatch".into()));
     }
@@ -206,10 +215,11 @@ async fn authenticate_and_mint(
 /// the admin SPA can drive subsequent requests via the cookie
 /// session:
 ///
-/// - `vtc_admin_session=<jwt>; Path=/admin; SameSite=Strict;
-///   Secure; HttpOnly` — the access token JWT, scoped to the
-///   admin UX path so public-website JS on the same origin can't
-///   read it.
+/// - `vtc_admin_session=<jwt>; Path=/; SameSite=Strict; Secure;
+///   HttpOnly` — the access token JWT, scoped to the daemon's
+///   whole origin so the browser sends it on `/v1/*` API calls.
+///   `HttpOnly` keeps JS from reading it; `SameSite=Strict`
+///   prevents cross-site CSRF.
 /// - `csrf=<random>; Path=/; SameSite=Strict; Secure` (HttpOnly:
 ///   **false** so SPA JS can mirror the value to the
 ///   `X-CSRF-Token` header for the double-submit check in
@@ -257,13 +267,213 @@ pub async fn admin_login(
     Ok(response)
 }
 
-/// Build the `vtc_admin_session` cookie value. Exposed as a pure
-/// helper so cookie-isolation invariants (Path=/admin,
-/// SameSite=Strict, Secure, HttpOnly) can be unit-tested
-/// without standing up the full DIDComm authenticate flow.
+// ---------- POST /auth/passkey-login/start ----------
+
+/// `POST /v1/auth/passkey-login/start`.
+///
+/// Browser-friendly login: the admin SPA submits no body, the
+/// daemon returns a WebAuthn assertion challenge across every
+/// registered passkey (discoverable login — the user picks their
+/// device, the browser chooses the matching credential). Modelled
+/// on `affinidi-webvh-service::login_start`.
+///
+/// Unauthenticated by design: the eventual `finish` ceremony
+/// proves possession of an enrolled credential, which is the auth.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PasskeyLoginStartResponse {
+    pub auth_id: String,
+    pub options: webauthn_rs::prelude::RequestChallengeResponse,
+}
+
+pub async fn passkey_login_start(
+    State(state): State<AppState>,
+) -> Result<Json<PasskeyLoginStartResponse>, AppError> {
+    use vti_common::auth::passkey::store::{get_all_passkeys, store_auth_state};
+
+    let webauthn = state
+        .webauthn
+        .as_ref()
+        .ok_or_else(|| AppError::Authentication("WebAuthn not configured".into()))?;
+
+    let passkeys = get_all_passkeys(&state.passkey_ks).await?;
+    if passkeys.is_empty() {
+        warn!("passkey login refused: no passkeys registered");
+        return Err(AppError::Authentication(
+            "no passkeys registered on this server".into(),
+        ));
+    }
+
+    let (rcr, auth_state) = webauthn
+        .start_passkey_authentication(&passkeys)
+        .map_err(|e| AppError::Internal(format!("webauthn auth start failed: {e}")))?;
+
+    let auth_id = Uuid::new_v4().to_string();
+    store_auth_state(&state.passkey_ks, &auth_id, &auth_state).await?;
+
+    info!(
+        auth_id = %auth_id,
+        passkey_count = passkeys.len(),
+        "passkey login challenge issued"
+    );
+
+    Ok(Json(PasskeyLoginStartResponse {
+        auth_id,
+        options: rcr,
+    }))
+}
+
+// ---------- POST /auth/passkey-login/finish ----------
+
+/// `POST /v1/auth/passkey-login/finish`.
+///
+/// Verifies the WebAuthn assertion, looks up the registered
+/// admin DID by credential ID, and mints the cookie session.
+/// Sets the same `vtc_admin_session` + `csrf` cookies as
+/// `admin_login` does for the DIDComm CLI path. Returns the bearer
+/// token in the body for clients that want to also use it
+/// programmatically.
+#[derive(Debug, Deserialize)]
+pub struct PasskeyLoginFinishRequest {
+    pub auth_id: String,
+    pub credential: webauthn_rs::prelude::PublicKeyCredential,
+}
+
+pub async fn passkey_login_finish(
+    State(state): State<AppState>,
+    Json(req): Json<PasskeyLoginFinishRequest>,
+) -> Result<axum::response::Response, AppError> {
+    use axum::http::HeaderValue;
+    use axum::http::header::SET_COOKIE;
+    use vti_common::auth::passkey::store::{
+        get_passkey_user_by_cred, store_passkey_user, take_auth_state,
+    };
+
+    let webauthn = state
+        .webauthn
+        .as_ref()
+        .ok_or_else(|| AppError::Authentication("WebAuthn not configured".into()))?;
+    let jwt_keys = state
+        .jwt_keys
+        .as_ref()
+        .ok_or_else(|| AppError::Authentication("JWT keys not configured".into()))?;
+
+    let auth_state = take_auth_state(&state.passkey_ks, &req.auth_id)
+        .await?
+        .ok_or_else(|| AppError::Authentication("auth state not found or expired".into()))?;
+
+    let auth_result = webauthn
+        .finish_passkey_authentication(&req.credential, &auth_state)
+        .map_err(|e| {
+            warn!(auth_id = %req.auth_id, error = %e, "passkey authentication failed");
+            AppError::Authentication(format!("passkey authentication failed: {e}"))
+        })?;
+
+    let cred_id_hex = hex::encode(auth_result.cred_id());
+    let mut user = get_passkey_user_by_cred(&state.passkey_ks, &cred_id_hex)
+        .await?
+        .ok_or_else(|| AppError::Authentication("credential not registered".into()))?;
+
+    // Persist credential-counter update (WebAuthn replay protection).
+    for cred in &mut user.credentials {
+        cred.update_credential(&auth_result);
+    }
+    store_passkey_user(&state.passkey_ks, &user).await?;
+
+    // Check ACL — the DID must still be authorised; revocation
+    // since enrolment is a real path (operator demoted, etc.).
+    let (role, allowed_contexts) = check_acl_full(&state.acl_ks, &user.did).await?;
+
+    // Mint access + refresh tokens (mirrors `authenticate_and_mint`
+    // for parity with the DIDComm login path).
+    let config = state.config.read().await;
+    let access_expiry = config.auth.access_token_expiry;
+    let refresh_expiry = config.auth.refresh_token_expiry;
+    drop(config);
+
+    let session_id = Uuid::new_v4().to_string();
+    let claims = jwt_keys.new_claims(
+        user.did.clone(),
+        session_id.clone(),
+        role.to_string(),
+        allowed_contexts,
+        access_expiry,
+        false,
+    );
+    let access_expires_at = claims.exp;
+    let access_token = jwt_keys.encode(&claims)?;
+
+    let refresh_token = Uuid::new_v4().to_string();
+    let refresh_expires_at = now_epoch() + refresh_expiry;
+
+    // Persist the session record so `/auth/sessions` lists it and
+    // refresh-token rotation finds it. Same shape the DIDComm
+    // authenticate path writes — keeps `delete_session` etc.
+    // working uniformly across both login origins.
+    let session = Session {
+        session_id: session_id.clone(),
+        did: user.did.clone(),
+        challenge: String::new(),
+        state: SessionState::Authenticated,
+        created_at: now_epoch(),
+        refresh_token: Some(refresh_token.clone()),
+        refresh_expires_at: Some(refresh_expires_at),
+        tee_attested: false,
+    };
+    store_session(&state.sessions_ks, &session).await?;
+    store_refresh_index(&state.sessions_ks, &refresh_token, &session_id).await?;
+
+    info!(did = %user.did, %session_id, "passkey login successful");
+
+    // Set cookies — same shape as `admin_login`.
+    let max_age = access_expires_at.saturating_sub(now_epoch()).max(1);
+    let session_cookie = build_session_cookie(&access_token, max_age);
+
+    use rand::RngExt;
+    let mut csrf_bytes = [0u8; 32];
+    rand::rng().fill(&mut csrf_bytes);
+    let csrf = hex::encode(csrf_bytes);
+    let csrf_cookie = build_csrf_cookie(&csrf, max_age);
+
+    let resp = AuthenticateResponse {
+        session_id: Some(session_id),
+        data: AuthenticateData {
+            access_token,
+            access_expires_at,
+            refresh_token: Some(refresh_token),
+            refresh_expires_at: Some(refresh_expires_at),
+        },
+    };
+
+    let mut response = Json(resp).into_response();
+    let headers = response.headers_mut();
+    headers.append(
+        SET_COOKIE,
+        HeaderValue::try_from(session_cookie)
+            .map_err(|e| AppError::Internal(format!("invalid session cookie: {e}")))?,
+    );
+    headers.append(
+        SET_COOKIE,
+        HeaderValue::try_from(csrf_cookie)
+            .map_err(|e| AppError::Internal(format!("invalid csrf cookie: {e}")))?,
+    );
+
+    Ok(response)
+}
+
+/// Build the `vtc_admin_session` cookie value.
+///
+/// `Path=/` (not `/admin`) so the browser sends the cookie on
+/// requests to `/v1/*` — the admin SPA needs the cookie on every
+/// authenticated API call, and the API doesn't live under `/admin`.
+/// The earlier M5.3.1 design used `Path=/admin` to keep the cookie
+/// scoped, but `HttpOnly` already blocks JS exfiltration on any
+/// path and `SameSite=Strict` prevents cross-site CSRF — the Path
+/// restriction added no security in exchange for breaking the
+/// cookie-based SPA-→-API path entirely.
 fn build_session_cookie(access_token: &str, max_age: u64) -> String {
     format!(
-        "{name}={access_token}; Path=/admin; Max-Age={max_age}; SameSite=Strict; Secure; HttpOnly",
+        "{name}={access_token}; Path=/; Max-Age={max_age}; SameSite=Strict; Secure; HttpOnly",
         name = vti_common::auth::extractor::ADMIN_SESSION_COOKIE,
     )
 }
@@ -280,14 +490,17 @@ fn build_csrf_cookie(csrf: &str, max_age: u64) -> String {
 mod cookie_format_tests {
     use super::*;
 
-    /// Phase 5 M5.3.1 cookie-scope isolation invariant — the
-    /// admin session cookie MUST carry `Path=/admin` so public-
-    /// website JS on the same origin cannot read it.
+    /// The session cookie is `Path=/` so the browser sends it on
+    /// every same-origin request — `/v1/*` (API) and `/admin/*`
+    /// (SPA). HttpOnly + SameSite=Strict are what actually
+    /// constrain the cookie's reachability; an earlier
+    /// `Path=/admin` scoping broke the cookie-based SPA-→-API
+    /// path without adding security (HttpOnly already prevents JS
+    /// exfiltration on any path).
     #[test]
-    fn session_cookie_path_is_admin() {
+    fn session_cookie_path_is_root() {
         let c = build_session_cookie("jwt.token.value", 900);
-        assert!(c.contains("Path=/admin"), "got {c}");
-        assert!(!c.contains("Path=/;"), "must not be root-scoped: {c}");
+        assert!(c.contains("Path=/;"), "got {c}");
     }
 
     #[test]
@@ -449,6 +662,76 @@ impl From<Session> for SessionSummary {
             refresh_expires_at: s.refresh_expires_at,
         }
     }
+}
+
+// ---------- GET /auth/whoami ----------
+
+/// Wire shape returned by `whoami`. Minimal: enough for the admin
+/// SPA's nav header to show "Signed in as …" with a role badge,
+/// without needing to decode the JWT client-side (the session
+/// cookie is HttpOnly).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhoamiResponse {
+    pub did: String,
+    pub role: String,
+    pub session_id: String,
+    pub access_expires_at: u64,
+    pub allowed_contexts: Vec<String>,
+}
+
+/// `GET /v1/auth/whoami` — returns the caller's identity claims
+/// pulled from the access token. Lets browser SPAs render a
+/// "signed in as" indicator without exposing the JWT to JS (the
+/// session cookie is HttpOnly by design).
+pub async fn whoami(auth: AuthClaims) -> Json<WhoamiResponse> {
+    Json(WhoamiResponse {
+        did: auth.did,
+        role: auth.role.to_string(),
+        session_id: auth.session_id,
+        access_expires_at: auth.access_expires_at,
+        allowed_contexts: auth.allowed_contexts,
+    })
+}
+
+// ---------- POST /auth/sign-out ----------
+
+/// `POST /v1/auth/sign-out` — revoke the caller's session and
+/// expire the cookie pair. The cookies' HttpOnly flag means JS
+/// can't clear them itself — only the server can issue
+/// `Set-Cookie: ...; Max-Age=0` to delete from the browser's jar.
+pub async fn sign_out(
+    auth: AuthClaims,
+    State(state): State<AppState>,
+) -> Result<axum::response::Response, AppError> {
+    use axum::http::HeaderValue;
+    use axum::http::header::SET_COOKIE;
+
+    let sessions = state.sessions_ks.clone();
+    // Best-effort delete — the session may already have been
+    // revoked from another tab. Either way we set the expiry
+    // cookies so this browser stops sending the stale JWT.
+    let _ = delete_session(&sessions, &auth.session_id).await;
+    info!(did = %auth.did, session_id = %auth.session_id, "sign-out");
+
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    let headers = response.headers_mut();
+    let session_clear = format!(
+        "{name}=; Path=/; Max-Age=0; SameSite=Strict; Secure; HttpOnly",
+        name = vti_common::auth::extractor::ADMIN_SESSION_COOKIE,
+    );
+    let csrf_clear = "csrf=; Path=/; Max-Age=0; SameSite=Strict; Secure".to_string();
+    headers.append(
+        SET_COOKIE,
+        HeaderValue::try_from(session_clear)
+            .map_err(|e| AppError::Internal(format!("invalid session cookie: {e}")))?,
+    );
+    headers.append(
+        SET_COOKIE,
+        HeaderValue::try_from(csrf_clear)
+            .map_err(|e| AppError::Internal(format!("invalid csrf cookie: {e}")))?,
+    );
+    Ok(response)
 }
 
 pub async fn session_list(

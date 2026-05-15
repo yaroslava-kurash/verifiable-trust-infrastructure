@@ -31,14 +31,24 @@ pub struct AuthClaims {
     pub did: String,
     pub role: Role,
     pub allowed_contexts: Vec<String>,
+    /// JWT `session_id` claim. Carried through so handlers can do
+    /// session-targeted operations (sign-out, refresh-token
+    /// rotation) without re-decoding the JWT.
+    pub session_id: String,
+    /// JWT `exp` claim — Unix-second expiry. Surfaced so
+    /// `whoami`-style endpoints can return the access-token
+    /// lifetime without re-decoding.
+    pub access_expires_at: u64,
 }
 
 /// Name of the admin UX session cookie set by the VTC's
-/// `POST /v1/auth/admin-login` flow (Phase 5 M5.2.3). When the
-/// `Authorization: Bearer` header is absent, [`AuthClaims`]
-/// falls back to reading a JWT out of this cookie. The cookie
-/// is set with `Path=/admin; SameSite=Strict; Secure; HttpOnly`
-/// so the public-website origin can't read it.
+/// `POST /v1/auth/admin-login` + `POST /v1/auth/passkey-login/finish`
+/// flows. When the `Authorization: Bearer` header is absent,
+/// [`AuthClaims`] falls back to reading a JWT out of this cookie.
+/// The cookie is set with `Path=/; SameSite=Strict; Secure; HttpOnly`
+/// so the browser sends it on `/v1/*` API calls; `HttpOnly` keeps
+/// JS on any path from reading it, and `SameSite=Strict` blocks
+/// cross-site CSRF.
 pub const ADMIN_SESSION_COOKIE: &str = "vtc_admin_session";
 
 impl<S: AuthState> FromRequestParts<S> for AuthClaims {
@@ -98,6 +108,8 @@ impl<S: AuthState> FromRequestParts<S> for AuthClaims {
             did: claims.sub,
             role,
             allowed_contexts: claims.contexts,
+            session_id: claims.session_id,
+            access_expires_at: claims.exp,
         })
     }
 }
@@ -138,6 +150,12 @@ impl AuthClaims {
             did: format!("cli:{channel}"),
             role: Role::Admin,
             allowed_contexts: Vec::new(),
+            // CLI synthesis bypasses the session store entirely.
+            // The sentinel session_id matches the DID format and
+            // `access_expires_at: 0` makes the synthesized claim
+            // visibly "no real expiry" to any log scraper.
+            session_id: format!("cli:{channel}"),
+            access_expires_at: 0,
         }
     }
 

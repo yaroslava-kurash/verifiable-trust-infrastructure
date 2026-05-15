@@ -251,6 +251,8 @@ mod tests {
             did: "did:key:zSuperAdmin".into(),
             role: Role::Admin,
             allowed_contexts: vec![],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
         }
     }
 
@@ -259,6 +261,8 @@ mod tests {
             did: "did:key:zCtxAdmin".into(),
             role: Role::Admin,
             allowed_contexts: contexts.iter().map(|s| s.to_string()).collect(),
+            session_id: "test-session".into(),
+            access_expires_at: 0,
         }
     }
 
@@ -470,6 +474,8 @@ mod tests {
             did: "did:key:zIni".into(),
             role: Role::Initiator,
             allowed_contexts: vec!["ctx1".into()],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
         };
         let err = validate_role_assignment(&initiator, &Role::Admin)
             .expect_err("non-admin must not assign admin");
@@ -482,6 +488,8 @@ mod tests {
             did: "did:key:zReader".into(),
             role: Role::Reader,
             allowed_contexts: vec!["ctx1".into()],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
         };
         for target in [
             Role::Admin,
@@ -502,6 +510,8 @@ mod tests {
             did: "did:key:zIni".into(),
             role: Role::Initiator,
             allowed_contexts: vec!["ctx1".into()],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
         };
         validate_role_assignment(&initiator, &Role::Reader).expect("initiator can assign reader");
         validate_role_assignment(&initiator, &Role::Application)

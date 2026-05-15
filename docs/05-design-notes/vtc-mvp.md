@@ -1,8 +1,11 @@
 # Spec: Verifiable Trust Community (VTC) — MVP
 
-Status: **Draft**
+Status: **Reference** — Phases 0–5 shipped. Section bodies retain
+"in Phase X this happens" wording for context; the actual code +
+operator behaviour is what's documented in `docs/03-vtc/`.
 Owner: Glenn Gore
-Last updated: 2026-05-11
+Last updated: 2026-05-11 (spec)
+Last reconciled: 2026-05-15 (this header)
 
 ## 1. Objective
 
@@ -115,29 +118,37 @@ Flow:
    the daemon.
 
 **Install token transport hardening.** The install URL is printed
-once to the operator's terminal. The token alone is *insufficient*
-to claim admin — `POST /v1/install/claim` requires a WebAuthn
-ceremony bound to the embedded nonce. Stolen tokens cannot be
-claimed without the operator's authenticator.
+once to the operator's terminal alongside a short **claim code**
+(10-char unambiguous alphanumeric, Argon2id-hashed at rest). The
+URL alone is *insufficient* to claim admin — `POST /v1/install/
+claim/start` requires the matching claim code plus a WebAuthn
+ceremony bound to the embedded nonce. Operators deliver URL and
+code through separate channels so a leak on one channel doesn't
+yield admin. Stolen tokens cannot be claimed without both the
+authenticator and the claim code.
 
 ### 4.2 Web install flow
 
 Admin UX opens the URL, then:
 
-1. **Claim** — `POST /v1/install/claim` with the WebAuthn challenge
-   response. VTC verifies the ceremony, the embedded nonce, and the
-   token's single-use carve-out (gated by a process-wide async
-   mutex; mirrors VTA's `MODE_B_LOCK` invariant — concurrent claims
-   are impossible). Carve-out closes atomically on first success.
-2. **Passkey ↔ DID binding.** WebAuthn enrolment is restricted to
-   Ed25519 (`COSEAlgorithmIdentifier = -8 EdDSA`) so the passkey
-   public key can be projected into a `did:key` directly. Operators
-   whose authenticators don't support Ed25519 see an install error
-   pointing at supported devices. The admin's DID is `did:key:<...>`
-   derived from the WebAuthn credential's public key, and the
-   install ceremony also requires the candidate DID to sign a server-
-   issued challenge — proving both the passkey and the DID-signing
-   path operate over the same keypair.
+1. **Claim** — the operator types the out-of-band claim code, then
+   the SPA submits `POST /v1/install/claim/start` (with
+   `claim_secret`) followed by `…/finish` with the WebAuthn
+   ceremony. VTC verifies the code against the row's Argon2id
+   hash, the per-row state machine ensures single-use (`Issued`
+   → `Consumed`), and a 5-minute claim window (gated by a
+   process-wide async mutex; mirrors VTA's `MODE_B_LOCK`
+   invariant) prevents concurrent ceremonies on the same `jti`.
+   Discriminated 401 codes — `claim_secret_required`,
+   `claim_secret_invalid` — surface in the SPA as targeted
+   messages.
+2. **Passkey ↔ DID binding.** The admin DID is carried in the
+   install token (not derived from the passkey), so any algorithm
+   the authenticator offers (ES256, RS256, EdDSA) works — platform
+   passkeys (iCloud Keychain, Windows Hello, Chrome) are
+   supported. The WebAuthn attestation proves the operator
+   controls the credential's key without any separate raw-bytes
+   binding signature.
 3. **Profile + policies** — operator enters community profile, picks
    a seed policy template, configures trust-registry behaviour.
 4. **Bootstrap** — `POST /v1/admin/bootstrap` writes the first ACL
@@ -200,9 +211,9 @@ flow.
 ### 4.5 Emergency bootstrap (recovery)
 
 If every admin passkey is lost: `vtc admin emergency-bootstrap` on
-a stopped daemon clears the local admin state and reopens the
-install carve-out, **gated on the operator's continued ability to
-authenticate as an admin against the VTA**.
+a stopped daemon clears the local admin state and mints a fresh
+install URL + claim code, **gated on the operator's continued
+ability to authenticate as an admin against the VTA**.
 
 **Amended 2026-05-12.** This section originally specified a
 mnemonic-gated recovery path; that was incompatible with §4.1's
@@ -226,11 +237,12 @@ Flow:
    granted admin role in `ctx`, the call succeeds.
 4. On VTA accept: locally clear every `Role::Admin` ACL entry,
    every `admin:<did>` sister record, every PasskeyUser /
-   credential mapping for those admins; reopen the install
-   carve-out; mint a fresh single-use install URL; persist a
-   one-shot `install:emergency_pending` marker so the daemon's
-   next boot emits an `EmergencyBootstrapInvoked` audit
-   envelope (operator hostname + timestamp).
+   credential mapping for those admins; mint a fresh single-use
+   install URL + Argon2id-hashed claim code (both printed to the
+   CLI for the operator to type at claim time); persist a one-
+   shot `install:emergency_pending` marker so the daemon's next
+   boot emits an `EmergencyBootstrapInvoked` audit envelope
+   (operator hostname + timestamp).
 5. On VTA reject (`AppError::Unauthorized`): no local state is
    touched. The recovery either re-runs after a successful
    `pnm acl create`, or the operator has lost admin access at
@@ -735,7 +747,8 @@ core MVP spec.
 
 ```
 # Install + admin
-POST   /v1/install/claim
+POST   /v1/install/claim/start
+POST   /v1/install/claim/finish
 POST   /v1/admin/bootstrap
 POST   /v1/admin/passkeys/register
 DELETE /v1/admin/passkeys/{credential_id}
@@ -1045,19 +1058,28 @@ front. Live-mode file-descriptor cache TTL configurable
 
 ### 12.2 Admin UX (`admin-ui` feature)
 
-The admin UX is a static SPA whose source lives **in-tree** at
-`vtc-service/admin-ui/`. The `include_dir!` macro bakes the
-directory at compile time; there is no out-of-tree dependency,
-no signed-tarball fetch, no `build.rs`, no `VTC_OFFLINE_BUILD=1`
-environment variable. `cargo build` produces a self-contained
-binary including the admin SPA.
+> **Amended (post-Phase 5):** the in-tree-React + `build.rs`
+> outcome captured in `vtc-service/admin-ui/README.md` is the
+> shipped reality. The original placeholder design + the Phase 5
+> deviation note below are retained for context; the live wire
+> shape is React + TypeScript + Vite, baked via `include_dir!`
+> from `vtc-service/admin-ui/dist/` after `build.rs` runs
+> `npm install && npm run build`. Air-gapped operators ship a
+> pre-built `dist/` and set `VTC_SKIP_ADMIN_UI_BUILD=1`.
 
-The Phase 5 MVP ships a plain HTML/CSS/JS placeholder (status
-panel + build-info readout). Operators wanting a richer UX
-replace the files under `vtc-service/admin-ui/` and rebuild —
-this trades the build-time `node` dependency for in-tree
-ownership of the SPA toolchain. See
-`vtc-service/admin-ui/README.md` for the contract.
+The admin UX is a SPA whose source lives **in-tree** at
+`vtc-service/admin-ui/`. The `include_dir!` macro bakes the
+directory at compile time; there is no out-of-tree dependency
+and no signed-tarball fetch. `cargo build` runs the SPA build via
+`build.rs` and produces a self-contained binary including the
+compiled SPA.
+
+The Phase 5 MVP started as a plain HTML/CSS/JS placeholder
+(status panel + build-info readout) but outgrew it during Phase 5
+itself as the plugin API + design-language pass landed. Operators
+wanting a different UX point `admin_ui.mode = "external"` at
+their own origin. See `vtc-service/admin-ui/README.md` for the
+contract.
 
 `admin_ui.mode = "embedded"` (default) serves the baked SPA at
 `routing.admin_ui.mount`. `mode = "external"` skips embedding;
@@ -1243,7 +1265,9 @@ the daemon is responsive and storage is reachable.
 
 Inherited from the workspace's standard guards: tower-governor on
 unauth routes (5 rps + 10 burst per IP); 1 MB global body cap;
-audience-isolated JWTs; install carve-out is single-use (§4).
+audience-isolated JWTs; install tokens are single-use per row
+(`Issued` → `Consumed`) and gated by an Argon2id-hashed
+out-of-band claim secret (§4).
 
 **Phase 5 note.** The §14.4 guards were aspirational until Phase 5
 M5.1.4 + M5.1.5 wired the actual `DefaultBodyLimit` + tower-governor

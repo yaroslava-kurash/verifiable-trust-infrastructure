@@ -167,7 +167,7 @@ pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), AppErr
     // either daemon's auth. The install URL attaches a passkey to this
     // DID for browser-based admin UI access.
     let admin_did = provision.admin_did().to_string();
-    let install_url =
+    let (install_url, claim_code) =
         mint_initial_install_token(&app_config, &bundle, &admin_did, &inputs.base_url).await?;
 
     // Surface the long-term admin key material so the operator can
@@ -195,9 +195,16 @@ pub async fn run_setup_wizard(config_path: Option<PathBuf>) -> Result<(), AppErr
     println!("\x1b[1mInstall URL (one-shot, 15 min TTL):\x1b[0m");
     println!("  {install_url}");
     println!();
+    println!("\x1b[1mClaim code (required at claim time):\x1b[0m");
+    println!("  {claim_code}");
+    println!();
+    println!("Both URL and code are needed to claim the passkey. The code is shown");
+    println!("only once and not persisted — copy it before continuing.");
+    println!();
     println!("Next steps:");
     println!("  1. Run `vtc` to start the daemon.");
-    println!("  2. Open the install URL in your browser to claim your admin passkey.");
+    println!("  2. Open the install URL in your browser.");
+    println!("  3. Enter the claim code when prompted, then register your passkey.");
     println!();
 
     Ok(())
@@ -878,19 +885,31 @@ fn build_app_config(
     secrets: SecretsConfig,
     messaging: Option<MessagingConfig>,
 ) -> Result<AppConfig, AppError> {
-    let toml_skeleton = format!(
-        r#"
-vtc_did = "{vtc_did}"
-vta_did = "{vta_did}"
-public_url = "{public_url}"
-
-[store]
-data_dir = "{}"
-"#,
-        data_dir.display(),
+    // Build the minimal config bones via a TOML `Table` (not
+    // `format!`). The earlier `format!(r#"vtc_did = "{vtc_did}""#)`
+    // round-trip would have produced malformed TOML if any of
+    // `vtc_did` / `vta_did` / `public_url` / `data_dir` happened to
+    // contain a `"` or `\` — `toml::Value::String` handles escaping
+    // for us. `data_dir` is the only required field on `AppConfig`
+    // (every other top-level setting has a `#[serde(default)]`),
+    // so we seed `store.data_dir` and let serde fill the rest.
+    use toml::Value;
+    let mut store_table = toml::map::Map::new();
+    store_table.insert(
+        "data_dir".into(),
+        Value::String(data_dir.to_string_lossy().into_owned()),
     );
-    let mut config: AppConfig =
-        toml::from_str(&toml_skeleton).map_err(|e| AppError::Config(format!("config: {e}")))?;
+    let mut root = toml::map::Map::new();
+    root.insert("store".into(), Value::Table(store_table));
+    let mut config: AppConfig = Value::Table(root)
+        .try_into()
+        .map_err(|e| AppError::Config(format!("config: {e}")))?;
+    // The fields that are operator-controlled strings — fill from
+    // arguments rather than the TOML literal so the values can't
+    // affect parsing.
+    config.vtc_did = Some(vtc_did);
+    config.vta_did = Some(vta_did);
+    config.public_url = Some(public_url);
     config.secrets = secrets;
     config.messaging = messaging;
     config.auth = AuthConfig {
@@ -957,7 +976,7 @@ async fn mint_initial_install_token(
     bundle: &VtcKeyBundle,
     admin_did: &str,
     base_url: &str,
-) -> Result<String, AppError> {
+) -> Result<(String, String), AppError> {
     let ed25519 = bundle.ed25519_private_bytes()?;
     let signer = InstallTokenSigner::from_master_seed(&*ed25519)?;
     let minted = mint_install_token(
@@ -966,6 +985,8 @@ async fn mint_initial_install_token(
         admin_did,
         INSTALL_TOKEN_DEFAULT_TTL_SECS,
     )?;
+    let claim_code = crate::install::claim_secret::generate();
+    let claim_code_hash = crate::install::claim_secret::hash(&claim_code)?;
 
     // Open the install keyspace to record the token. Open + close
     // in this short scope; the daemon opens its own at boot.
@@ -981,6 +1002,8 @@ async fn mint_initial_install_token(
             minted.cnonce_bytes,
             *minted.ephemeral_signing_key,
             exp,
+            Some(claim_code_hash),
+            Some(admin_did.to_string()),
         )
         .await?;
 
@@ -988,11 +1011,12 @@ async fn mint_initial_install_token(
     // up and runs the install-claim ceremony in-browser. The bare
     // `/install` path would hit the website fallback, which has no
     // install page. See `docs/03-vtc/getting-started.md` §"Step 3".
-    Ok(format!(
+    let install_url = format!(
         "{}/admin/install?token={}",
         base_url.trim_end_matches('/'),
         minted.jwt
-    ))
+    );
+    Ok((install_url, claim_code))
 }
 
 // ---------------------------------------------------------------------------

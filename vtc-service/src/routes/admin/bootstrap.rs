@@ -1,6 +1,6 @@
 //! `POST /v1/admin/bootstrap` — finalises the install flow by
-//! writing the first admin ACL entry, emitting `CommunityInstalled`,
-//! and closing the install carve-out.
+//! writing the first admin ACL entry and emitting
+//! `CommunityInstalled`.
 //!
 //! Implements **M0.6.2** of the VTC MVP Phase 0 plan. Consumes the
 //! setup-session JWT minted by `POST /v1/install/claim/finish`
@@ -9,9 +9,12 @@
 //! - `sub` — the candidate admin `did:key`
 //! - `install_jti` — the install-token `jti` it was derived from
 //!
-//! On success the install carve-out is **permanently closed**: no
-//! future install token can be minted or claimed without a deliberate
-//! `vtc admin emergency-bootstrap` (M0.10).
+//! The earlier "carve-out" lockdown is gone — additional admin
+//! invites mint their own per-row install tokens guarded by an
+//! out-of-band claim secret, so the bootstrap call no longer needs
+//! to slam the install surface shut afterwards. The
+//! `claim_finish` ceremony already consumed this row's token; this
+//! handler's job is just the first-admin ACL grant + audit event.
 
 use std::sync::Arc;
 
@@ -28,6 +31,7 @@ use vti_common::auth::passkey::store::get_passkey_user_by_did;
 use vti_common::error::AppError;
 
 use crate::acl::admin::{AdminEntry, RegisteredPasskey, store_admin_entry};
+use crate::community::{CommunityProfile, load_profile, store_profile};
 use crate::install::InstallTokenSigner;
 use crate::server::AppState;
 
@@ -85,26 +89,35 @@ pub async fn bootstrap(
     })?;
     let cred_id_hex = hex::encode(<_ as AsRef<[u8]>>::as_ref(first_cred.cred_id()));
 
+    // claim_finish already wrote the AdminEntry for the install
+    // credential. Only fall back to building one here if it's
+    // somehow missing — recovery against a partial install where
+    // the AdminEntry write failed but the PasskeyUser succeeded.
     let now = Utc::now();
-    let registered = RegisteredPasskey {
-        credential_id: cred_id_hex,
-        // The install ceremony has no operator label channel; the
-        // operator labels their device later via
-        // `PATCH /v1/admin/passkeys/{id}` (M0.6.3). Until then we
-        // ship a placeholder rather than an empty string so admin
-        // UIs don't render blank.
-        label: "install".into(),
-        transports: Vec::new(),
-        registered_at: now,
-        last_used_at: None,
-    };
-    let admin_entry = AdminEntry {
-        did: admin_did.clone(),
-        passkeys: vec![registered],
-        extensions: serde_json::Value::Null,
-        created_at: now,
-    };
-    store_admin_entry(&state.passkey_ks, &admin_entry).await?;
+    if crate::acl::admin::get_admin_entry(&state.passkey_ks, &admin_did)
+        .await?
+        .is_none()
+    {
+        let registered = RegisteredPasskey {
+            credential_id: cred_id_hex,
+            // The install ceremony has no operator label channel;
+            // the operator relabels their device later via
+            // `PATCH /v1/admin/passkeys/{id}` (M0.6.3). Until then
+            // we ship a placeholder rather than an empty string so
+            // admin UIs don't render blank.
+            label: "install".into(),
+            transports: Vec::new(),
+            registered_at: now,
+            last_used_at: None,
+        };
+        let admin_entry = AdminEntry {
+            did: admin_did.clone(),
+            passkeys: vec![registered],
+            extensions: serde_json::Value::Null,
+            created_at: now,
+        };
+        store_admin_entry(&state.passkey_ks, &admin_entry).await?;
+    }
 
     let acl_entry = VtcAclEntry {
         did: admin_did.clone(),
@@ -117,18 +130,20 @@ pub async fn bootstrap(
     };
     store_acl_entry(&state.acl_ks, &acl_entry).await?;
 
-    // Carve-out closes BEFORE the audit write so a crash between the
-    // two leaves the system locked down (an admin exists; further
-    // bootstraps are refused by the duplicate-admin check above).
-    state.install_store.close_carveout().await?;
+    // Initialise the singleton community profile if not already present.
+    // Per spec §5.1, `community_did` is immutable from this point — so
+    // we only lock it in when `vtc_did` is actually configured. The
+    // operator fills in `name` / `description` / etc. afterwards via
+    // `PUT /v1/community/profile`.
+    let vtc_did = state.config.read().await.vtc_did.clone();
+    if let Some(did) = vtc_did.as_deref()
+        && load_profile(&state.community_ks).await?.is_none()
+    {
+        let profile = CommunityProfile::new(did, "");
+        store_profile(&state.community_ks, &profile).await?;
+    }
 
-    let community_did = state
-        .config
-        .read()
-        .await
-        .vtc_did
-        .clone()
-        .unwrap_or_else(|| "did:key:vtc-uninitialised".to_string());
+    let community_did = vtc_did.unwrap_or_else(|| "did:key:vtc-uninitialised".to_string());
 
     let envelope = audit_writer
         .write(

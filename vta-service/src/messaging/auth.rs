@@ -32,6 +32,13 @@ pub async fn auth_from_message(
         did: base_did.to_string(),
         role,
         allowed_contexts,
+        // DIDComm auth is envelope-authenticated (authcrypt sender),
+        // not JWT-session-backed. Synthesise a sentinel session_id
+        // tagged with the transport + sender DID so log scraping can
+        // still distinguish DIDComm callers. `access_expires_at = 0`
+        // is the "no JWT expiry" sentinel — DIDComm doesn't carry one.
+        session_id: format!("didcomm:{base_did}"),
+        access_expires_at: 0,
     })
 }
 

@@ -93,6 +93,12 @@ affinidi-status-list = { workspace = true }
 # via affinidi-tdk; surfacing as a direct dep makes the
 # version pin visible to clippy + cargo-audit.
 reqwest = { workspace = true }
+# Constant-time byte comparison. Used by the CSRF + WebAuthn
+# challenge equality checks where naive `==` on a secret-derived
+# string leaks prefix-match length over the wire. Already in the
+# workspace dep tree via the crypto crates; surfacing here pins
+# the patch level for cargo-audit.
+subtle = "2.6.1"
 # `async-trait` — already a direct dep for emergency::VtaRecoveryProver;
 # Phase 3's TrustRegistryClient trait reuses it.
 # Lower-level DIDComm message types — needed for the join-request
@@ -152,6 +158,10 @@ url = { workspace = true, optional = true }
 # BIP-39 mnemonic parsing for `vtc admin emergency-bootstrap` (M0.10).
 # Same pin as `vta-service`.
 bip39 = "2"
+# Argon2id for hashing admin-invite claim secrets (the out-of-band
+# code the invitee types alongside the install URL). Same pin as
+# `vta-service`'s backup-password KDF.
+argon2 = "0.5"
 # Hostname capture for the `EmergencyBootstrapInvoked` audit event.
 gethostname = "1"
 # WebAuthn — used by `crate::webauthn` for Ed25519-only registration
