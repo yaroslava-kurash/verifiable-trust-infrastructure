@@ -14,6 +14,7 @@
 import { registerPlugin } from "@/plugin-api";
 import { Acl } from "@/plugins/acl";
 import { Dashboard } from "@/plugins/dashboard";
+import { JoinRequests } from "@/plugins/joinRequests";
 import { Members } from "@/plugins/members";
 import { Profile } from "@/plugins/profile";
 
@@ -24,6 +25,14 @@ export function registerBuiltinPlugins(): void {
     path: "/",
     icon: "🏠",
     reactComponent: Dashboard,
+  });
+
+  registerPlugin({
+    id: "join-requests",
+    label: "Join requests",
+    path: "/join-requests",
+    icon: "📥",
+    reactComponent: JoinRequests,
   });
 
   registerPlugin({
@@ -49,6 +58,4 @@ export function registerBuiltinPlugins(): void {
     icon: "🏷",
     reactComponent: Profile,
   });
-
-  // Later commits add: join-requests.
 }
