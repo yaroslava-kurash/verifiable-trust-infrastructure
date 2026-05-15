@@ -325,10 +325,10 @@ function InvitesPanel() {
   const revoke = useMutation({
     mutationFn: revokeInvite,
     onSuccess: (_, jti) => {
-      toast.push("success", `Revoked invite ${shortJti(jti)}`);
+      toast.push("success", `Removed invite ${shortJti(jti)}`);
       void queryClient.invalidateQueries({ queryKey: ["admin-invites"] });
     },
-    onError: (err) => toast.pushFromError(err, "Revoke failed"),
+    onError: (err) => toast.pushFromError(err, "Remove failed"),
   });
 
   const regenerate = useMutation({
@@ -498,29 +498,23 @@ function InvitesPanel() {
                     <button
                       type="button"
                       className="secondary destructive"
-                      disabled={
-                        revoke.isPending ||
-                        i.status === "consumed" ||
-                        i.status === "expired"
-                      }
+                      disabled={revoke.isPending}
                       title={
-                        i.status === "consumed"
-                          ? "Consumed invites cannot be revoked"
-                          : i.status === "expired"
-                            ? "Already expired — nothing to revoke"
-                            : undefined
+                        i.status === "issued"
+                          ? "Revoke this invite — the install URL stops working immediately"
+                          : "Remove this row from the list (the install URL is already inert)"
                       }
                       onClick={() => {
-                        if (
-                          window.confirm(
-                            `Revoke invite ${shortJti(i.jti)}? The install URL stops working immediately.`,
-                          )
-                        ) {
+                        const prompt =
+                          i.status === "issued"
+                            ? `Revoke invite ${shortJti(i.jti)}? The install URL stops working immediately.`
+                            : `Remove ${i.status} invite ${shortJti(i.jti)} from the list?`;
+                        if (window.confirm(prompt)) {
                           revoke.mutate(i.jti);
                         }
                       }}
                     >
-                      Revoke
+                      {i.status === "issued" ? "Revoke" : "Remove"}
                     </button>
                   </div>
                 </td>

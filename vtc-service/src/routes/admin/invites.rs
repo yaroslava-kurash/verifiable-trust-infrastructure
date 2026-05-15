@@ -265,16 +265,16 @@ pub async fn revoke_invite(
         .parse::<Uuid>()
         .map_err(|_| AppError::Validation(format!("invalid jti: '{jti_str}'")))?;
 
-    // Non-destructive check first — refuse `Consumed` rows so the
-    // audit trail of a successful consumption stays intact.
-    match state.install_store.get_token(&jti).await? {
-        None => return Err(AppError::NotFound(format!("no invite for jti {jti}"))),
-        Some(InstallTokenState::Consumed { .. }) => {
-            return Err(AppError::Conflict(format!(
-                "invite {jti} has already been consumed and cannot be revoked"
-            )));
-        }
-        Some(InstallTokenState::Issued { .. }) => {}
+    // Both live (`Issued`) and terminal (`Consumed` / expired
+    // `Issued`) rows are eligible for deletion. The original design
+    // refused `Consumed` "to preserve the audit trail" but the
+    // audit trail lives in the `CommunityInstalled` audit envelope,
+    // not in the install_store row — keeping spent rows around just
+    // accumulates clutter in the invites list with no security
+    // benefit. 404 only when the row is genuinely absent.
+    let existed = state.install_store.get_token(&jti).await?;
+    if existed.is_none() {
+        return Err(AppError::NotFound(format!("no invite for jti {jti}")));
     }
 
     if !state.install_store.delete_token(&jti).await? {
@@ -284,7 +284,7 @@ pub async fn revoke_invite(
         return Err(AppError::NotFound(format!("no invite for jti {jti}")));
     }
 
-    info!(%jti, "admin invite revoked via REST");
+    info!(%jti, "admin invite removed via REST");
 
     Ok((
         StatusCode::OK,
@@ -314,15 +314,10 @@ fn summarise(jti: Uuid, state: InstallTokenState, now: DateTime<Utc>) -> InviteS
                 consumed_at: None,
             }
         }
-        InstallTokenState::Consumed { at } => InviteSummary {
+        InstallTokenState::Consumed { at, admin_did } => InviteSummary {
             jti: jti.to_string(),
             status: InviteStatus::Consumed,
-            // Storage doesn't preserve the target DID across the
-            // `Issued` → `Consumed` transition (the row is
-            // overwritten). Operators investigating a consumed
-            // invite can cross-reference via the ACL or the
-            // `CommunityInstalled` audit envelope's `install_token_jti`.
-            target_did: None,
+            target_did: admin_did,
             expires_at: None,
             consumed_at: Some(at),
         },

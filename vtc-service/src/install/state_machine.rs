@@ -103,7 +103,16 @@ pub enum InstallTokenState {
     /// Ceremony succeeded — token is permanently spent. Retained for
     /// idempotency / audit; a later `start_claim` for the same JTI
     /// returns [`AppError::Unauthorized`].
-    Consumed { at: DateTime<Utc> },
+    Consumed {
+        at: DateTime<Utc>,
+        /// Target admin DID the invite was minted for, copied
+        /// forward from the `Issued` state on transition so the
+        /// invites-list UI can render the consumer alongside the
+        /// jti. `None` on legacy rows persisted before this field
+        /// landed; new consumptions always set it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        admin_did: Option<String>,
+    },
 }
 
 mod raw_bytes_b64 {
@@ -275,12 +284,12 @@ impl InstallTokenStore {
             InstallTokenState::Consumed { .. } => {
                 Err(AppError::Unauthorized("install token consumed".into()))
             }
-            InstallTokenState::Issued { exp, .. } => {
+            InstallTokenState::Issued { exp, admin_did, .. } => {
                 let now = Utc::now();
                 if now >= exp {
                     return Err(AppError::Unauthorized("install token expired".into()));
                 }
-                let next = InstallTokenState::Consumed { at: now };
+                let next = InstallTokenState::Consumed { at: now, admin_did };
                 self.ks.insert(key, &next).await
             }
         }
@@ -435,6 +444,27 @@ mod tests {
         // Second finish returns "consumed".
         let err = store.finish_claim(&jti).await.expect_err("second finish");
         assert!(matches!(err, AppError::Unauthorized(_)));
+    }
+
+    #[tokio::test]
+    async fn finish_preserves_admin_did_in_consumed_row() {
+        // Regression: the consumed-state row used to drop the target
+        // DID, which made the invites-list UI render "unknown" for
+        // every successfully-claimed invite. The DID must survive
+        // the Issued → Consumed transition so the audit surface
+        // stays useful.
+        let (store, _dir) = temp_store();
+        let jti = issue(&store, 600).await;
+        store.start_claim(&jti).await.unwrap();
+        store.finish_claim(&jti).await.unwrap();
+
+        let row = store.get_token(&jti).await.unwrap().expect("token row");
+        match row {
+            InstallTokenState::Consumed { admin_did, .. } => {
+                assert_eq!(admin_did.as_deref(), Some("did:key:zTestAdmin"));
+            }
+            _ => panic!("expected Consumed state after finish_claim"),
+        }
     }
 
     #[tokio::test]
