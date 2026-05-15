@@ -87,6 +87,37 @@ export const postJson = <T>(
     headers: extra.trustTask ? { "Trust-Task": extra.trustTask } : undefined,
   });
 
+export const putJson = <T>(
+  path: string,
+  body: unknown,
+  extra: { trustTask?: string } = {},
+): Promise<T> =>
+  request<T>(path, {
+    method: "PUT",
+    body: body === undefined ? undefined : JSON.stringify(body),
+    headers: extra.trustTask ? { "Trust-Task": extra.trustTask } : undefined,
+  });
+
+export const patchJson = <T>(
+  path: string,
+  body: unknown,
+  extra: { trustTask?: string } = {},
+): Promise<T> =>
+  request<T>(path, {
+    method: "PATCH",
+    body: body === undefined ? undefined : JSON.stringify(body),
+    headers: extra.trustTask ? { "Trust-Task": extra.trustTask } : undefined,
+  });
+
+export const deleteJson = <T>(
+  path: string,
+  extra: { trustTask?: string } = {},
+): Promise<T> =>
+  request<T>(path, {
+    method: "DELETE",
+    headers: extra.trustTask ? { "Trust-Task": extra.trustTask } : undefined,
+  });
+
 export const fetchHealth = (): Promise<HealthResponse> =>
   getJson<HealthResponse>("/health");
 
