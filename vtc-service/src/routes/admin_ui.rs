@@ -51,3 +51,51 @@ pub async fn build_info(State(state): State<AppState>) -> Json<BuildInfo> {
 pub async fn serve_spa(req: Request<Body>) -> Response {
     crate::admin_ui::serve(req).await
 }
+
+/// Manifest entry the admin SPA's plugin loader iterates over to
+/// dynamically `import()` each third-party plugin's entry module.
+///
+/// Mirrors the shape of `PluginManifest` in the admin SPA's
+/// `plugin-api.ts` for the fields a third-party plugin needs to
+/// register itself: `id`, `label`, `path`, `entry`, plus optional
+/// `icon` + `scopes`. The plugin's entry JS calls
+/// `window.VtcPluginApi.registerPlugin({...})` to wire its UI into
+/// the shell's router and nav.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginManifestEntry {
+    pub id: String,
+    pub label: String,
+    pub path: String,
+    /// Absolute URL the shell `import()`s. Daemon-served plugins
+    /// resolve to `/admin/plugins/<id>/<file>`.
+    pub entry: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginsManifestResponse {
+    pub plugins: Vec<PluginManifestEntry>,
+}
+
+/// `GET /admin/plugins.json` — third-party plugin manifest.
+///
+/// Today: returns an empty list. The endpoint exists so the shell's
+/// plugin loader is well-defined (fetch the manifest at boot,
+/// `import()` each entry) and so operators can layer in plugins via
+/// a future config knob (`admin_ui.plugin_dir`) that this handler
+/// reads. Until that knob lands, all operator-facing plugins are
+/// the built-ins baked into the SPA bundle.
+///
+/// Unauth on purpose: knowing which plugins are installed is not
+/// sensitive, and the shell fetches before login.
+pub async fn plugins_manifest(State(_state): State<AppState>) -> Json<PluginsManifestResponse> {
+    // TODO: when `admin_ui.plugin_dir` lands, walk that directory
+    // and read each `<plugin_id>/manifest.json`. Validate the id
+    // against a `^[a-z][a-z0-9-]*$` allow-list before serving.
+    Json(PluginsManifestResponse { plugins: vec![] })
+}

@@ -909,6 +909,7 @@ pub fn assemble_with_website(
     #[cfg(feature = "admin-ui")]
     let admin: Router<AppState> = Router::new()
         .route("/build-info.json", get(admin_ui::build_info))
+        .route("/plugins.json", get(admin_ui::plugins_manifest))
         .route("/", get(admin_ui::serve_spa))
         .route("/{*path}", get(admin_ui::serve_spa))
         .layer(from_fn(security_headers));

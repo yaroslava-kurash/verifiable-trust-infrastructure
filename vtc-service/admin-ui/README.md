@@ -74,15 +74,88 @@ npm run dev          # Vite dev server on :5173, proxies /v1 + /health
 Set `VITE_API_PROXY_TARGET=http://other-host:8200` to point at a
 different daemon.
 
-## Adding a plugin
+## Adding an in-tree plugin
 
-1. Create `src/plugins/<name>/` with an `index.tsx` exporting a
-   default React component.
-2. Add a `registerPlugin({...})` call in `src/plugins/index.ts`.
+1. Create `src/plugins/<name>/` (or `src/plugins/<name>.tsx` for
+   single-file plugins) with an exported React component.
+2. Add a `registerPlugin({...})` call in `src/plugins/index.ts`:
+   ```ts
+   registerPlugin({
+     id: "my-feature",
+     label: "My feature",
+     path: "/my-feature",
+     icon: "✨",
+     reactComponent: MyFeature,
+   });
+   ```
 3. `npm run build`. The new plugin's nav entry shows up next to the
    existing ones.
 
-Third-party plugin authors: drop your built JS bundle into
-`data/admin-ui/plugins/<id>/index.js` and register a manifest entry
-(loader implementation pending — see the `plugin-api.ts` doc
-comment for the planned wire shape).
+## Writing a third-party plugin
+
+Third-party plugins are framework-agnostic. The shell loads them by
+fetching `GET /admin/plugins.json`, dynamically `import()`ing each
+manifest entry, and the plugin's module body registers itself via
+`window.VtcPluginApi.registerPlugin(...)`. The plugin's UI lives
+inside a **custom element** the shell mounts when the plugin's
+route is active.
+
+### Manifest format
+
+`/admin/plugins.json` returns:
+
+```json
+{
+  "plugins": [
+    {
+      "id": "audit-viewer",
+      "label": "Audit viewer",
+      "path": "/audit",
+      "entry": "/admin/plugins/audit-viewer/index.js",
+      "icon": "📜",
+      "scopes": ["admin"]
+    }
+  ]
+}
+```
+
+Today the endpoint returns an empty list — the daemon doesn't yet
+read installed plugins from disk. The shape is stable so third-
+party plugins can target it.
+
+### Plugin module shape
+
+The `entry` URL must resolve to an ES module whose top-level body
+calls `registerPlugin` and defines the custom element. Any
+framework is fine — vanilla JS, Lit, Vue, Svelte — as long as the
+output is a single JS file that runs at module load:
+
+```js
+class MyFeatureElement extends HTMLElement {
+  connectedCallback() {
+    this.innerHTML = `<section class="page"><h2>My feature</h2></section>`;
+  }
+}
+customElements.define("vtc-plugin-my-feature", MyFeatureElement);
+
+window.VtcPluginApi.registerPlugin({
+  id: "my-feature",
+  label: "My feature",
+  path: "/my-feature",
+  elementTag: "vtc-plugin-my-feature",
+  icon: "✨",
+});
+```
+
+The shell stamps `<vtc-plugin-my-feature></vtc-plugin-my-feature>`
+into the page when the operator navigates to `/admin/my-feature`.
+The plugin owns everything inside that element.
+
+### Distributing a plugin
+
+Until the daemon-side plugin directory lands, plugin distribution
+is operator-managed: drop your built JS bundle somewhere the
+daemon already serves (or behind a reverse proxy), and pre-seed
+`/admin/plugins.json` via a forthcoming `admin_ui.plugin_dir`
+config knob. Until then, in-tree plugins (above) are the
+sanctioned path.

@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 
 import App from "@/App";
+import { loadThirdPartyPlugins } from "@/lib/plugin-loader";
 import { registerBuiltinPlugins } from "@/plugins";
 import "@/styles.css";
 
@@ -21,19 +22,32 @@ const queryClient = new QueryClient({
   },
 });
 
-// Built-in plugins (dashboard, members, ACL, etc.) register
-// themselves into the plugin registry at module load. Third-party
-// plugins land in a follow-up — the shell's `<PluginLoader />` will
-// fetch their manifests and dynamically `import()` their entry
-// modules.
+// Plugin discovery happens in two waves:
+//
+// 1. **Built-ins** (`src/plugins/*`) register synchronously at
+//    module load via `registerBuiltinPlugins()`. They ride along
+//    with the shell bundle.
+// 2. **Third-party plugins** are listed in `/admin/plugins.json`
+//    and dynamically `import()`-ed before render. Loading them
+//    before mount means the nav has the full plugin set by first
+//    paint — no flash of "missing tabs."
+//
+// Both paths converge on `window.VtcPluginApi.registerPlugin` /
+// the local `registerPlugin` import, so the shell renders from a
+// unified registry regardless of source.
 registerBuiltinPlugins();
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter basename="/admin">
-        <App />
-      </BrowserRouter>
-    </QueryClientProvider>
-  </StrictMode>,
-);
+// Avoid top-level await (esbuild's default target doesn't permit
+// it). Mount after the loader resolves; the registry is fully
+// populated by first paint either way.
+loadThirdPartyPlugins().finally(() => {
+  createRoot(document.getElementById("root")!).render(
+    <StrictMode>
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter basename="/admin">
+          <App />
+        </BrowserRouter>
+      </QueryClientProvider>
+    </StrictMode>,
+  );
+});
