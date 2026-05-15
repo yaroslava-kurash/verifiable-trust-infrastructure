@@ -655,6 +655,76 @@ impl From<Session> for SessionSummary {
     }
 }
 
+// ---------- GET /auth/whoami ----------
+
+/// Wire shape returned by `whoami`. Minimal: enough for the admin
+/// SPA's nav header to show "Signed in as …" with a role badge,
+/// without needing to decode the JWT client-side (the session
+/// cookie is HttpOnly).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhoamiResponse {
+    pub did: String,
+    pub role: String,
+    pub session_id: String,
+    pub access_expires_at: u64,
+    pub allowed_contexts: Vec<String>,
+}
+
+/// `GET /v1/auth/whoami` — returns the caller's identity claims
+/// pulled from the access token. Lets browser SPAs render a
+/// "signed in as" indicator without exposing the JWT to JS (the
+/// session cookie is HttpOnly by design).
+pub async fn whoami(auth: AuthClaims) -> Json<WhoamiResponse> {
+    Json(WhoamiResponse {
+        did: auth.did,
+        role: auth.role.to_string(),
+        session_id: auth.session_id,
+        access_expires_at: auth.access_expires_at,
+        allowed_contexts: auth.allowed_contexts,
+    })
+}
+
+// ---------- POST /auth/sign-out ----------
+
+/// `POST /v1/auth/sign-out` — revoke the caller's session and
+/// expire the cookie pair. The cookies' HttpOnly flag means JS
+/// can't clear them itself — only the server can issue
+/// `Set-Cookie: ...; Max-Age=0` to delete from the browser's jar.
+pub async fn sign_out(
+    auth: AuthClaims,
+    State(state): State<AppState>,
+) -> Result<axum::response::Response, AppError> {
+    use axum::http::HeaderValue;
+    use axum::http::header::SET_COOKIE;
+
+    let sessions = state.sessions_ks.clone();
+    // Best-effort delete — the session may already have been
+    // revoked from another tab. Either way we set the expiry
+    // cookies so this browser stops sending the stale JWT.
+    let _ = delete_session(&sessions, &auth.session_id).await;
+    info!(did = %auth.did, session_id = %auth.session_id, "sign-out");
+
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    let headers = response.headers_mut();
+    let session_clear = format!(
+        "{name}=; Path=/; Max-Age=0; SameSite=Strict; Secure; HttpOnly",
+        name = vti_common::auth::extractor::ADMIN_SESSION_COOKIE,
+    );
+    let csrf_clear = "csrf=; Path=/; Max-Age=0; SameSite=Strict; Secure".to_string();
+    headers.append(
+        SET_COOKIE,
+        HeaderValue::try_from(session_clear)
+            .map_err(|e| AppError::Internal(format!("invalid session cookie: {e}")))?,
+    );
+    headers.append(
+        SET_COOKIE,
+        HeaderValue::try_from(csrf_clear)
+            .map_err(|e| AppError::Internal(format!("invalid csrf cookie: {e}")))?,
+    );
+    Ok(response)
+}
+
 pub async fn session_list(
     _auth: ManageAuth,
     State(state): State<AppState>,

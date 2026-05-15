@@ -5,6 +5,7 @@ import { BrowserRouter } from "react-router-dom";
 
 import App from "@/App";
 import { loadThirdPartyPlugins } from "@/lib/plugin-loader";
+import { ToastProvider } from "@/lib/toast";
 import { registerBuiltinPlugins } from "@/plugins";
 import "@/styles.css";
 
@@ -44,9 +45,11 @@ loadThirdPartyPlugins().finally(() => {
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       <QueryClientProvider client={queryClient}>
-        <BrowserRouter basename="/admin">
-          <App />
-        </BrowserRouter>
+        <ToastProvider>
+          <BrowserRouter basename="/admin">
+            <App />
+          </BrowserRouter>
+        </ToastProvider>
       </QueryClientProvider>
     </StrictMode>,
   );

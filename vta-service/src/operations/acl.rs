@@ -384,6 +384,8 @@ mod tests {
             did: did.into(),
             role: Role::Admin,
             allowed_contexts: contexts.iter().map(|s| s.to_string()).collect(),
+            session_id: "test-session".into(),
+            access_expires_at: 0,
         }
     }
 
@@ -539,6 +541,8 @@ mod tests {
             did: "did:key:zSuper".into(),
             role: Role::Admin,
             allowed_contexts: Vec::new(),
+            session_id: "test-session".into(),
+            access_expires_at: 0,
         };
         let err = create_acl(
             &acl_ks,
@@ -567,6 +571,8 @@ mod tests {
             did: "did:key:zSuper".into(),
             role: Role::Admin,
             allowed_contexts: Vec::new(),
+            session_id: "test-session".into(),
+            access_expires_at: 0,
         };
         let body = create_acl(
             &acl_ks,
@@ -602,6 +608,8 @@ mod tests {
             did: "did:key:zSuper".into(),
             role: Role::Admin,
             allowed_contexts: Vec::new(),
+            session_id: "test-session".into(),
+            access_expires_at: 0,
         };
         let err = update_acl(
             &acl_ks,

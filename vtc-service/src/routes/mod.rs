@@ -2,6 +2,7 @@ mod acl;
 mod admin;
 #[cfg(feature = "admin-ui")]
 mod admin_ui;
+mod audit;
 mod auth;
 mod community;
 mod config;
@@ -128,6 +129,18 @@ fn build_api_chain(_routing: &RoutingConfig) -> Router<AppState> {
     let auth_sessions_revoke =
         TrustTask::new("https://trusttasks.org/openvtc/vtc/auth/legacy/sessions/revoke/1.0")
             .expect("static Trust-Task URL");
+    // Browser-SPA convenience surface: `whoami` + `sign-out`. Both
+    // are bound to the access-token session (cookie or bearer);
+    // sign-out revokes the server-side session and clears the
+    // browser cookies in one trip.
+    let auth_whoami = TrustTask::new("https://trusttasks.org/openvtc/vtc/auth/whoami/1.0")
+        .expect("static Trust-Task URL");
+    let auth_sign_out = TrustTask::new("https://trusttasks.org/openvtc/vtc/auth/sign-out/1.0")
+        .expect("static Trust-Task URL");
+    // Audit log list — super-admin only since envelopes carry
+    // plaintext DIDs.
+    let audit_list = TrustTask::new("https://trusttasks.org/openvtc/vtc/audit/list/1.0")
+        .expect("static Trust-Task URL");
     let config_manage =
         TrustTask::new("https://trusttasks.org/openvtc/vtc/config/legacy/manage/1.0")
             .expect("static Trust-Task URL");
@@ -332,6 +345,10 @@ fn build_api_chain(_routing: &RoutingConfig) -> Router<AppState> {
             delete(auth::revoke_session),
             auth_sessions_revoke,
         )
+        .route_with_task("/auth/whoami", get(auth::whoami), auth_whoami)
+        .route_with_task("/auth/sign-out", post(auth::sign_out), auth_sign_out)
+        // Audit log read (super-admin only).
+        .route_with_task("/audit", get(audit::list_audit), audit_list)
         // Config
         .route_with_task(
             "/config",

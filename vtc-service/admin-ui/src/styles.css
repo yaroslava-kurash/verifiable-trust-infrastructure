@@ -8,6 +8,17 @@
   --text: light-dark(#1f2328, #e6edf3);
   --text-dim: light-dark(#656d76, #8b949e);
   --accent: light-dark(#0969da, #2f81f7);
+  --focus-ring: light-dark(#0969da, #58a6ff);
+}
+
+/* Visible focus rings for keyboard navigation. The browser default
+   varies by platform; we pin it so admins driving the console with a
+   keyboard always see where focus is. `:focus-visible` keeps mouse
+   users from getting an extra ring on click. */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: 0.25rem;
 }
 
 * {
@@ -26,10 +37,79 @@ body {
   min-height: 100vh;
 }
 
+.nav-toggle {
+  display: none;
+  position: fixed;
+  top: 0.75rem;
+  left: 0.75rem;
+  z-index: 1100;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  padding: 0.4rem 0.6rem;
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+
 .nav {
   background: var(--bg-elev);
   border-right: 1px solid var(--border);
   padding: 1rem 0;
+}
+
+/* ── Mobile / narrow viewport ──────────────────────────────────── */
+
+@media (max-width: 720px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .nav-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .nav {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(280px, 80vw);
+    transform: translateX(-100%);
+    transition: transform 160ms ease-out;
+    z-index: 1000;
+    overflow-y: auto;
+    box-shadow: 0 0 20px rgba(0, 0, 0, 0.25);
+  }
+
+  .layout.nav-open .nav {
+    transform: translateX(0);
+  }
+
+  .layout.nav-open::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 900;
+  }
+
+  .content {
+    padding: 4rem 1rem 2rem;
+  }
+
+  /* Data tables wrap horribly when squeezed; give them a scroll
+     container so the columns don't squash. */
+  .data-table {
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+
+  .truncate {
+    max-width: 10rem;
+  }
 }
 
 .nav header {
@@ -42,6 +122,56 @@ body {
   font-size: 1rem;
   margin: 0;
   letter-spacing: 0.02em;
+}
+
+.session-badge {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85em;
+}
+
+.session-did {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.session-did code {
+  background: var(--bg);
+  padding: 0.1rem 0.4rem;
+  border-radius: 0.25rem;
+  border: 1px solid var(--border);
+  display: inline-block;
+  font-size: 0.85em;
+  width: max-content;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-badge button.link {
+  text-align: left;
+  margin-top: 0.25rem;
+  margin-bottom: 0;
+}
+
+.nav-footer {
+  padding: 0.75rem 1.25rem;
+  border-top: 1px solid var(--border);
+  margin-top: 1rem;
+}
+
+.nav-footer button.link {
+  margin: 0;
+  font-size: 0.85em;
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
 }
 
 .nav ul {
@@ -408,4 +538,84 @@ button.secondary.destructive:hover:not(:disabled) {
      in-browser editor. */
   max-height: 32rem;
   overflow: auto;
+}
+
+.audit-detail {
+  /* Mirrors `.rego-source` — bounded so a verbose envelope
+     doesn't push the next row off the page. */
+  max-height: 24rem;
+  overflow: auto;
+  margin: 0;
+}
+
+/* ── Toast viewport ─────────────────────────────────────────────── */
+
+.toast-viewport {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: min(28rem, calc(100vw - 2rem));
+  z-index: 2147483000;
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: 0.375rem;
+  padding: 0.6rem 0.75rem;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+  animation: toast-in 120ms ease-out;
+}
+
+@keyframes toast-in {
+  from {
+    transform: translateY(0.5rem);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.toast-success {
+  border-left-color: light-dark(#1a7f37, #3fb950);
+}
+
+.toast-info {
+  border-left-color: var(--accent);
+}
+
+.toast-error {
+  border-left-color: light-dark(#d1242f, #f85149);
+}
+
+.toast-message {
+  flex: 1 1 auto;
+  font-size: 0.95em;
+  word-wrap: break-word;
+}
+
+.toast-dismiss {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.25rem;
+}
+
+.toast-dismiss:hover {
+  color: var(--text);
 }

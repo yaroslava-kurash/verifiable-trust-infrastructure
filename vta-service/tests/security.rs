@@ -13,6 +13,8 @@ mod auth_enforcement {
             did: "did:key:z6MkAdmin".into(),
             role: Role::Admin,
             allowed_contexts: vec![],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
         }
     }
 
@@ -21,6 +23,8 @@ mod auth_enforcement {
             did: "did:key:z6MkScoped".into(),
             role: Role::Admin,
             allowed_contexts: vec!["ctx1".into()],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
         }
     }
 
@@ -29,6 +33,8 @@ mod auth_enforcement {
             did: "did:key:z6MkInit".into(),
             role: Role::Initiator,
             allowed_contexts: vec![],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
         }
     }
 
@@ -37,6 +43,8 @@ mod auth_enforcement {
             did: "did:key:z6MkApp".into(),
             role: Role::Application,
             allowed_contexts: vec!["ctx1".into()],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
         }
     }
 
@@ -103,6 +111,8 @@ mod auth_enforcement {
             did: "did:key:z6MkReader".into(),
             role: Role::Reader,
             allowed_contexts: vec!["ctx1".into()],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
         }
     }
 
@@ -111,6 +121,8 @@ mod auth_enforcement {
             did: "did:key:z6MkMonitor".into(),
             role: Role::Monitor,
             allowed_contexts: vec![],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
         }
     }
 
@@ -210,6 +222,8 @@ mod acl_validation {
             did: "did:key:z6MkCaller".into(),
             role,
             allowed_contexts: vec![],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
         }
     }
 

@@ -31,6 +31,14 @@ pub struct AuthClaims {
     pub did: String,
     pub role: Role,
     pub allowed_contexts: Vec<String>,
+    /// JWT `session_id` claim. Carried through so handlers can do
+    /// session-targeted operations (sign-out, refresh-token
+    /// rotation) without re-decoding the JWT.
+    pub session_id: String,
+    /// JWT `exp` claim — Unix-second expiry. Surfaced so
+    /// `whoami`-style endpoints can return the access-token
+    /// lifetime without re-decoding.
+    pub access_expires_at: u64,
 }
 
 /// Name of the admin UX session cookie set by the VTC's
@@ -100,6 +108,8 @@ impl<S: AuthState> FromRequestParts<S> for AuthClaims {
             did: claims.sub,
             role,
             allowed_contexts: claims.contexts,
+            session_id: claims.session_id,
+            access_expires_at: claims.exp,
         })
     }
 }
@@ -140,6 +150,12 @@ impl AuthClaims {
             did: format!("cli:{channel}"),
             role: Role::Admin,
             allowed_contexts: Vec::new(),
+            // CLI synthesis bypasses the session store entirely.
+            // The sentinel session_id matches the DID format and
+            // `access_expires_at: 0` makes the synthesized claim
+            // visibly "no real expiry" to any log scraper.
+            session_id: format!("cli:{channel}"),
+            access_expires_at: 0,
         }
     }
 

@@ -75,6 +75,40 @@ export interface PluginManifest {
 // into a particular slot.
 const registry: PluginManifest[] = [];
 
+// Subscribers notified when the registry changes. The shell uses
+// this to rerender the nav when a third-party plugin lands after
+// boot (operator added a new plugin and hit "Reload plugins" or the
+// window-focus auto-refetch picked it up).
+type ChangeListener = () => void;
+const listeners = new Set<ChangeListener>();
+
+function notify(): void {
+  for (const l of listeners) {
+    try {
+      l();
+    } catch (err) {
+      console.error("[plugin-api] change listener threw:", err);
+    }
+  }
+}
+
+/**
+ * Subscribe to registry changes. Returns an unsubscribe function.
+ * Listeners are called synchronously after each successful
+ * `registerPlugin`.
+ */
+export function subscribePlugins(listener: ChangeListener): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+/** Read-only snapshot of registered plugin IDs. */
+export function getPluginIds(): ReadonlySet<string> {
+  return new Set(registry.map((p) => p.id));
+}
+
 /**
  * Plugin registration entry point.
  *
@@ -98,6 +132,7 @@ export function registerPlugin(manifest: PluginManifest): void {
     throw new Error(`plugin '${manifest.id}' is already registered`);
   }
   registry.push(manifest);
+  notify();
 }
 
 /** Snapshot of currently-registered plugins, in registration order. */
@@ -116,13 +151,22 @@ export function findPluginByPath(path: string): PluginManifest | undefined {
 // Expose the API on `window` so script-tag plugin loaders can use
 // it without `import`. Type-safe surface for in-tree plugins (above);
 // untyped surface here for third parties.
+//
+// Capability additions (the optional `toast` slot below, and any
+// future additive surfaces) attach to the same object — third-party
+// plugins probe with `if (window.VtcPluginApi?.toast)` so they keep
+// working against shells that predate the capability.
+import type { ToastApi } from "@/lib/toast";
+
 declare global {
   interface Window {
     VtcPluginApi?: {
       registerPlugin: typeof registerPlugin;
+      /** Toast surface, populated by `ToastProvider` at App mount. */
+      toast?: ToastApi;
     };
   }
 }
 if (typeof window !== "undefined") {
-  window.VtcPluginApi = { registerPlugin };
+  window.VtcPluginApi = { registerPlugin, ...(window.VtcPluginApi ?? {}) };
 }

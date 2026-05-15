@@ -158,18 +158,33 @@ export const fetchHealth = (): Promise<HealthResponse> =>
 export const fetchBuildInfo = (): Promise<BuildInfo> =>
   getJsonExempt<BuildInfo>("/admin/build-info.json");
 
-/** Probe: returns true if the current cookie session is valid. */
-export async function isSignedIn(): Promise<boolean> {
+/** Shape returned by `GET /v1/auth/whoami`. */
+export interface WhoamiResponse {
+  did: string;
+  role: string;
+  sessionId: string;
+  accessExpiresAt: number;
+  allowedContexts: string[];
+}
+
+const WHOAMI_TASK = "https://trusttasks.org/openvtc/vtc/auth/whoami/1.0";
+const SIGN_OUT_TASK = "https://trusttasks.org/openvtc/vtc/auth/sign-out/1.0";
+
+/** Fetch the caller's session identity. Throws on 401/403. */
+export const fetchWhoami = (): Promise<WhoamiResponse> =>
+  getJson<WhoamiResponse>("/v1/auth/whoami", { trustTask: WHOAMI_TASK });
+
+/** Revoke the server-side session and clear browser cookies. */
+export const signOut = (): Promise<void> =>
+  postJson<void>("/v1/auth/sign-out", undefined, { trustTask: SIGN_OUT_TASK });
+
+/** Probe: returns the whoami response when signed in, null when not. */
+export async function probeSession(): Promise<WhoamiResponse | null> {
   try {
-    await getJson<unknown>("/v1/community/profile", {
-      trustTask: "https://trusttasks.org/openvtc/vtc/community/profile/manage/1.0",
-    });
-    return true;
+    return await fetchWhoami();
   } catch (e) {
     const err = e as ApiError;
-    if (err.status === 401 || err.status === 403) return false;
-    // Anything else (e.g. 404 "profile not initialised") still means
-    // the auth layer let us through. Treat as signed-in.
-    return true;
+    if (err.status === 401 || err.status === 403) return null;
+    throw e;
   }
 }

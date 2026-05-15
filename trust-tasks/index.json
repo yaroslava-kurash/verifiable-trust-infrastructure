@@ -42,6 +42,24 @@
       "rest": "DELETE /v1/auth/sessions/{session_id}"
     },
     {
+      "id": "https://trusttasks.org/openvtc/vtc/auth/whoami/1.0",
+      "status": "Draft",
+      "path": "auth/whoami/1.0",
+      "rest": "GET /v1/auth/whoami"
+    },
+    {
+      "id": "https://trusttasks.org/openvtc/vtc/auth/sign-out/1.0",
+      "status": "Draft",
+      "path": "auth/sign-out/1.0",
+      "rest": "POST /v1/auth/sign-out"
+    },
+    {
+      "id": "https://trusttasks.org/openvtc/vtc/audit/list/1.0",
+      "status": "Draft",
+      "path": "audit/list/1.0",
+      "rest": "GET /v1/audit"
+    },
+    {
       "id": "https://trusttasks.org/openvtc/vtc/config/legacy/manage/1.0",
       "status": "Draft",
       "path": "config/legacy/manage/1.0",

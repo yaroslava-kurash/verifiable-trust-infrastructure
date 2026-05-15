@@ -947,6 +947,8 @@ mod tests {
                 did: "did:key:z6MkTestAdmin".to_string(),
                 role: Role::Admin,
                 allowed_contexts: vec![], // empty = super admin
+                session_id: "test-session".into(),
+                access_expires_at: 0,
             }
         }
     }

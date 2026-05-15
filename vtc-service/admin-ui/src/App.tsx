@@ -1,15 +1,37 @@
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { NavLink, Route, Routes, useLocation } from "react-router-dom";
 
-import { getPlugins } from "@/plugin-api";
+import { getPlugins, subscribePlugins } from "@/plugin-api";
 import { PluginHost } from "@/components/PluginHost";
-import { isSignedIn } from "@/lib/api";
+import { probeSession, signOut, WhoamiResponse } from "@/lib/api";
+import { reloadThirdPartyPlugins } from "@/lib/plugin-loader";
+import { useToast } from "@/lib/toast";
 import { Install } from "@/pages/Install";
 import { Login } from "@/pages/Login";
 
+/**
+ * Hook that subscribes to plugin-registry changes and returns the
+ * current snapshot. The registry is mutated by `registerPlugin`; this
+ * hook forces a rerender whenever that fires so the shell's nav
+ * picks up third-party plugins added after boot.
+ */
+function usePlugins() {
+  const [, force] = useState(0);
+  useEffect(() => subscribePlugins(() => force((n) => n + 1)), []);
+  return getPlugins();
+}
+
 export default function App() {
-  const plugins = getPlugins();
+  const allPlugins = usePlugins();
   const { pathname } = useLocation();
+  const [navOpen, setNavOpen] = useState(false);
+
+  // Auto-close the mobile nav on route change — operators expect the
+  // sheet to dismiss after they pick a destination.
+  useEffect(() => {
+    setNavOpen(false);
+  }, [pathname]);
 
   // `/install` is the unauthenticated install-claim ceremony. It
   // renders standalone (no nav, no plugins) because the operator
@@ -18,28 +40,71 @@ export default function App() {
     return <Install />;
   }
 
-  // Probe the session cookie by hitting an authenticated endpoint.
-  // 200 → signed in; 401/403 → show Login. The probe re-runs when
-  // the Login page invalidates the query after a successful sign-in.
+  // Probe the session cookie via `/v1/auth/whoami`. Returning the
+  // claim payload (not just a bool) lets the navbar show "Signed
+  // in as …" without a second round trip. 401/403 → show Login.
   const probe = useQuery({
-    queryKey: ["session-probe"],
-    queryFn: isSignedIn,
+    queryKey: ["whoami"],
+    queryFn: probeSession,
     staleTime: 30_000,
     retry: false,
   });
 
+  // Once the operator is signed in, watch for new plugins:
+  // - On window focus (operator alt-tabs back after dropping a
+  //   plugin into the daemon's plugin_dir).
+  // - On a short interval as a fallback for browsers that don't
+  //   reliably fire `focus`.
+  // Already-loaded plugins are skipped by `reloadThirdPartyPlugins`,
+  // so the cost on the steady-state path is one HEAD-like JSON fetch.
+  useEffect(() => {
+    if (!probe.data) return;
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      void reloadThirdPartyPlugins();
+    };
+    window.addEventListener("focus", tick);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", tick);
+    };
+  }, [probe.data]);
+
   if (probe.isPending) {
     return <SignInLoading />;
   }
-  if (probe.data !== true) {
+  if (!probe.data) {
     return <Login />;
   }
 
+  // A "super admin" is Admin role with no context restrictions.
+  // Scope-filtered plugins surface server errors as 403s anyway, but
+  // hiding them from the nav keeps the UX coherent.
+  const isSuperAdmin =
+    probe.data.role === "admin" && probe.data.allowedContexts.length === 0;
+  const plugins = allPlugins.filter((p) => {
+    if (!p.scopes || p.scopes.length === 0) return true;
+    if (p.scopes.includes("super-admin")) return isSuperAdmin;
+    return true;
+  });
+
   return (
-    <div className="layout">
-      <aside className="nav">
+    <div className={`layout${navOpen ? " nav-open" : ""}`}>
+      <button
+        type="button"
+        className="nav-toggle"
+        aria-label={navOpen ? "Close navigation" : "Open navigation"}
+        aria-expanded={navOpen}
+        aria-controls="admin-nav"
+        onClick={() => setNavOpen((v) => !v)}
+      >
+        {navOpen ? "✕" : "☰"} Menu
+      </button>
+      <aside className="nav" id="admin-nav">
         <header>
           <h1>VTC Admin</h1>
+          <SessionBadge whoami={probe.data} />
         </header>
         <ul>
           {plugins.map((p) => (
@@ -53,6 +118,7 @@ export default function App() {
             </li>
           ))}
         </ul>
+        <ReloadPluginsButton />
       </aside>
       <main className="content">
         <Routes>
@@ -73,6 +139,83 @@ export default function App() {
       </main>
     </div>
   );
+}
+
+function SessionBadge({ whoami }: { whoami: WhoamiResponse }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const signOutMut = useMutation({
+    mutationFn: signOut,
+    onError: (err) => toast.pushFromError(err, "Sign-out failed"),
+    onSettled: () => {
+      // Whether the server-side revoke succeeded or not, the
+      // cookies are gone now — force the query cache to refetch
+      // so the shell flips back to the Login screen.
+      qc.invalidateQueries({ queryKey: ["whoami"] });
+    },
+  });
+
+  return (
+    <div className="session-badge">
+      <div className="session-did" title={whoami.did}>
+        <span className="muted">Signed in as</span>
+        <code>{shortDid(whoami.did)}</code>
+      </div>
+      <button
+        type="button"
+        className="link"
+        onClick={() => signOutMut.mutate()}
+        disabled={signOutMut.isPending}
+        aria-busy={signOutMut.isPending}
+      >
+        {signOutMut.isPending ? "Signing out…" : "Sign out"}
+      </button>
+    </div>
+  );
+}
+
+function ReloadPluginsButton() {
+  const toast = useToast();
+  const [pending, setPending] = useState(false);
+  return (
+    <div className="nav-footer">
+      <button
+        type="button"
+        className="link"
+        disabled={pending}
+        aria-busy={pending}
+        title="Refetch /admin/plugins.json and import any new plugins"
+        onClick={async () => {
+          setPending(true);
+          try {
+            const added = await reloadThirdPartyPlugins();
+            if (added.length === 0) {
+              toast.push("info", "No new plugins.");
+            } else {
+              toast.push(
+                "success",
+                `Loaded ${added.length} new plugin${added.length === 1 ? "" : "s"}: ${added.join(", ")}`,
+              );
+            }
+          } catch (err) {
+            toast.pushFromError(err, "Plugin reload failed");
+          } finally {
+            setPending(false);
+          }
+        }}
+      >
+        {pending ? "Reloading plugins…" : "Reload plugins"}
+      </button>
+    </div>
+  );
+}
+
+function shortDid(did: string): string {
+  // `did:key:z6Mk…XYZ` — keep the method prefix readable + the
+  // last 6 chars so two distinct admins are still visually
+  // distinguishable in the navbar.
+  if (did.length <= 20) return did;
+  return `${did.slice(0, 12)}…${did.slice(-6)}`;
 }
 
 function SignInLoading() {

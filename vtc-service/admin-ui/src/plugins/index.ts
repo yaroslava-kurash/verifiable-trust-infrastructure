@@ -13,12 +13,14 @@
 
 import { registerPlugin } from "@/plugin-api";
 import { Acl } from "@/plugins/acl";
+import { Audit } from "@/plugins/audit";
 import { Dashboard } from "@/plugins/dashboard";
 import { JoinRequests } from "@/plugins/joinRequests";
 import { Members } from "@/plugins/members";
 import { MyPasskeys } from "@/plugins/myPasskeys";
 import { Policies } from "@/plugins/policies";
 import { Profile } from "@/plugins/profile";
+import { Sessions } from "@/plugins/sessions";
 
 export function registerBuiltinPlugins(): void {
   registerPlugin({
@@ -75,5 +77,23 @@ export function registerBuiltinPlugins(): void {
     path: "/my-passkeys",
     icon: "🔑",
     reactComponent: MyPasskeys,
+  });
+
+  registerPlugin({
+    id: "sessions",
+    label: "Sessions",
+    path: "/sessions",
+    icon: "🪪",
+    reactComponent: Sessions,
+    scopes: ["super-admin"],
+  });
+
+  registerPlugin({
+    id: "audit",
+    label: "Audit trail",
+    path: "/audit",
+    icon: "📜",
+    reactComponent: Audit,
+    scopes: ["super-admin"],
   });
 }

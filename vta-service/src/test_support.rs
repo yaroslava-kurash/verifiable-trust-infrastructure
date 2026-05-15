@@ -149,6 +149,8 @@ pub fn super_admin_claims() -> AuthClaims {
         did: "did:key:zTestAdmin".into(),
         role: Role::Admin,
         allowed_contexts: Vec::new(),
+        session_id: "test-session".into(),
+        access_expires_at: 0,
     }
 }
 

@@ -13,6 +13,16 @@
 // plugin fails to load — bad URL, syntax error, registerPlugin
 // rejected — the loader logs and continues; one broken plugin
 // shouldn't take down the rest of the console.
+//
+// `reloadThirdPartyPlugins()` is the live-reload entry point: it
+// refetches the manifest, imports any IDs that aren't already
+// registered, and returns the IDs it added. Existing plugins are
+// left untouched — re-importing them would either no-op (browser
+// module cache) or throw on the duplicate `registerPlugin` call.
+// True hot-reload of a *modified* plugin's JS still requires a page
+// refresh; that's an acceptable v1 limitation.
+
+import { getPluginIds } from "@/plugin-api";
 
 interface ManifestEntry {
   id: string;
@@ -27,32 +37,30 @@ interface ManifestResponse {
   plugins: ManifestEntry[];
 }
 
-export async function loadThirdPartyPlugins(): Promise<void> {
-  let manifest: ManifestResponse;
+async function fetchManifest(): Promise<ManifestResponse | null> {
   try {
-    const res = await fetch("/admin/plugins.json", { credentials: "include" });
+    const res = await fetch("/admin/plugins.json", {
+      credentials: "include",
+      cache: "no-store",
+    });
     if (!res.ok) {
       console.warn(
         `[plugin-loader] /admin/plugins.json returned ${res.status} — no third-party plugins loaded`,
       );
-      return;
+      return null;
     }
-    manifest = (await res.json()) as ManifestResponse;
+    return (await res.json()) as ManifestResponse;
   } catch (err) {
     console.warn("[plugin-loader] failed to fetch plugin manifest:", err);
-    return;
+    return null;
   }
+}
 
-  if (!Array.isArray(manifest.plugins) || manifest.plugins.length === 0) {
-    return;
-  }
-
-  for (const entry of manifest.plugins) {
+async function importEntries(entries: ManifestEntry[]): Promise<string[]> {
+  const added: string[] = [];
+  for (const entry of entries) {
     if (!isValidEntry(entry)) {
-      console.warn(
-        `[plugin-loader] skipping malformed manifest entry:`,
-        entry,
-      );
+      console.warn(`[plugin-loader] skipping malformed manifest entry:`, entry);
       continue;
     }
     try {
@@ -62,6 +70,7 @@ export async function loadThirdPartyPlugins(): Promise<void> {
       // itself; the side effect (registry mutation) is what
       // matters.
       await import(/* @vite-ignore */ entry.entry);
+      added.push(entry.id);
     } catch (err) {
       console.error(
         `[plugin-loader] plugin '${entry.id}' failed to load from ${entry.entry}:`,
@@ -69,6 +78,29 @@ export async function loadThirdPartyPlugins(): Promise<void> {
       );
     }
   }
+  return added;
+}
+
+export async function loadThirdPartyPlugins(): Promise<void> {
+  const manifest = await fetchManifest();
+  if (!manifest?.plugins?.length) return;
+  await importEntries(manifest.plugins);
+}
+
+/**
+ * Refetch the manifest and import any plugins that aren't already
+ * registered. Returns the list of newly-imported plugin IDs (empty
+ * if nothing changed). Safe to call on a timer or on focus —
+ * already-loaded plugins are skipped, so cost on the steady-state
+ * path is just one manifest fetch.
+ */
+export async function reloadThirdPartyPlugins(): Promise<string[]> {
+  const manifest = await fetchManifest();
+  if (!manifest?.plugins?.length) return [];
+  const known = getPluginIds();
+  const fresh = manifest.plugins.filter((e) => !known.has(e.id));
+  if (fresh.length === 0) return [];
+  return importEntries(fresh);
 }
 
 function isValidEntry(entry: unknown): entry is ManifestEntry {

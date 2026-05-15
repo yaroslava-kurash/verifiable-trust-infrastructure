@@ -14,6 +14,7 @@ import {
 } from "@tanstack/react-query";
 
 import { deleteJson, getJson, postJson } from "@/lib/api";
+import { useToast } from "@/lib/toast";
 
 const TRUST_TASK_MANAGE =
   "https://trusttasks.org/openvtc/vtc/acl/legacy/manage/1.0";
@@ -65,6 +66,7 @@ export function Acl() {
   const [contextFilter, setContextFilter] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const queryClient = useQueryClient();
+  const toast = useToast();
 
   const query = useQuery({
     queryKey: ["acl", contextFilter],
@@ -74,9 +76,11 @@ export function Acl() {
 
   const revoke = useMutation({
     mutationFn: deleteAcl,
-    onSuccess: () => {
+    onSuccess: (_, did) => {
+      toast.push("success", `Revoked ACL entry for ${did}`);
       void queryClient.invalidateQueries({ queryKey: ["acl"] });
     },
+    onError: (err) => toast.pushFromError(err, "Revoke failed"),
   });
 
   return (
@@ -117,13 +121,6 @@ export function Acl() {
         <section className="card error">
           <h3>Failed to load ACL</h3>
           <p>{(query.error as Error).message}</p>
-        </section>
-      )}
-
-      {revoke.error && (
-        <section className="card error">
-          <h3>Revoke failed</h3>
-          <p>{(revoke.error as Error).message}</p>
         </section>
       )}
 
@@ -217,10 +214,15 @@ function CreateAclForm({ onSuccess }: { onSuccess: () => void }) {
   const [label, setLabel] = useState("");
   const [contexts, setContexts] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
+  const toast = useToast();
 
   const mutation = useMutation({
     mutationFn: createAcl,
-    onSuccess,
+    onSuccess: (entry) => {
+      toast.push("success", `Created ACL entry for ${entry.did}`);
+      onSuccess();
+    },
+    onError: (err) => toast.pushFromError(err, "Create failed"),
   });
 
   const onSubmit = (e: React.FormEvent) => {
@@ -284,13 +286,6 @@ function CreateAclForm({ onSuccess }: { onSuccess: () => void }) {
           onChange={(e) => setExpiresAt(e.target.value)}
         />
       </Field>
-
-      {mutation.error && (
-        <section className="card error">
-          <h3>Create failed</h3>
-          <p>{(mutation.error as Error).message}</p>
-        </section>
-      )}
 
       <div className="form-actions">
         <button type="submit" className="primary" disabled={mutation.isPending}>
