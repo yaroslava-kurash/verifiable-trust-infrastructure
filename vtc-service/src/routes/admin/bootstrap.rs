@@ -28,6 +28,7 @@ use vti_common::auth::passkey::store::get_passkey_user_by_did;
 use vti_common::error::AppError;
 
 use crate::acl::admin::{AdminEntry, RegisteredPasskey, store_admin_entry};
+use crate::community::{CommunityProfile, load_profile, store_profile};
 use crate::install::InstallTokenSigner;
 use crate::server::AppState;
 
@@ -117,18 +118,25 @@ pub async fn bootstrap(
     };
     store_acl_entry(&state.acl_ks, &acl_entry).await?;
 
+    // Initialise the singleton community profile if not already present.
+    // Per spec §5.1, `community_did` is immutable from this point — so
+    // we only lock it in when `vtc_did` is actually configured. The
+    // operator fills in `name` / `description` / etc. afterwards via
+    // `PUT /v1/community/profile`.
+    let vtc_did = state.config.read().await.vtc_did.clone();
+    if let Some(did) = vtc_did.as_deref()
+        && load_profile(&state.community_ks).await?.is_none()
+    {
+        let profile = CommunityProfile::new(did, "");
+        store_profile(&state.community_ks, &profile).await?;
+    }
+
     // Carve-out closes BEFORE the audit write so a crash between the
     // two leaves the system locked down (an admin exists; further
     // bootstraps are refused by the duplicate-admin check above).
     state.install_store.close_carveout().await?;
 
-    let community_did = state
-        .config
-        .read()
-        .await
-        .vtc_did
-        .clone()
-        .unwrap_or_else(|| "did:key:vtc-uninitialised".to_string());
+    let community_did = vtc_did.unwrap_or_else(|| "did:key:vtc-uninitialised".to_string());
 
     let envelope = audit_writer
         .write(

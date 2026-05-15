@@ -391,6 +391,30 @@ pub async fn run(
         supervisor: detect_supervisor(),
     };
 
+    // One-shot heal for daemons bootstrapped before the install
+    // ceremony initialised the community profile. New installs land
+    // here as a no-op because `POST /v1/admin/bootstrap` now writes
+    // the profile up front; legacy daemons get a one-time create so
+    // `GET /v1/community/profile` stops 404'ing in the admin UI.
+    // `community_did` is immutable per spec §5.1, so we only heal
+    // when `vtc_did` is actually configured.
+    if let Some(vtc_did) = state.config.read().await.vtc_did.clone()
+        && crate::community::load_profile(&state.community_ks)
+            .await
+            .ok()
+            .flatten()
+            .is_none()
+    {
+        let profile = crate::community::CommunityProfile::new(&vtc_did, "");
+        match crate::community::store_profile(&state.community_ks, &profile).await {
+            Ok(()) => info!(
+                %vtc_did,
+                "initialised default community profile at boot (heal)",
+            ),
+            Err(e) => warn!(error = %e, "failed to initialise default community profile at boot"),
+        }
+    }
+
     // M3.2: boot-time health probe. Best-effort — daemon
     // proceeds regardless. Subsequent periodic probes track
     // the live state.

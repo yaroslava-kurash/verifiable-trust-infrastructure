@@ -313,6 +313,19 @@ async fn full_install_to_bootstrap_succeeds() {
         }
         other => panic!("expected CommunityInstalled, got {other:?}"),
     }
+
+    // Community profile singleton is initialised with the configured
+    // VTC DID. Spec §5.1: `community_did` is immutable, set at install
+    // time. The form-editable fields (name, description, etc.) default
+    // to empty so the operator fills them in via the admin UI.
+    let profile = vtc_service::community::load_profile(&fix.state.community_ks)
+        .await
+        .unwrap()
+        .expect("community profile initialised at bootstrap");
+    assert_eq!(profile.community_did, "did:webvh:vtc.example.com:abc");
+    assert_eq!(profile.name, "");
+    assert_eq!(profile.description, "");
+    assert_eq!(profile.language, "en");
 }
 
 // ---------------------------------------------------------------------------
