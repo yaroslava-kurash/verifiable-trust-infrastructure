@@ -35,7 +35,8 @@ use vti_common::error::AppError;
 use crate::acl::{VtcAclEntry, VtcRole, get_acl_entry, store_acl_entry};
 use crate::auth::session::now_epoch;
 use crate::install::{
-    INSTALL_TOKEN_DEFAULT_TTL_SECS, InstallTokenSigner, InstallTokenState, mint_install_token,
+    INSTALL_TOKEN_DEFAULT_TTL_SECS, InstallTokenSigner, InstallTokenState, claim_secret,
+    mint_install_token,
 };
 use crate::server::AppState;
 
@@ -69,6 +70,12 @@ pub struct CreateInviteResponse {
     /// Clickable install URL pointing at the admin SPA's install
     /// page on this daemon's `public_url`.
     pub install_url: String,
+    /// Out-of-band claim code the invitee must type alongside the
+    /// URL to complete the ceremony. Returned **once** — the
+    /// daemon stores only its Argon2id hash, so a lost code
+    /// requires re-minting the invite. The operator delivers URL
+    /// and code through separate channels.
+    pub claim_code: String,
     /// Wall-clock expiry for the token.
     pub expires_at: DateTime<Utc>,
     /// `true` when the call also wrote the ACL entry; `false` when
@@ -173,6 +180,8 @@ pub async fn create_invite(
     };
 
     let minted = mint_install_token(signer.as_ref(), &vtc_did, &req.did, ttl_seconds)?;
+    let claim_code = claim_secret::generate();
+    let claim_code_hash = claim_secret::hash(&claim_code)?;
     let expires_at = Utc::now() + ChronoDuration::seconds(ttl_seconds as i64);
     state
         .install_store
@@ -181,6 +190,7 @@ pub async fn create_invite(
             minted.cnonce_bytes,
             *minted.ephemeral_signing_key,
             expires_at,
+            Some(claim_code_hash),
         )
         .await?;
 
@@ -202,6 +212,7 @@ pub async fn create_invite(
         Json(CreateInviteResponse {
             jti: minted.jti.to_string(),
             install_url,
+            claim_code,
             expires_at,
             acl_entry_created,
         }),

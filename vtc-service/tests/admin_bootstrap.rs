@@ -5,11 +5,10 @@
 //! ceremony. Verifies the M0.6.2 acceptance criteria:
 //!
 //! - Happy path writes an `Admin` ACL entry, an `AdminEntry`, and a
-//!   `CommunityInstalled` audit envelope; closes the install carve-out.
+//!   `CommunityInstalled` audit envelope.
 //! - Bootstrap-after-bootstrap is rejected (409).
-//! - Replay of the same setup-session JWT is rejected after carve-out
-//!   closes (the JWT signature stays valid; the duplicate-admin check
-//!   catches it as 409).
+//! - Replay of the same setup-session JWT is rejected by the
+//!   duplicate-admin check (409).
 //! - Tampered / wrong-audience / expired tokens are rejected as 401.
 //! - 503 when install signer or audit writer aren't configured.
 
@@ -183,6 +182,7 @@ async fn mint_token_and_record(fix: &Fixture, ttl_seconds: u64) -> String {
             minted.cnonce_bytes,
             *minted.ephemeral_signing_key,
             exp,
+            None,
         )
         .await
         .unwrap();
@@ -289,9 +289,6 @@ async fn full_install_to_bootstrap_succeeds() {
         .unwrap()
         .expect("admin entry persisted");
     assert_eq!(admin_entry.passkeys.len(), 1);
-
-    // Carve-out closed.
-    assert!(fix.install_store.carveout_is_closed().await.unwrap());
 
     // Audit envelope present and references the install jti.
     // `envelope_storage_key` formats as `<rfc3339-timestamp>:<event_id>`

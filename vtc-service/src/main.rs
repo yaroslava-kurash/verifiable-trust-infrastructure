@@ -252,9 +252,12 @@ async fn run_emergency_bootstrap_cli(
     eprintln!("Install URL (one-shot, 15 min TTL):");
     eprintln!("   {}", outcome.install_url);
     eprintln!();
+    eprintln!("Claim code (required at claim time — keep separate from the URL):");
+    eprintln!("   {}", outcome.claim_code);
+    eprintln!();
     eprintln!(
-        "Restart the daemon (`vtc`) so the `EmergencyBootstrapInvoked` audit event lands\n\
-         and the install carve-out reopens. Then claim the install URL with a fresh passkey."
+        "Restart the daemon (`vtc`) so the `EmergencyBootstrapInvoked` audit event lands.\n\
+         Then claim the install URL with a fresh passkey, supplying the claim code above."
     );
     Ok(())
 }
@@ -332,6 +335,8 @@ async fn run_invite_cli(
     }
 
     let minted = mint_install_token(&signer, &vtc_did, &admin_did, ttl_seconds)?;
+    let claim_code = vtc_service::install::claim_secret::generate();
+    let claim_code_hash = vtc_service::install::claim_secret::hash(&claim_code)?;
     let exp = Utc::now() + ChronoDuration::seconds(ttl_seconds as i64);
     install_store
         .record_issued(
@@ -339,6 +344,7 @@ async fn run_invite_cli(
             minted.cnonce_bytes,
             *minted.ephemeral_signing_key,
             exp,
+            Some(claim_code_hash),
         )
         .await?;
 
@@ -363,6 +369,12 @@ async fn run_invite_cli(
     eprintln!();
     eprintln!("Install URL (one-shot):");
     eprintln!("   {install_url}");
+    eprintln!();
+    eprintln!("Claim code (deliver via a SEPARATE channel — Signal/SMS/in person):");
+    eprintln!("   {claim_code}");
+    eprintln!();
+    eprintln!("Both the URL and the claim code are required to claim the passkey.");
+    eprintln!("A leaked URL alone is not enough — the daemon refuses claim without the code.");
     eprintln!();
     eprintln!("Restart the daemon (`vtc`) before claiming — the daemon must be running");
     eprintln!("for the browser to reach `/admin/install` and `/v1/install/claim/*`.");

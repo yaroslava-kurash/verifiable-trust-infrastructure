@@ -137,11 +137,15 @@ curl http://localhost:8200/health
 Open the install URL from step 1 in a browser. The page is the
 embedded admin SPA serving the install flow:
 
-1. The browser registers a passkey via WebAuthn (Ed25519-only — the
-   passkey public key is projected directly into a `did:key`).
-2. The SPA submits `POST /v1/install/claim/start` and `…/finish`.
-3. The carve-out closes atomically on first success.
-4. The page prints the admin DID + a one-time admin credential
+1. You type the **claim code** the wizard printed alongside the URL.
+   URL + code travel through separate channels — a leaked URL alone
+   doesn't grant admin.
+2. The browser registers a passkey via WebAuthn (any algorithm the
+   authenticator supports — ES256, RS256, EdDSA all work).
+3. The SPA submits `POST /v1/install/claim/start` and `…/finish`.
+4. The token row transitions `Issued` → `Consumed` and can never be
+   redeemed again.
+5. The page prints the admin DID + a one-time admin credential
    bundle.
 
 Import the bundle into the CNM CLI:

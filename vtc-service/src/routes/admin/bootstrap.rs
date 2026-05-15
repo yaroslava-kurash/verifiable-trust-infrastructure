@@ -1,6 +1,6 @@
 //! `POST /v1/admin/bootstrap` — finalises the install flow by
-//! writing the first admin ACL entry, emitting `CommunityInstalled`,
-//! and closing the install carve-out.
+//! writing the first admin ACL entry and emitting
+//! `CommunityInstalled`.
 //!
 //! Implements **M0.6.2** of the VTC MVP Phase 0 plan. Consumes the
 //! setup-session JWT minted by `POST /v1/install/claim/finish`
@@ -9,9 +9,12 @@
 //! - `sub` — the candidate admin `did:key`
 //! - `install_jti` — the install-token `jti` it was derived from
 //!
-//! On success the install carve-out is **permanently closed**: no
-//! future install token can be minted or claimed without a deliberate
-//! `vtc admin emergency-bootstrap` (M0.10).
+//! The earlier "carve-out" lockdown is gone — additional admin
+//! invites mint their own per-row install tokens guarded by an
+//! out-of-band claim secret, so the bootstrap call no longer needs
+//! to slam the install surface shut afterwards. The
+//! `claim_finish` ceremony already consumed this row's token; this
+//! handler's job is just the first-admin ACL grant + audit event.
 
 use std::sync::Arc;
 
@@ -139,11 +142,6 @@ pub async fn bootstrap(
         let profile = CommunityProfile::new(did, "");
         store_profile(&state.community_ks, &profile).await?;
     }
-
-    // Carve-out closes BEFORE the audit write so a crash between the
-    // two leaves the system locked down (an admin exists; further
-    // bootstraps are refused by the duplicate-admin check above).
-    state.install_store.close_carveout().await?;
 
     let community_did = vtc_did.unwrap_or_else(|| "did:key:vtc-uninitialised".to_string());
 

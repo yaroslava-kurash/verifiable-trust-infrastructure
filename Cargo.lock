@@ -9263,6 +9263,7 @@ dependencies = [
  "affinidi-status-list",
  "affinidi-tdk",
  "affinidi-vc",
+ "argon2",
  "async-trait",
  "aws-config",
  "aws-sdk-secretsmanager",

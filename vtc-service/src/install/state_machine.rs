@@ -1,4 +1,4 @@
-//! Install carve-out state machine.
+//! Install-token state machine.
 //!
 //! Implements **M0.4.2** of the VTC MVP Phase 0 plan. Adopts the
 //! claim-window pattern from `webvh-common::server::passkey::store`
@@ -12,12 +12,16 @@
 //!
 //! - `install:token:<jti>` → [`InstallTokenState`] (`Issued` /
 //!   `Consumed`).
-//! - `install:carveout:closed` → presence marker (any non-empty
-//!   value) — once written, every subsequent state transition
-//!   that would issue or claim a token rejects with the carve-out-
-//!   closed variant.
 //!
-//! Concurrency: every transition takes [`super::INSTALL_CARVEOUT_LOCK`]
+//! Every install token (first-admin setup and ongoing
+//! `vtc admin invite`s) carries the same row shape. The earlier
+//! "carve-out" global lockdown is gone — invites are now gated by
+//! the per-row [`InstallTokenState::Issued::claim_secret_hash`]
+//! out-of-band secret + the existing `AdminAuth` on the
+//! invite-mint endpoint. See `claim_secret` module for the hashing
+//! helpers.
+//!
+//! Concurrency: every transition takes [`super::INSTALL_TOKEN_LOCK`]
 //! before reading + writing state. The lock serialises across
 //! Axum tasks so two `start_claim` calls on the same JTI cannot
 //! both pass the "claimed_at not set within the window" check.
@@ -27,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use super::INSTALL_CARVEOUT_LOCK;
+use super::INSTALL_TOKEN_LOCK;
 use crate::error::AppError;
 use vti_common::store::KeyspaceHandle;
 
@@ -43,7 +47,6 @@ use vti_common::store::KeyspaceHandle;
 pub const ENROLLMENT_CLAIM_WINDOW_SECS: u64 = 300;
 
 const TOKEN_KEY_PREFIX: &[u8] = b"install:token:";
-const CARVEOUT_CLOSED_KEY: &[u8] = b"install:carveout:closed";
 const EMERGENCY_PENDING_KEY: &[u8] = b"install:emergency_pending";
 
 fn token_key(jti: &Uuid) -> Vec<u8> {
@@ -80,6 +83,15 @@ pub enum InstallTokenState {
         /// ceremony lock. `None` means no ceremony has been
         /// initiated since issuance.
         claimed_at: Option<DateTime<Utc>>,
+        /// Argon2id PHC hash of the out-of-band claim code the
+        /// invitee must supply at claim-start. `None` for
+        /// pre-claim-secret rows (legacy data and first-admin
+        /// install tokens minted by older builds); the route
+        /// handler treats `None` as "no secret required" so the
+        /// migration is friction-free. New invites always set
+        /// this. See `super::claim_secret`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        claim_secret_hash: Option<String>,
     },
     /// Ceremony succeeded — token is permanently spent. Retained for
     /// idempotency / audit; a later `start_claim` for the same JTI
@@ -114,6 +126,11 @@ mod raw_bytes_b64 {
 pub struct StartClaimOutcome {
     pub ephemeral_signing_key: Zeroizing<[u8; 32]>,
     pub cnonce: [u8; 32],
+    /// Stored Argon2id PHC hash of the out-of-band claim code.
+    /// `None` for legacy / no-secret rows; the route handler
+    /// MUST verify the operator-supplied code against this when
+    /// present, before issuing the WebAuthn challenge.
+    pub claim_secret_hash: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -132,29 +149,32 @@ impl InstallTokenStore {
         Self { ks }
     }
 
-    /// Persist a freshly-minted token's state. Refuses if the
-    /// carve-out is closed — once admin bootstrap completes, no
-    /// further install tokens may be issued.
+    /// Persist a freshly-minted token's state.
+    ///
+    /// `claim_secret_hash` is the Argon2id PHC string for the
+    /// out-of-band code the invitee must supply at claim-start.
+    /// Pass `None` to mint a "URL-only" install token — kept for
+    /// the legacy first-admin path and tests; new code paths
+    /// always supply a hash.
     ///
     /// Caller must hold no other lock on the install keyspace; we
-    /// take [`INSTALL_CARVEOUT_LOCK`] internally for the
-    /// check-then-write sequence.
+    /// take [`INSTALL_TOKEN_LOCK`] internally for the write so
+    /// concurrent mints + transitions on the same JTI serialise.
     pub async fn record_issued(
         &self,
         jti: &Uuid,
         cnonce: [u8; 32],
         ephemeral_signing_key: [u8; 32],
         exp: DateTime<Utc>,
+        claim_secret_hash: Option<String>,
     ) -> Result<(), AppError> {
-        let _guard = INSTALL_CARVEOUT_LOCK.lock().await;
-        if self.carveout_is_closed_raw().await? {
-            return Err(AppError::Conflict("install carve-out is closed".into()));
-        }
+        let _guard = INSTALL_TOKEN_LOCK.lock().await;
         let state = InstallTokenState::Issued {
             exp,
             cnonce,
             ephemeral_signing_key,
             claimed_at: None,
+            claim_secret_hash,
         };
         self.ks.insert(token_key(jti), &state).await
     }
@@ -162,20 +182,19 @@ impl InstallTokenStore {
     /// Begin a WebAuthn ceremony on `jti`.
     ///
     /// Returns `Ok(StartClaimOutcome)` if the token is `Issued`,
-    /// not expired, the carve-out is open, and no concurrent
-    /// ceremony has set `claimed_at` within the
-    /// [`ENROLLMENT_CLAIM_WINDOW_SECS`] window. Sets `claimed_at`
-    /// as a side-effect so a second concurrent caller sees the
-    /// in-progress lock.
+    /// not expired, and no concurrent ceremony has set `claimed_at`
+    /// within the [`ENROLLMENT_CLAIM_WINDOW_SECS`] window. Sets
+    /// `claimed_at` as a side-effect so a second concurrent caller
+    /// sees the in-progress lock. The `StartClaimOutcome` carries
+    /// the stored `claim_secret_hash` (if any) so the route
+    /// handler can verify the operator-supplied claim code before
+    /// issuing the WebAuthn challenge.
     ///
     /// Errors with [`AppError::Unauthorized`] on every other state
     /// — the structured detail stays out of the response for
     /// defence in depth.
     pub async fn start_claim(&self, jti: &Uuid) -> Result<StartClaimOutcome, AppError> {
-        let _guard = INSTALL_CARVEOUT_LOCK.lock().await;
-        if self.carveout_is_closed_raw().await? {
-            return Err(AppError::Unauthorized("install carve-out is closed".into()));
-        }
+        let _guard = INSTALL_TOKEN_LOCK.lock().await;
 
         let key = token_key(jti);
         let state: Option<InstallTokenState> = self.ks.get(key.clone()).await?;
@@ -191,6 +210,7 @@ impl InstallTokenStore {
                 cnonce,
                 ephemeral_signing_key,
                 claimed_at,
+                claim_secret_hash,
             } => {
                 let now = Utc::now();
                 if now >= exp {
@@ -209,11 +229,13 @@ impl InstallTokenStore {
                     cnonce,
                     ephemeral_signing_key,
                     claimed_at: Some(now),
+                    claim_secret_hash: claim_secret_hash.clone(),
                 };
                 self.ks.insert(key, &next).await?;
                 Ok(StartClaimOutcome {
                     cnonce,
                     ephemeral_signing_key: Zeroizing::new(ephemeral_signing_key),
+                    claim_secret_hash,
                 })
             }
         }
@@ -227,7 +249,7 @@ impl InstallTokenStore {
     /// **only** after the WebAuthn assertion validates against the
     /// `cnonce` and the candidate DID signature has been verified.
     pub async fn finish_claim(&self, jti: &Uuid) -> Result<(), AppError> {
-        let _guard = INSTALL_CARVEOUT_LOCK.lock().await;
+        let _guard = INSTALL_TOKEN_LOCK.lock().await;
         let key = token_key(jti);
         let state: Option<InstallTokenState> = self.ks.get(key.clone()).await?;
         let state =
@@ -245,43 +267,6 @@ impl InstallTokenStore {
                 self.ks.insert(key, &next).await
             }
         }
-    }
-
-    /// Permanently close the install carve-out. Once written, every
-    /// subsequent [`Self::record_issued`] returns
-    /// [`AppError::Conflict`], and every [`Self::start_claim`] /
-    /// [`Self::finish_claim`] returns [`AppError::Unauthorized`].
-    ///
-    /// Idempotent — calling on an already-closed store is a no-op.
-    pub async fn close_carveout(&self) -> Result<(), AppError> {
-        let _guard = INSTALL_CARVEOUT_LOCK.lock().await;
-        self.ks
-            .insert_raw(CARVEOUT_CLOSED_KEY.to_vec(), b"1".to_vec())
-            .await
-    }
-
-    /// Inspect carve-out status. Read-only; doesn't take the lock.
-    pub async fn carveout_is_closed(&self) -> Result<bool, AppError> {
-        self.carveout_is_closed_raw().await
-    }
-
-    async fn carveout_is_closed_raw(&self) -> Result<bool, AppError> {
-        Ok(self
-            .ks
-            .get_raw(CARVEOUT_CLOSED_KEY.to_vec())
-            .await?
-            .is_some())
-    }
-
-    /// **Destructive.** Clear the `install:carveout:closed` marker
-    /// so a fresh `record_issued` + `start_claim` round can take
-    /// place. Called by `vtc admin emergency-bootstrap` (M0.10)
-    /// after verifying the operator holds the master-seed mnemonic.
-    /// Never called from request-handling code paths — the carve-out
-    /// is one-shot from the daemon's perspective.
-    pub async fn reopen_carveout(&self) -> Result<(), AppError> {
-        let _guard = INSTALL_CARVEOUT_LOCK.lock().await;
-        self.ks.remove(CARVEOUT_CLOSED_KEY.to_vec()).await
     }
 
     /// Stamp the `install:emergency_pending` marker carrying the
@@ -353,7 +338,7 @@ impl InstallTokenStore {
     /// the row is not `Consumed`. Returns `true` if a row was
     /// removed.
     pub async fn delete_token(&self, jti: &Uuid) -> Result<bool, AppError> {
-        let _guard = INSTALL_CARVEOUT_LOCK.lock().await;
+        let _guard = INSTALL_TOKEN_LOCK.lock().await;
         let key = token_key(jti);
         let existed: Option<InstallTokenState> = self.ks.get(key.clone()).await?;
         if existed.is_some() {
@@ -396,10 +381,18 @@ mod tests {
     }
 
     async fn issue(store: &InstallTokenStore, ttl: i64) -> Uuid {
+        issue_with_hash(store, ttl, None).await
+    }
+
+    async fn issue_with_hash(
+        store: &InstallTokenStore,
+        ttl: i64,
+        claim_secret_hash: Option<String>,
+    ) -> Uuid {
         let jti = Uuid::new_v4();
         let exp = Utc::now() + Duration::seconds(ttl);
         store
-            .record_issued(&jti, [0xAB; 32], [0xCD; 32], exp)
+            .record_issued(&jti, [0xAB; 32], [0xCD; 32], exp, claim_secret_hash)
             .await
             .unwrap();
         jti
@@ -481,35 +474,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn close_carveout_blocks_subsequent_issuance() {
+    async fn claim_secret_hash_is_surfaced_in_outcome() {
         let (store, _dir) = temp_store();
-        store.close_carveout().await.unwrap();
-        assert!(store.carveout_is_closed().await.unwrap());
-
-        let jti = Uuid::new_v4();
-        let exp = Utc::now() + Duration::seconds(600);
-        let err = store
-            .record_issued(&jti, [0u8; 32], [0u8; 32], exp)
-            .await
-            .expect_err("conflict");
-        assert!(matches!(err, AppError::Conflict(_)));
+        let hash = "$argon2id$test-stub".to_string();
+        let jti = issue_with_hash(&store, 600, Some(hash.clone())).await;
+        let outcome = store.start_claim(&jti).await.unwrap();
+        assert_eq!(outcome.claim_secret_hash.as_deref(), Some(hash.as_str()));
     }
 
     #[tokio::test]
-    async fn close_carveout_blocks_subsequent_start_claim() {
+    async fn no_hash_when_token_minted_without_secret() {
         let (store, _dir) = temp_store();
         let jti = issue(&store, 600).await;
-        store.close_carveout().await.unwrap();
-        let err = store.start_claim(&jti).await.expect_err("closed");
-        assert!(matches!(err, AppError::Unauthorized(_)));
-    }
-
-    #[tokio::test]
-    async fn close_carveout_is_idempotent() {
-        let (store, _dir) = temp_store();
-        store.close_carveout().await.unwrap();
-        store.close_carveout().await.unwrap();
-        assert!(store.carveout_is_closed().await.unwrap());
+        let outcome = store.start_claim(&jti).await.unwrap();
+        assert!(outcome.claim_secret_hash.is_none());
     }
 
     #[tokio::test]
@@ -530,9 +508,33 @@ mod tests {
             cnonce: [0xAB; 32],
             ephemeral_signing_key: [0xCD; 32],
             claimed_at: Some(Utc::now()),
+            claim_secret_hash: Some("$argon2id$stub".into()),
         };
         let s = serde_json::to_string(&state).unwrap();
         let back: InstallTokenState = serde_json::from_str(&s).unwrap();
         assert_eq!(back, state);
+    }
+
+    #[tokio::test]
+    async fn issued_row_without_hash_field_deserializes() {
+        // Legacy rows persisted before the claim-secret field
+        // existed must still parse — `serde(default)` on the
+        // new field makes this work.
+        let legacy_json = serde_json::json!({
+            "status": "issued",
+            "exp": "2099-01-01T00:00:00Z",
+            "cnonce": "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqo",
+            "ephemeral_signing_key": "zc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc0",
+            "claimed_at": null
+        });
+        let state: InstallTokenState = serde_json::from_value(legacy_json).unwrap();
+        match state {
+            InstallTokenState::Issued {
+                claim_secret_hash, ..
+            } => {
+                assert!(claim_secret_hash.is_none());
+            }
+            _ => panic!("expected Issued"),
+        }
     }
 }

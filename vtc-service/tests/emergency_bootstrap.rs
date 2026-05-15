@@ -287,8 +287,6 @@ async fn build_fixture(public_url: Option<&str>) -> Fixture {
     });
     store_admin_entry(&passkey_ks, &admin_entry).await.unwrap();
 
-    install_store.close_carveout().await.unwrap();
-
     let install_signer = Arc::new(
         vtc_service::install::InstallTokenSigner::from_master_seed(&*ed25519_priv).unwrap(),
     );
@@ -473,10 +471,16 @@ async fn fresh_install_url_works_for_claim_start_after_emergency_bootstrap() {
         .expect("install URL contains token")
         .to_string();
 
-    // Drive POST /v1/install/claim/start. We just verify the
-    // server accepts the token and returns a registration
-    // challenge — the full ceremony is covered elsewhere.
-    let body = json!({ "install_token": token });
+    // Drive POST /v1/install/claim/start with the matching claim
+    // code from the outcome. Emergency bootstrap now mints invites
+    // with an out-of-band claim secret (parity with regular
+    // invites), so the operator types both URL and code at claim
+    // time. Without the code the daemon returns 401
+    // `claim_secret_required`.
+    let body = json!({
+        "install_token": token,
+        "claim_secret": outcome.claim_code,
+    });
     let res = fix
         .router
         .clone()
@@ -494,7 +498,7 @@ async fn fresh_install_url_works_for_claim_start_after_emergency_bootstrap() {
     assert_eq!(
         res.status(),
         StatusCode::OK,
-        "claim/start must accept fresh token"
+        "claim/start must accept fresh token + correct claim code"
     );
     let bytes = res.into_body().collect().await.unwrap().to_bytes();
     let v: Value = serde_json::from_slice(&bytes).unwrap();

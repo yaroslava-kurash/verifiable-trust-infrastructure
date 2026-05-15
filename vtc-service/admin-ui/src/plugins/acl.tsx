@@ -89,6 +89,13 @@ interface CreateInviteRequest {
 interface CreateInviteResponse {
   jti: string;
   installUrl: string;
+  /**
+   * Out-of-band claim code the invitee must type alongside the URL
+   * to claim their passkey. Returned by the daemon once on invite
+   * creation; not persisted plaintext. Operators deliver URL and
+   * code through separate channels.
+   */
+  claimCode: string;
   expiresAt: string;
   aclEntryCreated: boolean;
 }
@@ -473,11 +480,17 @@ function CreateInviteForm({ onSuccess }: { onSuccess: () => void }) {
       <section className="card">
         <h3>Invite minted</h3>
         <p className="lead">
-          Share this single-use URL with the new admin. Expires{" "}
-          <strong>{formatIso(issued.expiresAt)}</strong>.
+          Send the install URL and claim code to the new admin{" "}
+          <strong>through separate channels</strong> (URL via Slack,
+          code via Signal — whatever doesn't share the same
+          attacker view). Both are required to claim the passkey.
+          Expires <strong>{formatIso(issued.expiresAt)}</strong>.
         </p>
         <Field label="Install URL">
           <input type="text" readOnly value={issued.installUrl} />
+        </Field>
+        <Field label="Claim code (shown once — copy it now)">
+          <input type="text" readOnly value={issued.claimCode} />
         </Field>
         <div className="form-actions">
           <button
@@ -490,7 +503,19 @@ function CreateInviteForm({ onSuccess }: { onSuccess: () => void }) {
                 .catch(() => toast.push("error", "Clipboard write failed"));
             }}
           >
-            <Copy size={14} aria-hidden="true" /> Copy install URL
+            <Copy size={14} aria-hidden="true" /> Copy URL
+          </button>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => {
+              void navigator.clipboard
+                .writeText(issued.claimCode)
+                .then(() => toast.push("success", "Claim code copied"))
+                .catch(() => toast.push("error", "Clipboard write failed"));
+            }}
+          >
+            <Copy size={14} aria-hidden="true" /> Copy claim code
           </button>
           <button
             type="button"
