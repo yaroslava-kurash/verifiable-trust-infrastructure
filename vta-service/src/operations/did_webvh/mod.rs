@@ -1188,7 +1188,6 @@ impl<'a> WebvhTransport<'a> {
         }
     }
 
-    /// Atomic claim-and-publish — single round-trip alternative to
     // The unauthenticated `register_did_atomic` and `delete_did`
     // methods that used to live here have been removed — every call
     // site now goes through the auth-cache helpers
