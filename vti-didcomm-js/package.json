@@ -17,7 +17,8 @@
     "./unpack": "./src/unpack.js",
     "./did-key": "./src/did-key.js",
     "./did-webvh": "./src/did-webvh.js",
-    "./resolver": "./src/resolver.js"
+    "./resolver": "./src/resolver.js",
+    "./vta-rest-auth": "./src/vta-rest-auth.js"
   },
   "scripts": {
     "test": "node --test test/*.test.js",
