@@ -312,6 +312,126 @@ pub const TASK_PASSKEY_VMS_REVOKE_1_0: &str =
 pub const TASK_PROVISION_INTEGRATION_REQUEST_1_0: &str =
     "https://trusttasks.org/spec/vta/provision-integration/request/1.0";
 
+// ─── WebVH-DID-lifecycle slice (spec/vta/webvh/*) ────────────────────────
+//
+// Feature-gated: every handler requires `webvh` (the entire op layer
+// for DID-doc creation, update, deletion, and host registration lives
+// under `cfg(feature = "webvh")`). URIs are still declared here
+// unconditionally so client SDKs can probe; the dispatcher's
+// `KNOWN_FEATURE_GATED_URIS` allowlist tracks them for builds where
+// `webvh` is off.
+//
+// The boundary between `spec/vta/webvh/*` (VTA-controlled WebVH ops)
+// and `spec/did-hosting/*` (webvh-service hosting ops) is in
+// `docs/05-design-notes/trust-task-uri-registry.md` §"Boundary".
+//
+// Note: `GET /did/{did}/log` (public, unauth) is intentionally NOT
+// reified as a trust task — it stays plain REST so any DID resolver
+// can fall back to the minting VTA when the hosting server drops a
+// LogEntry. The authed admin equivalent IS migrated (see
+// `TASK_WEBVH_DIDS_GET_LOG_1_0` below).
+
+// Server CRUD on the VTA's known-webvh-hosts table.
+
+/// `spec/vta/webvh/servers/list/1.0` — list registered webvh hosts.
+/// Payload:
+/// [`crate::protocols::did_management::servers::ListWebvhServersBody`]
+/// (empty). Auth: any authenticated user.
+pub const TASK_WEBVH_SERVERS_LIST_1_0: &str =
+    "https://trusttasks.org/spec/vta/webvh/servers/list/1.0";
+
+/// `spec/vta/webvh/servers/add/1.0` — register a new webvh host.
+/// Payload:
+/// [`crate::protocols::did_management::servers::AddWebvhServerBody`].
+/// Auth: Super Admin.
+pub const TASK_WEBVH_SERVERS_ADD_1_0: &str =
+    "https://trusttasks.org/spec/vta/webvh/servers/add/1.0";
+
+/// `spec/vta/webvh/servers/update/1.0` — patch a registered webvh
+/// host's label. Payload:
+/// [`crate::protocols::did_management::servers::UpdateWebvhServerBody`].
+/// Auth: Super Admin.
+pub const TASK_WEBVH_SERVERS_UPDATE_1_0: &str =
+    "https://trusttasks.org/spec/vta/webvh/servers/update/1.0";
+
+/// `spec/vta/webvh/servers/remove/1.0` — deregister a webvh host.
+/// Payload:
+/// [`crate::protocols::did_management::servers::RemoveWebvhServerBody`].
+/// Auth: Super Admin.
+pub const TASK_WEBVH_SERVERS_REMOVE_1_0: &str =
+    "https://trusttasks.org/spec/vta/webvh/servers/remove/1.0";
+
+// DID lifecycle on the VTA's known-DIDs table. Every mutation appends
+// a fresh WebVH LogEntry to the DID's `did.jsonl` and (when the DID is
+// hosted) publishes the entry to the registered server.
+
+/// `spec/vta/webvh/dids/list/1.0` — list DIDs known to this VTA,
+/// optionally filtered by context or server. Payload:
+/// [`crate::protocols::did_management::list::ListDidsWebvhBody`].
+/// Auth: any authenticated user.
+pub const TASK_WEBVH_DIDS_LIST_1_0: &str = "https://trusttasks.org/spec/vta/webvh/dids/list/1.0";
+
+/// `spec/vta/webvh/dids/create/1.0` — mint a new DID via a DID
+/// template and (optionally) register it with a webvh host. Payload:
+/// [`crate::protocols::did_management::create::CreateDidWebvhBody`].
+/// Auth: Admin role on the target context.
+pub const TASK_WEBVH_DIDS_CREATE_1_0: &str =
+    "https://trusttasks.org/spec/vta/webvh/dids/create/1.0";
+
+/// `spec/vta/webvh/dids/get/1.0` — fetch the local record (context,
+/// server, key handles) for a DID this VTA knows. Payload:
+/// [`crate::protocols::did_management::get::GetDidWebvhBody`].
+/// Auth: any authenticated user with access to the DID's context.
+pub const TASK_WEBVH_DIDS_GET_1_0: &str = "https://trusttasks.org/spec/vta/webvh/dids/get/1.0";
+
+/// `spec/vta/webvh/dids/get-log/1.0` — fetch the raw `did.jsonl`
+/// log for an authed caller. The unauthenticated public mirror
+/// (`GET /did/{did}/log`) is deliberately NOT trust-task-wrapped —
+/// it's load-bearing as the DID-resolver failover path and stays
+/// plain REST forever (see §"Why REST stays" in the registry doc).
+/// Payload:
+/// [`crate::protocols::did_management::lifecycle::GetDidWebvhLogBody`].
+/// Auth: any authenticated user with access to the DID's context.
+pub const TASK_WEBVH_DIDS_GET_LOG_1_0: &str =
+    "https://trusttasks.org/spec/vta/webvh/dids/get-log/1.0";
+
+/// `spec/vta/webvh/dids/delete/1.0` — delete a DID locally and, if
+/// hosted, on the webvh server. Payload:
+/// [`crate::protocols::did_management::delete::DeleteDidWebvhBody`].
+/// Auth: Admin role on the DID's context.
+pub const TASK_WEBVH_DIDS_DELETE_1_0: &str =
+    "https://trusttasks.org/spec/vta/webvh/dids/delete/1.0";
+
+/// `spec/vta/webvh/dids/update/1.0` — apply a generic DID-document
+/// patch (rotate update_keys, swap pre-rotation commitments, change
+/// witnesses / watchers / ttl). Payload:
+/// [`crate::protocols::did_management::update::UpdateDidWebvhBody`].
+/// The `payload` carries a wire-format witnesses field (opaque
+/// JSON); the handler deserialises it into the typed
+/// `didwebvh_rs::Witnesses` enum at intake. Auth: Admin role on the
+/// DID's context.
+pub const TASK_WEBVH_DIDS_UPDATE_1_0: &str =
+    "https://trusttasks.org/spec/vta/webvh/dids/update/1.0";
+
+/// `spec/vta/webvh/dids/rotate-keys/1.0` — rotate every
+/// verificationMethod's key bytes on a DID and apply the
+/// resulting document change as a single update. Payload:
+/// [`crate::protocols::did_management::update::RotateDidWebvhKeysBody`].
+/// Auth: Admin role on the DID's context.
+pub const TASK_WEBVH_DIDS_ROTATE_KEYS_1_0: &str =
+    "https://trusttasks.org/spec/vta/webvh/dids/rotate-keys/1.0";
+
+/// `spec/vta/webvh/dids/register-with-server/1.0` — promote a
+/// serverless DID to a server-managed one, atomically pushing the
+/// existing local `did.jsonl` to the host and flipping the local
+/// record's `server_id` from `"serverless"` to the registered host
+/// id. One-way (re-pointing a hosted DID at a different host is
+/// intentionally out of scope). Payload:
+/// [`crate::protocols::did_management::servers::RegisterDidWithServerBody`].
+/// Auth: Super Admin.
+pub const TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0: &str =
+    "https://trusttasks.org/spec/vta/webvh/dids/register-with-server/1.0";
+
 // ─── Attestation slice (spec/vta/attestation/*) ──────────────────────────
 //
 // TEE-feature-gated and DELIBERATELY UNAUTHENTICATED on the wire
@@ -397,6 +517,19 @@ pub const ALL_URIS: &[&str] = &[
     TASK_PASSKEY_VMS_REVOKE_1_0,
     // Provision-integration (feature-gated: webvh)
     TASK_PROVISION_INTEGRATION_REQUEST_1_0,
+    // WebVH-DID-lifecycle slice (feature-gated: webvh)
+    TASK_WEBVH_SERVERS_LIST_1_0,
+    TASK_WEBVH_SERVERS_ADD_1_0,
+    TASK_WEBVH_SERVERS_UPDATE_1_0,
+    TASK_WEBVH_SERVERS_REMOVE_1_0,
+    TASK_WEBVH_DIDS_LIST_1_0,
+    TASK_WEBVH_DIDS_CREATE_1_0,
+    TASK_WEBVH_DIDS_GET_1_0,
+    TASK_WEBVH_DIDS_GET_LOG_1_0,
+    TASK_WEBVH_DIDS_DELETE_1_0,
+    TASK_WEBVH_DIDS_UPDATE_1_0,
+    TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
+    TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
     // Attestation slice (REST-routed, unauthenticated)
     TASK_ATTESTATION_STATUS_1_0,
     TASK_ATTESTATION_REPORT_1_0,

@@ -57,6 +57,8 @@ mod passkey_vms;
 #[cfg(feature = "webvh")]
 mod provision_integration;
 mod seeds;
+#[cfg(feature = "webvh")]
+mod webvh;
 
 use helpers::{body_parse_error_response, method_not_found};
 
@@ -110,6 +112,22 @@ const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
     vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_1_0,
     // Provision-integration — requires `webvh`.
     vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_REQUEST_1_0,
+    // WebVH-DID-lifecycle slice — requires `webvh`. The slice
+    // module's `DISPATCHED_URIS` lists the same URIs and is
+    // aggregated by the parity harness when `webvh` is on; this
+    // allowlist covers builds where `webvh` is off.
+    vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_LIST_1_0,
+    vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_ADD_1_0,
+    vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_UPDATE_1_0,
+    vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_REMOVE_1_0,
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0,
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0,
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_1_0,
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_LOG_1_0,
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0,
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0,
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0,
+    vta_sdk::trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0,
 ];
 
 /// Aggregate `DISPATCHED_URIS` from every slice module. Feature-gated
@@ -136,6 +154,8 @@ fn aggregate_dispatched_uris() -> Vec<&'static str> {
     v.extend(passkey_vms::DISPATCHED_URIS);
     #[cfg(feature = "webvh")]
     v.extend(provision_integration::DISPATCHED_URIS);
+    #[cfg(feature = "webvh")]
+    v.extend(webvh::DISPATCHED_URIS);
     v
 }
 
@@ -279,6 +299,55 @@ async fn dispatch_typed(state: &AppState, auth: &AuthClaims, doc: TrustTask<Valu
         #[cfg(feature = "webvh")]
         vta_sdk::trust_tasks::TASK_PROVISION_INTEGRATION_REQUEST_1_0 => {
             provision_integration::handle_request(state, auth, doc).await
+        }
+        // ─── WebVH-DID-lifecycle slice (feature-gated: webvh) ────────
+        #[cfg(feature = "webvh")]
+        vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_LIST_1_0 => {
+            webvh::handle_servers_list(state, auth, doc).await
+        }
+        #[cfg(feature = "webvh")]
+        vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_ADD_1_0 => {
+            webvh::handle_servers_add(state, auth, doc).await
+        }
+        #[cfg(feature = "webvh")]
+        vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_UPDATE_1_0 => {
+            webvh::handle_servers_update(state, auth, doc).await
+        }
+        #[cfg(feature = "webvh")]
+        vta_sdk::trust_tasks::TASK_WEBVH_SERVERS_REMOVE_1_0 => {
+            webvh::handle_servers_remove(state, auth, doc).await
+        }
+        #[cfg(feature = "webvh")]
+        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_LIST_1_0 => {
+            webvh::handle_dids_list(state, auth, doc).await
+        }
+        #[cfg(feature = "webvh")]
+        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_CREATE_1_0 => {
+            webvh::handle_dids_create(state, auth, doc).await
+        }
+        #[cfg(feature = "webvh")]
+        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_1_0 => {
+            webvh::handle_dids_get(state, auth, doc).await
+        }
+        #[cfg(feature = "webvh")]
+        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_GET_LOG_1_0 => {
+            webvh::handle_dids_get_log(state, auth, doc).await
+        }
+        #[cfg(feature = "webvh")]
+        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_DELETE_1_0 => {
+            webvh::handle_dids_delete(state, auth, doc).await
+        }
+        #[cfg(feature = "webvh")]
+        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_UPDATE_1_0 => {
+            webvh::handle_dids_update(state, auth, doc).await
+        }
+        #[cfg(feature = "webvh")]
+        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_ROTATE_KEYS_1_0 => {
+            webvh::handle_dids_rotate_keys(state, auth, doc).await
+        }
+        #[cfg(feature = "webvh")]
+        vta_sdk::trust_tasks::TASK_WEBVH_DIDS_REGISTER_WITH_SERVER_1_0 => {
+            webvh::handle_dids_register_with_server(state, auth, doc).await
         }
         // ─── Unknown / REST-routed ───────────────────────────────────
         //
