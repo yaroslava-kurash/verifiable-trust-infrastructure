@@ -258,6 +258,43 @@ pub const TASK_CONFIG_UPDATE_1_0: &str = "https://trusttasks.org/spec/vta/config
 pub const TASK_MANAGEMENT_RELOAD_SERVICES_1_0: &str =
     "https://trusttasks.org/spec/vta/management/reload-services/1.0";
 
+// ─── Passkey-VMs slice (spec/vta/passkey-vms/*) ──────────────────────────
+//
+// Feature-gated: handlers require BOTH `webvh` (DID-doc mutation +
+// log entries) AND `didcomm` (mediator push for the updated DID).
+// URIs are declared unconditionally here so client SDKs can probe;
+// the dispatcher's `KNOWN_FEATURE_GATED_URIS` allowlist tracks them
+// for builds where the features are off.
+
+/// `spec/vta/passkey-vms/enroll-challenge/1.0` — request a fresh
+/// WebAuthn registration challenge for a DID. Payload:
+/// [`crate::protocols::did_management::passkey_vms::EnrollPasskeyChallengeBody`].
+/// Auth: Admin role on the DID's context.
+pub const TASK_PASSKEY_VMS_ENROLL_CHALLENGE_1_0: &str =
+    "https://trusttasks.org/spec/vta/passkey-vms/enroll-challenge/1.0";
+
+/// `spec/vta/passkey-vms/enroll-submit/1.0` — finalise enrolment with
+/// the browser-supplied attestation bundle. Payload:
+/// [`crate::protocols::did_management::passkey_vms::EnrollPasskeySubmitBody`].
+/// Auth: Admin role on the DID's context. The handler appends the
+/// new VM to the DID document via a WebVH LogEntry and pushes to the
+/// configured mediator.
+pub const TASK_PASSKEY_VMS_ENROLL_SUBMIT_1_0: &str =
+    "https://trusttasks.org/spec/vta/passkey-vms/enroll-submit/1.0";
+
+/// `spec/vta/passkey-vms/list/1.0` — list every passkey VM currently
+/// published on a DID. Payload:
+/// [`crate::protocols::did_management::passkey_vms::ListPasskeyVmsBody`].
+/// Auth: Admin role on the DID's context.
+pub const TASK_PASSKEY_VMS_LIST_1_0: &str = "https://trusttasks.org/spec/vta/passkey-vms/list/1.0";
+
+/// `spec/vta/passkey-vms/revoke/1.0` — remove a passkey VM by fragment.
+/// Payload:
+/// [`crate::protocols::did_management::passkey_vms::RevokePasskeyVmBody`].
+/// Auth: Admin role on the DID's context.
+pub const TASK_PASSKEY_VMS_REVOKE_1_0: &str =
+    "https://trusttasks.org/spec/vta/passkey-vms/revoke/1.0";
+
 // ─── Attestation slice (spec/vta/attestation/*) ──────────────────────────
 //
 // TEE-feature-gated and DELIBERATELY UNAUTHENTICATED on the wire
@@ -336,6 +373,11 @@ pub const ALL_URIS: &[&str] = &[
     TASK_CONFIG_UPDATE_1_0,
     // Management slice
     TASK_MANAGEMENT_RELOAD_SERVICES_1_0,
+    // Passkey-VMs slice (feature-gated: webvh + didcomm)
+    TASK_PASSKEY_VMS_ENROLL_CHALLENGE_1_0,
+    TASK_PASSKEY_VMS_ENROLL_SUBMIT_1_0,
+    TASK_PASSKEY_VMS_LIST_1_0,
+    TASK_PASSKEY_VMS_REVOKE_1_0,
     // Attestation slice (REST-routed, unauthenticated)
     TASK_ATTESTATION_STATUS_1_0,
     TASK_ATTESTATION_REPORT_1_0,

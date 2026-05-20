@@ -29,6 +29,43 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Trust-task payload for `spec/vta/passkey-vms/enroll-challenge/1.0`.
+/// Requests a fresh WebAuthn registration challenge for a DID.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrollPasskeyChallengeBody {
+    /// DID the new VM will be added to. Caller must have admin role
+    /// on the DID's context.
+    pub did: String,
+    /// Optional operator-supplied label for the new passkey
+    /// (e.g. `"MacBook Touch ID"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// Trust-task payload for `spec/vta/passkey-vms/list/1.0`.
+/// Lists every passkey VM currently on a DID.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListPasskeyVmsBody {
+    /// DID whose passkey VMs to enumerate.
+    pub did: String,
+}
+
+/// Trust-task payload for `spec/vta/passkey-vms/revoke/1.0`.
+/// Removes a passkey VM from a DID document via a WebVH log entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RevokePasskeyVmBody {
+    /// DID the VM lives on.
+    pub did: String,
+    /// VM URL fragment (everything after `#` in the VM id).
+    pub fragment: String,
+}
+
+/// Trust-task payload for `spec/vta/passkey-vms/revoke/1.0` response —
+/// empty success body. Modelled as a struct so future additive fields
+/// don't bump the wire version.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RevokePasskeyVmResponse {}
+
 /// Server-issued WebAuthn registration challenge. Returned by
 /// `POST /did/verification-methods/passkey/challenge`.
 ///

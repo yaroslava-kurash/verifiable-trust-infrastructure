@@ -52,6 +52,8 @@ mod discovery;
 mod helpers;
 mod keys;
 mod management;
+#[cfg(all(feature = "webvh", feature = "didcomm"))]
+mod passkey_vms;
 mod seeds;
 
 use helpers::{body_parse_error_response, method_not_found};
@@ -96,9 +98,14 @@ const REST_ROUTED: &[&str] = &[
 /// just statements that the dispatcher knows about them.
 #[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
 const KNOWN_FEATURE_GATED_URIS: &[&str] = &[
-    // Empty for now. Feature-gated slices (passkey-vms, webvh
-    // lifecycle, services management, provision-integration, join
-    // requests, bootstrap, etc.) will add entries here as they land.
+    // Passkey-VMs slice — requires `webvh` + `didcomm` features. The
+    // slice module's `DISPATCHED_URIS` lists the same URIs and is
+    // aggregated by the parity harness when both features are on; this
+    // allowlist covers builds where either feature is off.
+    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_1_0,
+    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_1_0,
+    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_1_0,
+    vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_1_0,
 ];
 
 /// Aggregate `DISPATCHED_URIS` from every slice module. Feature-gated
@@ -121,6 +128,8 @@ fn aggregate_dispatched_uris() -> Vec<&'static str> {
     // here under `#[cfg(feature = "...")]`. The corresponding URIs
     // must also appear in `KNOWN_FEATURE_GATED_URIS` so the parity
     // harness passes in builds where the feature is off.
+    #[cfg(all(feature = "webvh", feature = "didcomm"))]
+    v.extend(passkey_vms::DISPATCHED_URIS);
     v
 }
 
@@ -242,6 +251,23 @@ async fn dispatch_typed(state: &AppState, auth: &AuthClaims, doc: TrustTask<Valu
         // ─── Management slice ────────────────────────────────────────
         vta_sdk::trust_tasks::TASK_MANAGEMENT_RELOAD_SERVICES_1_0 => {
             management::handle_reload_services(state, auth, doc).await
+        }
+        // ─── Passkey-VMs slice (feature-gated: webvh + didcomm) ─────
+        #[cfg(all(feature = "webvh", feature = "didcomm"))]
+        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_CHALLENGE_1_0 => {
+            passkey_vms::handle_enroll_challenge(state, auth, doc).await
+        }
+        #[cfg(all(feature = "webvh", feature = "didcomm"))]
+        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_ENROLL_SUBMIT_1_0 => {
+            passkey_vms::handle_enroll_submit(state, auth, doc).await
+        }
+        #[cfg(all(feature = "webvh", feature = "didcomm"))]
+        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_LIST_1_0 => {
+            passkey_vms::handle_list(state, auth, doc).await
+        }
+        #[cfg(all(feature = "webvh", feature = "didcomm"))]
+        vta_sdk::trust_tasks::TASK_PASSKEY_VMS_REVOKE_1_0 => {
+            passkey_vms::handle_revoke(state, auth, doc).await
         }
         // ─── Unknown / REST-routed ───────────────────────────────────
         //
