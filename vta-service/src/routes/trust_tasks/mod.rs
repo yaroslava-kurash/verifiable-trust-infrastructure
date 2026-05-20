@@ -46,10 +46,12 @@ use crate::server::AppState;
 mod acl;
 mod audit;
 mod auth;
+mod config;
 mod contexts;
 mod discovery;
 mod helpers;
 mod keys;
+mod management;
 mod seeds;
 
 use helpers::{body_parse_error_response, method_not_found};
@@ -163,6 +165,15 @@ async fn dispatch_typed(state: &AppState, auth: &AuthClaims, doc: TrustTask<Valu
         // ─── Discovery ───────────────────────────────────────────────
         vta_sdk::trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0 => {
             discovery::handle_capabilities(state, auth, doc).await
+        }
+        // ─── Config slice ────────────────────────────────────────────
+        vta_sdk::trust_tasks::TASK_CONFIG_GET_1_0 => config::handle_get(state, auth, doc).await,
+        vta_sdk::trust_tasks::TASK_CONFIG_UPDATE_1_0 => {
+            config::handle_update(state, auth, doc).await
+        }
+        // ─── Management slice ────────────────────────────────────────
+        vta_sdk::trust_tasks::TASK_MANAGEMENT_RELOAD_SERVICES_1_0 => {
+            management::handle_reload_services(state, auth, doc).await
         }
         // ─── Unknown / REST-routed ───────────────────────────────────
         //
@@ -302,6 +313,11 @@ mod tests {
             vta_sdk::trust_tasks::TASK_AUDIT_UPDATE_RETENTION_1_0,
             // Discovery
             vta_sdk::trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0,
+            // Config
+            vta_sdk::trust_tasks::TASK_CONFIG_GET_1_0,
+            vta_sdk::trust_tasks::TASK_CONFIG_UPDATE_1_0,
+            // Management
+            vta_sdk::trust_tasks::TASK_MANAGEMENT_RELOAD_SERVICES_1_0,
         ];
 
         // URIs deliberately routed via dedicated unauth REST endpoints

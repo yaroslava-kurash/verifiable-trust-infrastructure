@@ -234,6 +234,30 @@ pub const TASK_AUDIT_UPDATE_RETENTION_1_0: &str =
 pub const TASK_DISCOVERY_CAPABILITIES_1_0: &str =
     "https://trusttasks.org/spec/vta/discovery/capabilities/1.0";
 
+// ─── Config slice (spec/vta/config/*) ────────────────────────────────────
+
+/// `spec/vta/config/get/1.0` — read the current VTA configuration
+/// (VTA DID, name, public URL).
+/// Payload: [`crate::protocols::vta_management::get_config::GetConfigBody`]
+/// (empty). Auth: any authenticated user.
+pub const TASK_CONFIG_GET_1_0: &str = "https://trusttasks.org/spec/vta/config/get/1.0";
+
+/// `spec/vta/config/update/1.0` — patch VTA DID, name, or public URL.
+/// Payload: [`crate::protocols::vta_management::update_config::UpdateConfigBody`].
+/// Auth: Super Admin only.
+pub const TASK_CONFIG_UPDATE_1_0: &str = "https://trusttasks.org/spec/vta/config/update/1.0";
+
+// ─── Management slice (spec/vta/management/*) ────────────────────────────
+
+/// `spec/vta/management/reload-services/1.0` — tear down and
+/// re-initialise REST + DIDComm + storage threads with the current
+/// config. Does NOT restart the process. Use after a
+/// `config/update/1.0` to pick up the new values.
+/// Payload: [`crate::protocols::vta_management::restart::ReloadServicesBody`]
+/// (empty). Auth: Super Admin only.
+pub const TASK_MANAGEMENT_RELOAD_SERVICES_1_0: &str =
+    "https://trusttasks.org/spec/vta/management/reload-services/1.0";
+
 // ─── Future slices ───────────────────────────────────────────────────────
 //
 // attestation, services, webvh, did-templates, passkey-vms, backup,
@@ -286,6 +310,11 @@ pub const ALL_URIS: &[&str] = &[
     TASK_AUDIT_UPDATE_RETENTION_1_0,
     // Discovery
     TASK_DISCOVERY_CAPABILITIES_1_0,
+    // Config slice
+    TASK_CONFIG_GET_1_0,
+    TASK_CONFIG_UPDATE_1_0,
+    // Management slice
+    TASK_MANAGEMENT_RELOAD_SERVICES_1_0,
 ];
 
 #[cfg(test)]
