@@ -182,21 +182,27 @@ Operations VTA performs on WebVH DIDs it owns — distinct from the
 WebVH host's own DID lifecycle ops under `spec/did-hosting/did/*`. See
 boundary discussion below.
 
-| URI | Today's surface |
-|---|---|
-| `spec/vta/webvh/servers/list/1.0` | webvh server CRUD on VTA side |
-| `spec/vta/webvh/servers/add/1.0` | (REST `POST /webvh/servers`) |
-| `spec/vta/webvh/servers/update/1.0` | |
-| `spec/vta/webvh/servers/remove/1.0` | |
-| `spec/vta/webvh/dids/list/1.0` | DIDs hosted/known to this VTA |
-| `spec/vta/webvh/dids/create/1.0` | Mint new DID via template + register with host |
-| `spec/vta/webvh/dids/get/1.0` | |
-| `spec/vta/webvh/dids/get-log/1.0` | `GET /webvh/dids/{did}/log` (authed) |
-| `spec/vta/webvh/dids/get-log-public/1.0` | `GET /did/{did}/log` (unauthed mirror — keep REST-only) |
-| `spec/vta/webvh/dids/delete/1.0` | |
-| `spec/vta/webvh/dids/update/1.0` | DID-doc patch |
-| `spec/vta/webvh/dids/rotate-keys/1.0` | |
-| `spec/vta/webvh/dids/register-with-server/1.0` | Promote serverless → server-managed (one-way) |
+**Status**: implemented in Phase 3 (commit `feat(vta-service): Phase 3
+— WebVH-DID-lifecycle slice`). Feature-gated on `webvh`; URIs declared
+unconditionally in `vta-sdk::trust_tasks` and tracked by the
+dispatcher's `KNOWN_FEATURE_GATED_URIS` allowlist for builds where
+`webvh` is off.
+
+| URI | Today's surface | Status |
+|---|---|---|
+| `spec/vta/webvh/servers/list/1.0` | webvh server CRUD on VTA side | implemented |
+| `spec/vta/webvh/servers/add/1.0` | (REST `POST /webvh/servers`) | implemented |
+| `spec/vta/webvh/servers/update/1.0` | | implemented |
+| `spec/vta/webvh/servers/remove/1.0` | | implemented |
+| `spec/vta/webvh/dids/list/1.0` | DIDs hosted/known to this VTA | implemented |
+| `spec/vta/webvh/dids/create/1.0` | Mint new DID via template + register with host | implemented |
+| `spec/vta/webvh/dids/get/1.0` | | implemented |
+| `spec/vta/webvh/dids/get-log/1.0` | `GET /webvh/dids/{did}/log` (authed) | implemented |
+| ~`spec/vta/webvh/dids/get-log-public/1.0`~ | `GET /did/{did}/log` (unauthed mirror) | **REST-only forever** (load-bearing as the DID-resolver failover path; wrapping it in a trust-task envelope would defeat the failover) |
+| `spec/vta/webvh/dids/delete/1.0` | | implemented |
+| `spec/vta/webvh/dids/update/1.0` | DID-doc patch (trust-task envelope carries `did` in payload — no path) | implemented |
+| `spec/vta/webvh/dids/rotate-keys/1.0` | (trust-task envelope carries `did` in payload — no path) | implemented |
+| `spec/vta/webvh/dids/register-with-server/1.0` | Promote serverless → server-managed (one-way) | implemented |
 
 ### DID templates slice (`spec/vta/did-templates/*`)
 
