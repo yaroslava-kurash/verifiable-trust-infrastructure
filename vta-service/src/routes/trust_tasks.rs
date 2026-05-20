@@ -25,6 +25,11 @@ use serde_json::Value;
 use trust_tasks_https::status_for_code;
 use trust_tasks_rs::{ErrorPayload, ErrorResponse, RejectReason, TrustTask, TypeUri};
 use uuid::Uuid;
+use vta_sdk::protocols::acl_management::create::CreateAclBody;
+use vta_sdk::protocols::acl_management::delete::DeleteAclBody;
+use vta_sdk::protocols::acl_management::get::GetAclBody;
+use vta_sdk::protocols::acl_management::list::ListAclBody;
+use vta_sdk::protocols::acl_management::update::UpdateAclBody;
 use vta_sdk::protocols::auth::{RevokeSessionRequest, RevokeSessionResponse};
 
 use crate::acl::Role;
@@ -32,7 +37,13 @@ use crate::audit::audit;
 use crate::auth::AuthClaims;
 use crate::auth::session::{delete_session, get_session};
 use crate::error::AppError;
+use crate::operations;
 use crate::server::AppState;
+
+/// Transport label passed to operations for audit-log discrimination
+/// between the legacy REST path (`"rest"`) and the new trust-task
+/// envelope (`"trust-task"`).
+const TRANSPORT_TRUST_TASK: &str = "trust-task";
 
 /// `POST /api/trust-tasks` handler.
 ///
@@ -105,6 +116,12 @@ async fn dispatch_typed(state: &AppState, auth: &AuthClaims, doc: TrustTask<Valu
         vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_1_0 => {
             handle_revoke_session(state, auth, doc).await
         }
+        // ─── ACL slice ────────────────────────────────────────────────
+        vta_sdk::trust_tasks::TASK_ACL_LIST_1_0 => handle_acl_list(state, auth, doc).await,
+        vta_sdk::trust_tasks::TASK_ACL_CREATE_1_0 => handle_acl_create(state, auth, doc).await,
+        vta_sdk::trust_tasks::TASK_ACL_GET_1_0 => handle_acl_get(state, auth, doc).await,
+        vta_sdk::trust_tasks::TASK_ACL_UPDATE_1_0 => handle_acl_update(state, auth, doc).await,
+        vta_sdk::trust_tasks::TASK_ACL_DELETE_1_0 => handle_acl_delete(state, auth, doc).await,
         // ─── Unknown / REST-routed ───────────────────────────────────
         //
         // Pre-auth URIs (passkey-login-{start,finish}, challenge,
@@ -205,6 +222,195 @@ async fn handle_revoke_session(
 
     // 6. Build the success response document.
     success_response(&doc, RevokeSessionResponse::default())
+}
+
+// ─── ACL slice handlers ──────────────────────────────────────────────────
+
+/// Handler for `spec/vta/acl/list/1.0`.
+async fn handle_acl_list(state: &AppState, auth: &AuthClaims, doc: TrustTask<Value>) -> Response {
+    if let Err(e) = auth.require_manage() {
+        return app_error_to_reject(&doc, e);
+    }
+    let req: ListAclBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    match operations::acl::list_acl(
+        &state.acl_ks,
+        auth,
+        req.context.as_deref(),
+        TRANSPORT_TRUST_TASK,
+    )
+    .await
+    {
+        Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// Handler for `spec/vta/acl/create/1.0`.
+async fn handle_acl_create(state: &AppState, auth: &AuthClaims, doc: TrustTask<Value>) -> Response {
+    if let Err(e) = auth.require_manage() {
+        return app_error_to_reject(&doc, e);
+    }
+    let req: CreateAclBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let role = match Role::parse(&req.role) {
+        Ok(r) => r,
+        Err(_) => {
+            return reject_with(
+                &doc,
+                RejectReason::MalformedRequest {
+                    reason: format!("invalid role: {}", req.role),
+                },
+            );
+        }
+    };
+    match operations::acl::create_acl(
+        &state.acl_ks,
+        &state.audit_ks,
+        &state.contexts_ks,
+        auth,
+        &req.did,
+        role,
+        req.label,
+        req.allowed_contexts,
+        req.expires_at,
+        TRANSPORT_TRUST_TASK,
+    )
+    .await
+    {
+        Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// Handler for `spec/vta/acl/get/1.0`.
+async fn handle_acl_get(state: &AppState, auth: &AuthClaims, doc: TrustTask<Value>) -> Response {
+    if let Err(e) = auth.require_manage() {
+        return app_error_to_reject(&doc, e);
+    }
+    let req: GetAclBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    match operations::acl::get_acl(&state.acl_ks, auth, &req.did, TRANSPORT_TRUST_TASK).await {
+        Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// Handler for `spec/vta/acl/update/1.0`. Admin-only — matches the
+/// legacy REST `PATCH /acl/{did}` policy.
+async fn handle_acl_update(state: &AppState, auth: &AuthClaims, doc: TrustTask<Value>) -> Response {
+    if let Err(e) = auth.require_admin() {
+        return app_error_to_reject(&doc, e);
+    }
+    let req: UpdateAclBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let role = match req.role.as_deref() {
+        Some(r) => match Role::parse(r) {
+            Ok(parsed) => Some(parsed),
+            Err(_) => {
+                return reject_with(
+                    &doc,
+                    RejectReason::MalformedRequest {
+                        reason: format!("invalid role: {r}"),
+                    },
+                );
+            }
+        },
+        None => None,
+    };
+    match operations::acl::update_acl(
+        &state.acl_ks,
+        &state.audit_ks,
+        &state.contexts_ks,
+        auth,
+        &req.did,
+        operations::acl::UpdateAclParams {
+            role,
+            label: req.label,
+            allowed_contexts: req.allowed_contexts,
+        },
+        TRANSPORT_TRUST_TASK,
+    )
+    .await
+    {
+        Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// Handler for `spec/vta/acl/delete/1.0`.
+async fn handle_acl_delete(state: &AppState, auth: &AuthClaims, doc: TrustTask<Value>) -> Response {
+    if let Err(e) = auth.require_manage() {
+        return app_error_to_reject(&doc, e);
+    }
+    let req: DeleteAclBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    match operations::acl::delete_acl(
+        &state.acl_ks,
+        &state.audit_ks,
+        auth,
+        &req.did,
+        TRANSPORT_TRUST_TASK,
+    )
+    .await
+    {
+        Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────
+
+/// Parse a trust-task document's `payload` field as the typed body
+/// `T`, or return a `MalformedRequest` rejection response.
+///
+/// Consolidates the per-handler boilerplate where the only thing that
+/// changes is the target type.
+fn parse_payload<T: serde::de::DeserializeOwned>(doc: &TrustTask<Value>) -> Result<T, Response> {
+    serde_json::from_value::<T>(doc.payload.clone()).map_err(|e| {
+        reject_with(
+            doc,
+            RejectReason::MalformedRequest {
+                reason: format!("payload parse: {e}"),
+            },
+        )
+    })
+}
+
+/// Map an `AppError` (the operation-layer error type) into a routed
+/// trust-task error response with the appropriate framework reject
+/// code:
+///
+/// - `Authentication` / `Unauthorized` / `Forbidden` → `permission_denied`
+/// - `Validation` / `TrustTaskMalformed` → `malformed_request`
+/// - `NotFound` / `Conflict` → `task_failed`
+/// - everything else → `internal_error`
+fn app_error_to_reject(doc: &TrustTask<Value>, err: AppError) -> Response {
+    let message = err.to_string();
+    let reason = match err {
+        AppError::Authentication(_) | AppError::Unauthorized(_) | AppError::Forbidden(_) => {
+            RejectReason::PermissionDenied { reason: message }
+        }
+        AppError::Validation(_) | AppError::TrustTaskMalformed(_) => {
+            RejectReason::MalformedRequest { reason: message }
+        }
+        AppError::NotFound(_) | AppError::Conflict(_) => RejectReason::TaskFailed {
+            reason: message,
+            details: None,
+        },
+        _ => RejectReason::InternalError { reason: message },
+    };
+    reject_with(doc, reason)
 }
 
 /// Build a routed rejection document for the given reason and wrap it
@@ -405,7 +611,14 @@ mod tests {
     fn dispatcher_handles_every_vta_sdk_uri() {
         // URIs the dispatcher's `dispatch_typed` function explicitly
         // matches — keep in lockstep with the match arms above.
-        let dispatched: &[&str] = &[vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_1_0];
+        let dispatched: &[&str] = &[
+            vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_1_0,
+            vta_sdk::trust_tasks::TASK_ACL_LIST_1_0,
+            vta_sdk::trust_tasks::TASK_ACL_CREATE_1_0,
+            vta_sdk::trust_tasks::TASK_ACL_GET_1_0,
+            vta_sdk::trust_tasks::TASK_ACL_UPDATE_1_0,
+            vta_sdk::trust_tasks::TASK_ACL_DELETE_1_0,
+        ];
 
         // URIs deliberately routed via dedicated unauth REST endpoints
         // (not the authenticated /api/trust-tasks dispatcher).

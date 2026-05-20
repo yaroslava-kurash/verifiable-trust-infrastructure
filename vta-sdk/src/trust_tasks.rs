@@ -86,9 +86,34 @@ pub const TASK_AUTH_PASSKEY_LOGIN_START_1_0: &str =
 pub const TASK_AUTH_PASSKEY_LOGIN_FINISH_1_0: &str =
     "https://trusttasks.org/spec/vta/auth/passkey-login-finish/1.0";
 
+// ─── ACL slice (spec/vta/acl/*) ──────────────────────────────────────────
+
+/// `spec/vta/acl/list/1.0` — list ACL entries, optionally filtered by
+/// context. Payload: [`crate::protocols::acl_management::list::ListAclBody`].
+pub const TASK_ACL_LIST_1_0: &str = "https://trusttasks.org/spec/vta/acl/list/1.0";
+
+/// `spec/vta/acl/create/1.0` — add an ACL entry. Payload:
+/// [`crate::protocols::acl_management::create::CreateAclBody`].
+/// Auth: Admin or Initiator.
+pub const TASK_ACL_CREATE_1_0: &str = "https://trusttasks.org/spec/vta/acl/create/1.0";
+
+/// `spec/vta/acl/get/1.0` — retrieve a single entry. Payload:
+/// [`crate::protocols::acl_management::get::GetAclBody`].
+pub const TASK_ACL_GET_1_0: &str = "https://trusttasks.org/spec/vta/acl/get/1.0";
+
+/// `spec/vta/acl/update/1.0` — patch role, label, or allowed contexts.
+/// Payload: [`crate::protocols::acl_management::update::UpdateAclBody`].
+/// Auth: Admin only.
+pub const TASK_ACL_UPDATE_1_0: &str = "https://trusttasks.org/spec/vta/acl/update/1.0";
+
+/// `spec/vta/acl/delete/1.0` — remove an entry. Payload:
+/// [`crate::protocols::acl_management::delete::DeleteAclBody`].
+/// Auth: Admin or Initiator.
+pub const TASK_ACL_DELETE_1_0: &str = "https://trusttasks.org/spec/vta/acl/delete/1.0";
+
 // ─── Future slices ───────────────────────────────────────────────────────
 //
-// keys, seeds, contexts, acl, audit, attestation, services, webvh,
+// keys, seeds, contexts, audit, attestation, services, webvh,
 // did-templates, passkey-vms, backup, config, discovery, management,
 // join-requests, bootstrap.
 //
@@ -100,12 +125,19 @@ pub const TASK_AUTH_PASSKEY_LOGIN_FINISH_1_0: &str =
 /// parity harness and for operator tooling that wants to enumerate
 /// the VTA's wire surface programmatically.
 pub const ALL_URIS: &[&str] = &[
+    // Auth slice
     TASK_AUTH_CHALLENGE_1_0,
     TASK_AUTH_AUTHENTICATE_1_0,
     TASK_AUTH_REFRESH_1_0,
     TASK_AUTH_REVOKE_SESSION_1_0,
     TASK_AUTH_PASSKEY_LOGIN_START_1_0,
     TASK_AUTH_PASSKEY_LOGIN_FINISH_1_0,
+    // ACL slice
+    TASK_ACL_LIST_1_0,
+    TASK_ACL_CREATE_1_0,
+    TASK_ACL_GET_1_0,
+    TASK_ACL_UPDATE_1_0,
+    TASK_ACL_DELETE_1_0,
 ];
 
 #[cfg(test)]
