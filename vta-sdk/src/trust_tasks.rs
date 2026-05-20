@@ -1,36 +1,36 @@
-//! Canonical Trust-Task URLs for every VTA operation.
+//! Canonical Trust-Task URIs for every VTA operation.
 //!
-//! Mirrors the
-//! [`did-hosting-common::did_hosting_tasks`](https://github.com/affinidi/did-hosting-service)
-//! pattern: one `pub const` per registered URI; grep `TASK_*` to
-//! enumerate the full wire surface. Each URI is routed both on REST
-//! (via the trust-task envelope's `type` field on
-//! `POST /api/trust-tasks`) and on DIDComm (via the inbound message
+//! One `pub const` per registered URI; grep `TASK_*` to enumerate the
+//! full wire surface. Each URI is routed both on REST (via the
+//! trust-task envelope's `type` field on `POST /api/trust-tasks` or
+//! a dedicated unauth route) and on DIDComm (via the inbound message
 //! `type`).
 //!
-//! ## URI shape (deliberately non-spec-canonical)
+//! ## URI shape (framework-canonical)
 //!
 //! ```text
-//! https://trusttasks.org/{namespace}/{op-path}/{maj}.{min}
+//! https://trusttasks.org/spec/{namespace}/{op-path}/{maj}.{min}
 //! ```
 //!
-//! The framework SPEC.md §6.1 prescribes the canonical form
-//! `https://trusttasks.org/spec/<slug>/<MAJOR.MINOR>` (with `/spec/`).
-//! Both this workspace and `affinidi-webvh-service` use the flatter
-//! form *without* `/spec/`. The two services' dispatchers accept this
-//! flat form via local URL-newtype wrappers; consumers exchange URIs
-//! by exact-string match, so the divergence is operator-invisible.
+//! Per framework SPEC.md §6.1 + the `slug` grammar in
+//! `dtgwg-trust-tasks-tf/specs/spec.meta.schema.json` — hierarchical
+//! slugs with `/`-delimited path segments are supported (the spec's
+//! own example is `acl/grant`). The `/spec/` segment is mandatory;
+//! `TypeUri::from_str` rejects URIs missing it (pinned by the
+//! `framework_requires_canonical_uri_in_wire_type_field` test in
+//! `vta-service::routes::trust_tasks`).
 //!
-//! Reason for the divergence: the URI is just an identifier (the
-//! workspace treats it as opaque). The `/spec/` segment isn't useful
-//! for routing and adds noise to every wire message. If/when the
-//! framework spec evolves to allow the flat form, no migration needed.
+//! Earlier drafts of this workspace used a flat form (no `/spec/`),
+//! which deserialised cleanly as a Rust `&'static str` but failed
+//! `serde_json::from_slice::<TrustTask<Value>>`. Resolved by adopting
+//! the framework's canonical hierarchical-slug form throughout —
+//! breaking change made before any external clients existed.
 //!
 //! ## Namespace
 //!
-//! - `https://trusttasks.org/vta/...` — VTA operations (this module).
-//! - `https://trusttasks.org/did-hosting/...` — webvh-service.
-//! - `https://trusttasks.org/webvh/...` — webvh-protocol ops.
+//! - `https://trusttasks.org/spec/vta/...` — VTA operations (this module).
+//! - `https://trusttasks.org/spec/did-hosting/...` — webvh-service.
+//! - `https://trusttasks.org/spec/webvh/...` — webvh-protocol ops.
 //!
 //! ## Versioning
 //!
@@ -44,8 +44,8 @@
 //!
 //! Every const here is reflected in the migration mapping in
 //! `docs/05-design-notes/trust-task-uri-registry.md`. A parity harness
-//! in `vta-service` confirms the dispatcher knows about every const
-//! declared here.
+//! in `vta-service::routes::trust_tasks` confirms the dispatcher knows
+//! about every const declared here.
 //!
 //! ## What lives here vs is planned
 //!
@@ -54,34 +54,37 @@
 //! Remaining slices (keys, contexts, ACL, services, etc., ~70 more
 //! URIs) land in Phase 3 of the migration initiative.
 
-// ─── Auth slice (vta/auth/*) ─────────────────────────────────────────────
+// ─── Auth slice (spec/vta/auth/*) ────────────────────────────────────────
 
-/// `vta/auth/challenge/1.0` — request a nonce for a DID.
-pub const TASK_AUTH_CHALLENGE_1_0: &str = "https://trusttasks.org/vta/auth/challenge/1.0";
+/// `spec/vta/auth/challenge/1.0` — request a nonce for a DID.
+pub const TASK_AUTH_CHALLENGE_1_0: &str = "https://trusttasks.org/spec/vta/auth/challenge/1.0";
 
-/// `vta/auth/authenticate/1.0` — sign the challenge with a DID-key JWS
-/// (legacy auth flow; passkey login uses `passkey-login-finish/1.0`).
-pub const TASK_AUTH_AUTHENTICATE_1_0: &str = "https://trusttasks.org/vta/auth/authenticate/1.0";
+/// `spec/vta/auth/authenticate/1.0` — sign the challenge with a
+/// DID-key JWS (legacy auth flow; passkey login uses
+/// `passkey-login-finish/1.0`).
+pub const TASK_AUTH_AUTHENTICATE_1_0: &str =
+    "https://trusttasks.org/spec/vta/auth/authenticate/1.0";
 
-/// `vta/auth/refresh/1.0` — refresh an access token.
-pub const TASK_AUTH_REFRESH_1_0: &str = "https://trusttasks.org/vta/auth/refresh/1.0";
+/// `spec/vta/auth/refresh/1.0` — refresh an access token.
+pub const TASK_AUTH_REFRESH_1_0: &str = "https://trusttasks.org/spec/vta/auth/refresh/1.0";
 
-/// `vta/auth/revoke-session/1.0` — revoke a session by id.
-pub const TASK_AUTH_REVOKE_SESSION_1_0: &str = "https://trusttasks.org/vta/auth/revoke-session/1.0";
+/// `spec/vta/auth/revoke-session/1.0` — revoke a session by id.
+pub const TASK_AUTH_REVOKE_SESSION_1_0: &str =
+    "https://trusttasks.org/spec/vta/auth/revoke-session/1.0";
 
-/// `vta/auth/passkey-login-start/1.0` — request a passkey-bound login
-/// challenge. Payload: `{ did }` → response: `{ session_id, challenge,
-/// allowCredentials[] }`.
+/// `spec/vta/auth/passkey-login-start/1.0` — request a passkey-bound
+/// login challenge. Payload: `{ did }` → response: `{ session_id,
+/// challenge, allowCredentials[] }`.
 pub const TASK_AUTH_PASSKEY_LOGIN_START_1_0: &str =
-    "https://trusttasks.org/vta/auth/passkey-login-start/1.0";
+    "https://trusttasks.org/spec/vta/auth/passkey-login-start/1.0";
 
-/// `vta/auth/passkey-login-finish/1.0` — present a WebAuthn assertion
-/// against a DID-resolved VM. Payload carries assertion bytes
-/// (authenticatorData, clientDataJSON, signature, credential_id) plus
-/// `session_pubkey_b58btc` for DPoP-style binding of subsequent
+/// `spec/vta/auth/passkey-login-finish/1.0` — present a WebAuthn
+/// assertion against a DID-resolved VM. Payload carries assertion
+/// bytes (authenticatorData, clientDataJSON, signature, credential_id)
+/// plus `session_pubkey_b58btc` for DPoP-style binding of subsequent
 /// trust-task proofs to this session.
 pub const TASK_AUTH_PASSKEY_LOGIN_FINISH_1_0: &str =
-    "https://trusttasks.org/vta/auth/passkey-login-finish/1.0";
+    "https://trusttasks.org/spec/vta/auth/passkey-login-finish/1.0";
 
 // ─── Future slices ───────────────────────────────────────────────────────
 //
@@ -113,8 +116,8 @@ mod tests {
     fn every_uri_in_vta_namespace() {
         for uri in ALL_URIS {
             assert!(
-                uri.starts_with("https://trusttasks.org/vta/"),
-                "VTA URI must be under /vta/: {uri}"
+                uri.starts_with("https://trusttasks.org/spec/vta/"),
+                "VTA URI must be under /spec/vta/: {uri}"
             );
         }
     }
@@ -139,6 +142,31 @@ mod tests {
         sorted.sort();
         for window in sorted.windows(2) {
             assert_ne!(window[0], window[1], "duplicate URI: {}", window[0]);
+        }
+    }
+
+    /// Every URI must round-trip through the framework's TypeUri
+    /// deserialiser — the wire-format `type` field on a trust-task
+    /// document goes through this path. Catches a regression where a
+    /// future const is added that doesn't match the framework's
+    /// canonical shape.
+    #[test]
+    fn every_uri_parses_as_framework_type_uri() {
+        use std::str::FromStr;
+        for uri in ALL_URIS {
+            let parsed = trust_tasks_rs::TypeUri::from_str(uri);
+            assert!(
+                parsed.is_ok(),
+                "URI must parse as framework TypeUri: {uri}, error: {:?}",
+                parsed.err()
+            );
+            let parsed = parsed.unwrap();
+            // Round-trip via Display must equal the input byte-for-byte.
+            assert_eq!(
+                parsed.to_string(),
+                *uri,
+                "URI must round-trip through TypeUri::Display unchanged"
+            );
         }
     }
 }

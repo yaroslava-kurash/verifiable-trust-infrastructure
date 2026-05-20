@@ -1,7 +1,7 @@
 # Trust-task URI registry — VTA + webvh-service migration
 
 **Status:** Draft (Phase 0.2 of the trust-task envelope migration initiative).
-**Updated:** 2026-05-19; revised 2026-05-20 (cryptosuite dropped; passkey-login-{start,finish} URIs added).
+**Updated:** 2026-05-19; revised 2026-05-20 (cryptosuite dropped; passkey-login-{start,finish} URIs added; migrated to framework-canonical `/spec/<hierarchical-slug>/<ver>` URI form).
 **Scope:** Both services + all dependent consumers.
 
 This document is the authoritative catalogue of trust-task URIs across
@@ -18,19 +18,41 @@ catalogues them once for design review.
 ## Naming convention
 
 ```
-https://trusttasks.org/{namespace}/{op-path}/{maj}.{min}
+https://trusttasks.org/spec/{namespace}/{op-path}/{maj}.{min}
 ```
 
 | Slot | Rule |
 |---|---|
 | **scheme + host** | Always `https://trusttasks.org/`. Identifier only, not resolvable. |
-| **namespace** | One of `vta`, `did-hosting`, `webvh`. See namespace table below. |
-| **op-path** | Lowercase kebab-case. Hierarchical (`auth/challenge`, `services/didcomm/enable`). |
+| **`spec/`** | Mandatory per framework SPEC.md §6.1. Required for `trust_tasks_rs::TypeUri::from_str` to accept the URI when deserialising the wire-format `type` field. |
+| **namespace** | First slug segment — one of `vta`, `did-hosting`, `webvh`. See namespace table below. |
+| **op-path** | Remaining hierarchical slug segments (one or more `/`-delimited path segments per spec meta-schema). Each segment lowercase kebab-case. Examples: `auth/challenge`, `services/didcomm/enable`. |
 | **version** | `{major}.{minor}` only. No patch component. A new minor or major requires registering a new URI; the old URI keeps routing to the old handler until removed in a future release. |
+
+The slug as understood by the framework is the full `{namespace}/{op-path}`
+(e.g. `vta/auth/challenge`); the framework's slug grammar (`spec.meta.schema.json`)
+explicitly permits `/`-delimited path segments, modelled on the spec's
+own `acl/grant` example.
 
 The router does NOT do version-family matching. `1.0` and `1.1` are
 completely separate identifiers and may have completely different
 payload shapes.
+
+### Why canonical form (and the breaking-change history)
+
+Earlier drafts of this registry used a "flat" form
+(`https://trusttasks.org/vta/auth/challenge/1.0` — no `/spec/`). That
+shape is fine as a Rust `&'static str` identifier but fails
+`serde_json::from_slice::<TrustTask<Value>>` at the wire boundary
+because `trust_tasks_rs::TypeUri::from_str` requires the `/spec/<slug>/
+<version>` shape (pinned by the
+`framework_requires_canonical_uri_in_wire_type_field` test in
+`vta-service::routes::trust_tasks`).
+
+Migrated to the canonical form before any external clients existed.
+The hierarchical slug (`vta/auth/challenge`) preserves the folder-like
+organisation that informed the earlier flat form — no organisational
+loss.
 
 ## Namespaces
 
@@ -40,8 +62,8 @@ payload shapes.
 | `did-hosting` | webvh-service (`did-hosting-control`, `did-hosting-server`, `did-hosting-daemon`) | DID-method-agnostic hosting operations — auth, DID lifecycle, server registration, domain management, registry |
 | `webvh` | webvh-service | WebVH-protocol-specific operations — witness publish/confirm, log sync. Other DID methods (`webs`, `webplus`) would get sibling namespaces. |
 
-The boundary between `vta/webvh/*` (VTA-controlled WebVH operations) and
-`did-hosting/*` is explicitly resolved below — see "Boundary between VTA
+The boundary between `spec/vta/webvh/*` (VTA-controlled WebVH operations) and
+`spec/did-hosting/*` is explicitly resolved below — see "Boundary between VTA
 and WebVH".
 
 ## VTA URIs (new — all to be added)
@@ -49,134 +71,134 @@ and WebVH".
 VTA has no trust-task URIs registered yet. The full surface migrates in
 Phase 3 slices; this section enumerates the target URIs by slice.
 
-### Auth slice (`vta/auth/*`)
+### Auth slice (`spec/vta/auth/*`)
 
 | URI | Today's surface | Direction | Payload sketch |
 |---|---|---|---|
-| `vta/auth/challenge/1.0` | `POST /auth/challenge` | request | `{ did }` → returns `{ session_id, challenge }` as generic OK-response (no separate URI; follows webvh-service convention) |
-| `vta/auth/authenticate/1.0` | `POST /auth/` | request | `{ session_id, challenge, session_pubkey_b58btc? }` (+ `eddsa-jcs-2022` proof on trust-task). **Note:** legacy DID-key-JWS auth path. Passkey-based authentication uses `vta/auth/passkey-login-{start,finish}/1.0` instead — see Passkey login slice below. |
-| `vta/auth/passkey-login-start/1.0` | **NEW** (mirrors webvh `did-hosting/auth/passkey-login-start/1.0`) | request | `{ did }` → returns `{ session_id, challenge, allowCredentials[] }` |
-| `vta/auth/passkey-login-finish/1.0` | **NEW** (mirrors webvh `did-hosting/auth/passkey-login-finish/1.0`) | request | `{ session_id, authenticatorData, clientDataJSON, signature, credential_id, session_pubkey_b58btc? }`. WebAuthn assertion verified via webauthn-rs against DID-resolved VM. `clientData.challenge` MUST equal `SHA-256(canonical trust-task body)` (document binding). |
-| `vta/auth/authenticate-response/1.0` | response of `/auth/` | response | `{ access_token, refresh_token, access_expires_at, refresh_expires_at, session_id }` |
-| `vta/auth/refresh/1.0` | `POST /auth/refresh` | request | `{ refresh_token }` (+ proof from session key) |
-| `vta/auth/refresh-response/1.0` | response of `/auth/refresh` | response | same shape as authenticate-response |
-| `vta/auth/revoke-session/1.0` | `DELETE /auth/sessions/{id}` | request | `{ session_id }` |
+| `spec/vta/auth/challenge/1.0` | `POST /auth/challenge` | request | `{ did }` → returns `{ session_id, challenge }` as generic OK-response (no separate URI; follows webvh-service convention) |
+| `spec/vta/auth/authenticate/1.0` | `POST /auth/` | request | `{ session_id, challenge, session_pubkey_b58btc? }` (+ `eddsa-jcs-2022` proof on trust-task). **Note:** legacy DID-key-JWS auth path. Passkey-based authentication uses `spec/vta/auth/passkey-login-{start,finish}/1.0` instead — see Passkey login slice below. |
+| `spec/vta/auth/passkey-login-start/1.0` | **NEW** (mirrors webvh `spec/did-hosting/auth/passkey-login-start/1.0`) | request | `{ did }` → returns `{ session_id, challenge, allowCredentials[] }` |
+| `spec/vta/auth/passkey-login-finish/1.0` | **NEW** (mirrors webvh `spec/did-hosting/auth/passkey-login-finish/1.0`) | request | `{ session_id, authenticatorData, clientDataJSON, signature, credential_id, session_pubkey_b58btc? }`. WebAuthn assertion verified via webauthn-rs against DID-resolved VM. `clientData.challenge` MUST equal `SHA-256(canonical trust-task body)` (document binding). |
+| `spec/vta/auth/authenticate-response/1.0` | response of `/auth/` | response | `{ access_token, refresh_token, access_expires_at, refresh_expires_at, session_id }` |
+| `spec/vta/auth/refresh/1.0` | `POST /auth/refresh` | request | `{ refresh_token }` (+ proof from session key) |
+| `spec/vta/auth/refresh-response/1.0` | response of `/auth/refresh` | response | same shape as authenticate-response |
+| `spec/vta/auth/revoke-session/1.0` | `DELETE /auth/sessions/{id}` | request | `{ session_id }` |
 
-### Bootstrap slice (`vta/bootstrap/*`)
-
-| URI | Today's surface | Notes |
-|---|---|---|
-| `vta/bootstrap/request/1.0` | `POST /bootstrap/request` (TEE Mode B carve-out) | Carries Nitro attestation in the trust-task `proof` block; single-use, MODE_B_LOCK still applies |
-| `vta/bootstrap/request-response/1.0` | response | sealed admin VP bundle (HPKE), CRC24-armored |
-| `vta/bootstrap/provision-integration/1.0` | `POST /bootstrap/provision-integration` | Body is the template-bootstrap VP; sealed reply unchanged |
-| `vta/bootstrap/provision-integration-response/1.0` | response | sealed `TemplateBootstrapPayload` |
-
-### Keys slice (`vta/keys/*`)
+### Bootstrap slice (`spec/vta/bootstrap/*`)
 
 | URI | Today's surface | Notes |
 |---|---|---|
-| `vta/keys/list/1.0` | `GET /keys` + `key-management/1.0/list-keys` | |
-| `vta/keys/create/1.0` | `POST /keys` + `key-management/1.0/create-key` | |
-| `vta/keys/get/1.0` | `GET /keys/{key_id}` + DIDComm equivalent | |
-| `vta/keys/rename/1.0` | DIDComm `rename-key` (no REST today) | |
-| `vta/keys/revoke/1.0` | DIDComm `revoke-key` + REST equivalent | |
-| `vta/keys/sign/1.0` | `POST /keys/{key_id}/sign` + `key-management/1.0/sign-request` | Raw-bytes signing oracle |
-| `vta/keys/sign-trust-task-proof/1.0` | **NEW** (Phase 2 task 2.1) | Returns a ready-to-splice trust-task `proof` block; cryptosuites `eddsa-jcs-2022` and `ecdsa-jcs-2019` |
-| `vta/keys/import-wrapping-key/1.0` | `GET /keys/import/wrapping-key` | |
-| `vta/keys/import/1.0` | `POST /keys/import` | |
+| `spec/vta/bootstrap/request/1.0` | `POST /bootstrap/request` (TEE Mode B carve-out) | Carries Nitro attestation in the trust-task `proof` block; single-use, MODE_B_LOCK still applies |
+| `spec/vta/bootstrap/request-response/1.0` | response | sealed admin VP bundle (HPKE), CRC24-armored |
+| `spec/vta/bootstrap/provision-integration/1.0` | `POST /bootstrap/provision-integration` | Body is the template-bootstrap VP; sealed reply unchanged |
+| `spec/vta/bootstrap/provision-integration-response/1.0` | response | sealed `TemplateBootstrapPayload` |
+
+### Keys slice (`spec/vta/keys/*`)
+
+| URI | Today's surface | Notes |
+|---|---|---|
+| `spec/vta/keys/list/1.0` | `GET /keys` + `key-management/1.0/list-keys` | |
+| `spec/vta/keys/create/1.0` | `POST /keys` + `key-management/1.0/create-key` | |
+| `spec/vta/keys/get/1.0` | `GET /keys/{key_id}` + DIDComm equivalent | |
+| `spec/vta/keys/rename/1.0` | DIDComm `rename-key` (no REST today) | |
+| `spec/vta/keys/revoke/1.0` | DIDComm `revoke-key` + REST equivalent | |
+| `spec/vta/keys/sign/1.0` | `POST /keys/{key_id}/sign` + `key-management/1.0/sign-request` | Raw-bytes signing oracle |
+| `spec/vta/keys/sign-trust-task-proof/1.0` | **NEW** (Phase 2 task 2.1) | Returns a ready-to-splice trust-task `proof` block; cryptosuites `eddsa-jcs-2022` and `ecdsa-jcs-2019` |
+| `spec/vta/keys/import-wrapping-key/1.0` | `GET /keys/import/wrapping-key` | |
+| `spec/vta/keys/import/1.0` | `POST /keys/import` | |
 
 **Note:** the legacy `GET /keys/{key_id}/secret` mnemonic-export
 endpoint moves to the seeds slice (it was per-seed, not per-key — the
-URL was misleading). See `vta/seeds/export-mnemonic/1.0`.
+URL was misleading). See `spec/vta/seeds/export-mnemonic/1.0`.
 
-### Seeds slice (`vta/seeds/*`)
+### Seeds slice (`spec/vta/seeds/*`)
 
 | URI | Today's surface | Notes |
 |---|---|---|
-| `vta/seeds/list/1.0` | `GET /keys/seeds` + DIDComm `list-seeds` | |
-| `vta/seeds/rotate/1.0` | `POST /keys/seeds/rotate` + DIDComm `rotate-seed` | |
-| `vta/seeds/export-mnemonic/1.0` | `GET /keys/{key_id}/secret` (formerly under keys) | One-shot BIP-39 mnemonic export under `MnemonicExportGuard`. Super-admin only. Zeroized on drop. Audit event renames `keys.get-secret` → `seeds.export-mnemonic`. |
+| `spec/vta/seeds/list/1.0` | `GET /keys/seeds` + DIDComm `list-seeds` | |
+| `spec/vta/seeds/rotate/1.0` | `POST /keys/seeds/rotate` + DIDComm `rotate-seed` | |
+| `spec/vta/seeds/export-mnemonic/1.0` | `GET /keys/{key_id}/secret` (formerly under keys) | One-shot BIP-39 mnemonic export under `MnemonicExportGuard`. Super-admin only. Zeroized on drop. Audit event renames `keys.get-secret` → `seeds.export-mnemonic`. |
 
-### Contexts slice (`vta/contexts/*`)
-
-| URI | Today's surface |
-|---|---|
-| `vta/contexts/list/1.0` | `GET /contexts` + DIDComm `list-contexts` |
-| `vta/contexts/create/1.0` | `POST /contexts` + DIDComm `create-context` |
-| `vta/contexts/get/1.0` | `GET /contexts/{id}` + DIDComm `get-context` |
-| `vta/contexts/update/1.0` | `PATCH /contexts/{id}` + DIDComm `update-context` |
-| `vta/contexts/update-did/1.0` | DIDComm `update-context-did` (and REST equivalent) |
-| `vta/contexts/preview-delete/1.0` | DIDComm `preview-delete-context` + REST |
-| `vta/contexts/delete/1.0` | `DELETE /contexts/{id}` + DIDComm `delete-context` |
-
-### ACL slice (`vta/acl/*`)
+### Contexts slice (`spec/vta/contexts/*`)
 
 | URI | Today's surface |
 |---|---|
-| `vta/acl/list/1.0` | `GET /acl` + DIDComm `list-acl` |
-| `vta/acl/create/1.0` | `POST /acl` + DIDComm `create-acl` |
-| `vta/acl/get/1.0` | `GET /acl/{did}` + DIDComm `get-acl` |
-| `vta/acl/update/1.0` | `PATCH /acl/{did}` + DIDComm `update-acl` |
-| `vta/acl/delete/1.0` | `DELETE /acl/{did}` + DIDComm `delete-acl` |
+| `spec/vta/contexts/list/1.0` | `GET /contexts` + DIDComm `list-contexts` |
+| `spec/vta/contexts/create/1.0` | `POST /contexts` + DIDComm `create-context` |
+| `spec/vta/contexts/get/1.0` | `GET /contexts/{id}` + DIDComm `get-context` |
+| `spec/vta/contexts/update/1.0` | `PATCH /contexts/{id}` + DIDComm `update-context` |
+| `spec/vta/contexts/update-did/1.0` | DIDComm `update-context-did` (and REST equivalent) |
+| `spec/vta/contexts/preview-delete/1.0` | DIDComm `preview-delete-context` + REST |
+| `spec/vta/contexts/delete/1.0` | `DELETE /contexts/{id}` + DIDComm `delete-context` |
 
-### Audit slice (`vta/audit/*`)
-
-| URI | Today's surface |
-|---|---|
-| `vta/audit/list-logs/1.0` | `GET /audit/logs` + DIDComm `list-logs` |
-| `vta/audit/get-retention/1.0` | DIDComm `get-retention` + REST |
-| `vta/audit/update-retention/1.0` | DIDComm `update-retention` + REST |
-
-### Attestation slice (`vta/attestation/*`)
+### ACL slice (`spec/vta/acl/*`)
 
 | URI | Today's surface |
 |---|---|
-| `vta/attestation/status/1.0` | `GET /attestation/status` |
-| `vta/attestation/did-log/1.0` | `GET /attestation/did-log` |
+| `spec/vta/acl/list/1.0` | `GET /acl` + DIDComm `list-acl` |
+| `spec/vta/acl/create/1.0` | `POST /acl` + DIDComm `create-acl` |
+| `spec/vta/acl/get/1.0` | `GET /acl/{did}` + DIDComm `get-acl` |
+| `spec/vta/acl/update/1.0` | `PATCH /acl/{did}` + DIDComm `update-acl` |
+| `spec/vta/acl/delete/1.0` | `DELETE /acl/{did}` + DIDComm `delete-acl` |
 
-### Services management slice (`vta/services/*`)
+### Audit slice (`spec/vta/audit/*`)
+
+| URI | Today's surface |
+|---|---|
+| `spec/vta/audit/list-logs/1.0` | `GET /audit/logs` + DIDComm `list-logs` |
+| `spec/vta/audit/get-retention/1.0` | DIDComm `get-retention` + REST |
+| `spec/vta/audit/update-retention/1.0` | DIDComm `update-retention` + REST |
+
+### Attestation slice (`spec/vta/attestation/*`)
+
+| URI | Today's surface |
+|---|---|
+| `spec/vta/attestation/status/1.0` | `GET /attestation/status` |
+| `spec/vta/attestation/did-log/1.0` | `GET /attestation/did-log` |
+
+### Services management slice (`spec/vta/services/*`)
 
 This is the runtime service-management surface (REST + DIDComm
 transports, drain windows, mediator reports). All eleven ops migrate.
 
 | URI | Today's surface |
 |---|---|
-| `vta/services/list/1.0` | `GET /services` + DIDComm `services/list` |
-| `vta/services/rest/enable/1.0` | `POST /services/rest/enable` |
-| `vta/services/rest/update/1.0` | `POST /services/rest/update` |
-| `vta/services/rest/disable/1.0` | `POST /services/rest/disable` |
-| `vta/services/rest/rollback/1.0` | `POST /services/rest/rollback` |
-| `vta/services/didcomm/enable/1.0` | `POST /services/didcomm/enable` (REST-only by construction) |
-| `vta/services/didcomm/update/1.0` | `POST /services/didcomm/update` |
-| `vta/services/didcomm/disable/1.0` | `POST /services/didcomm/disable` |
-| `vta/services/didcomm/rollback/1.0` | `POST /services/didcomm/rollback` |
-| `vta/services/didcomm/drain/list/1.0` | `GET /services/didcomm/drain` |
-| `vta/services/didcomm/drain/cancel/1.0` | `POST /services/didcomm/drain/cancel` |
-| `vta/services/mediators/report/1.0` | `GET /mediators/report` |
+| `spec/vta/services/list/1.0` | `GET /services` + DIDComm `services/list` |
+| `spec/vta/services/rest/enable/1.0` | `POST /services/rest/enable` |
+| `spec/vta/services/rest/update/1.0` | `POST /services/rest/update` |
+| `spec/vta/services/rest/disable/1.0` | `POST /services/rest/disable` |
+| `spec/vta/services/rest/rollback/1.0` | `POST /services/rest/rollback` |
+| `spec/vta/services/didcomm/enable/1.0` | `POST /services/didcomm/enable` (REST-only by construction) |
+| `spec/vta/services/didcomm/update/1.0` | `POST /services/didcomm/update` |
+| `spec/vta/services/didcomm/disable/1.0` | `POST /services/didcomm/disable` |
+| `spec/vta/services/didcomm/rollback/1.0` | `POST /services/didcomm/rollback` |
+| `spec/vta/services/didcomm/drain/list/1.0` | `GET /services/didcomm/drain` |
+| `spec/vta/services/didcomm/drain/cancel/1.0` | `POST /services/didcomm/drain/cancel` |
+| `spec/vta/services/mediators/report/1.0` | `GET /mediators/report` |
 
-### WebVH-DID-lifecycle slice (`vta/webvh/*`)
+### WebVH-DID-lifecycle slice (`spec/vta/webvh/*`)
 
 Operations VTA performs on WebVH DIDs it owns — distinct from the
-WebVH host's own DID lifecycle ops under `did-hosting/did/*`. See
+WebVH host's own DID lifecycle ops under `spec/did-hosting/did/*`. See
 boundary discussion below.
 
 | URI | Today's surface |
 |---|---|
-| `vta/webvh/servers/list/1.0` | webvh server CRUD on VTA side |
-| `vta/webvh/servers/add/1.0` | (REST `POST /webvh/servers`) |
-| `vta/webvh/servers/update/1.0` | |
-| `vta/webvh/servers/remove/1.0` | |
-| `vta/webvh/dids/list/1.0` | DIDs hosted/known to this VTA |
-| `vta/webvh/dids/create/1.0` | Mint new DID via template + register with host |
-| `vta/webvh/dids/get/1.0` | |
-| `vta/webvh/dids/get-log/1.0` | `GET /webvh/dids/{did}/log` (authed) |
-| `vta/webvh/dids/get-log-public/1.0` | `GET /did/{did}/log` (unauthed mirror — keep REST-only) |
-| `vta/webvh/dids/delete/1.0` | |
-| `vta/webvh/dids/update/1.0` | DID-doc patch |
-| `vta/webvh/dids/rotate-keys/1.0` | |
-| `vta/webvh/dids/register-with-server/1.0` | Promote serverless → server-managed (one-way) |
+| `spec/vta/webvh/servers/list/1.0` | webvh server CRUD on VTA side |
+| `spec/vta/webvh/servers/add/1.0` | (REST `POST /webvh/servers`) |
+| `spec/vta/webvh/servers/update/1.0` | |
+| `spec/vta/webvh/servers/remove/1.0` | |
+| `spec/vta/webvh/dids/list/1.0` | DIDs hosted/known to this VTA |
+| `spec/vta/webvh/dids/create/1.0` | Mint new DID via template + register with host |
+| `spec/vta/webvh/dids/get/1.0` | |
+| `spec/vta/webvh/dids/get-log/1.0` | `GET /webvh/dids/{did}/log` (authed) |
+| `spec/vta/webvh/dids/get-log-public/1.0` | `GET /did/{did}/log` (unauthed mirror — keep REST-only) |
+| `spec/vta/webvh/dids/delete/1.0` | |
+| `spec/vta/webvh/dids/update/1.0` | DID-doc patch |
+| `spec/vta/webvh/dids/rotate-keys/1.0` | |
+| `spec/vta/webvh/dids/register-with-server/1.0` | Promote serverless → server-managed (one-way) |
 
-### DID templates slice (`vta/did-templates/*`)
+### DID templates slice (`spec/vta/did-templates/*`)
 
 Global + context-scoped CRUD. Same operations under both scopes; URIs
 distinguish by namespace.
@@ -185,42 +207,42 @@ distinguish by namespace.
 
 | URI | Today's surface |
 |---|---|
-| `vta/did-templates/list/1.0` | `GET /did-templates` |
-| `vta/did-templates/create/1.0` | `POST /did-templates` |
-| `vta/did-templates/get/1.0` | `GET /did-templates/{name}` |
-| `vta/did-templates/update/1.0` | `PATCH /did-templates/{name}` |
-| `vta/did-templates/delete/1.0` | `DELETE /did-templates/{name}` |
-| `vta/did-templates/render/1.0` | `POST /did-templates/{name}/render` |
+| `spec/vta/did-templates/list/1.0` | `GET /did-templates` |
+| `spec/vta/did-templates/create/1.0` | `POST /did-templates` |
+| `spec/vta/did-templates/get/1.0` | `GET /did-templates/{name}` |
+| `spec/vta/did-templates/update/1.0` | `PATCH /did-templates/{name}` |
+| `spec/vta/did-templates/delete/1.0` | `DELETE /did-templates/{name}` |
+| `spec/vta/did-templates/render/1.0` | `POST /did-templates/{name}/render` |
 
 **Context-scoped (context-admin):**
 
 | URI | Today's surface |
 |---|---|
-| `vta/contexts/did-templates/list/1.0` | `GET /contexts/{id}/did-templates` |
-| `vta/contexts/did-templates/create/1.0` | `POST /contexts/{id}/did-templates` |
-| `vta/contexts/did-templates/get/1.0` | `GET /contexts/{id}/did-templates/{name}` |
-| `vta/contexts/did-templates/update/1.0` | `PATCH /contexts/{id}/did-templates/{name}` |
-| `vta/contexts/did-templates/delete/1.0` | `DELETE /contexts/{id}/did-templates/{name}` |
-| `vta/contexts/did-templates/render/1.0` | `POST /contexts/{id}/did-templates/{name}/render` |
+| `spec/vta/contexts/did-templates/list/1.0` | `GET /contexts/{id}/did-templates` |
+| `spec/vta/contexts/did-templates/create/1.0` | `POST /contexts/{id}/did-templates` |
+| `spec/vta/contexts/did-templates/get/1.0` | `GET /contexts/{id}/did-templates/{name}` |
+| `spec/vta/contexts/did-templates/update/1.0` | `PATCH /contexts/{id}/did-templates/{name}` |
+| `spec/vta/contexts/did-templates/delete/1.0` | `DELETE /contexts/{id}/did-templates/{name}` |
+| `spec/vta/contexts/did-templates/render/1.0` | `POST /contexts/{id}/did-templates/{name}/render` |
 
-### Passkey VM slice (`vta/passkey-vms/*`)
+### Passkey VM slice (`spec/vta/passkey-vms/*`)
 
 **Scope clarification:** this slice is **DID-level passkey VM enrolment** —
 adding a passkey as a `verificationMethod` in a DID document that this VTA
 controls. Once enrolled, the passkey is usable across *any* RP that resolves
-the DID. Distinct from webvh-service's `did-hosting/auth/passkey-*` URIs,
+the DID. Distinct from webvh-service's `spec/did-hosting/auth/passkey-*` URIs,
 which are *service-level* credentials (direct passkey login to webvh-service
 for users who don't have a VTA). Both can coexist; our initiative uses the
 DID-level path.
 
 | URI | Today's surface |
 |---|---|
-| `vta/passkey-vms/enroll-challenge/1.0` | `POST /did/verification-methods/passkey/challenge` |
-| `vta/passkey-vms/enroll-submit/1.0` | `POST /did/verification-methods/passkey` |
-| `vta/passkey-vms/list/1.0` | `GET /did/verification-methods/passkey?did=…` |
-| `vta/passkey-vms/revoke/1.0` | `DELETE /did/verification-methods/passkey/{fragment}` |
+| `spec/vta/passkey-vms/enroll-challenge/1.0` | `POST /did/verification-methods/passkey/challenge` |
+| `spec/vta/passkey-vms/enroll-submit/1.0` | `POST /did/verification-methods/passkey` |
+| `spec/vta/passkey-vms/list/1.0` | `GET /did/verification-methods/passkey?did=…` |
+| `spec/vta/passkey-vms/revoke/1.0` | `DELETE /did/verification-methods/passkey/{fragment}` |
 
-### Backup slice (`vta/backup/*`)
+### Backup slice (`spec/vta/backup/*`)
 
 Three-phase descriptor pattern (initiate → transport → finalize) — bulk
 bytes flow out-of-band so the trust-task framework's 1MB cap is never
@@ -230,11 +252,11 @@ Sigstore + Git LFS.
 
 | URI | Purpose |
 |---|---|
-| `vta/backup/initiate-export/1.0` | Request export. Returns `BundleDescriptor { bundle_id, transport_url, transport_token, expected_sha256, expected_size_bytes, algorithm, expires_at }`. Authed + audit-logged. |
-| `vta/backup/complete-export/1.0` | Optional client ack of successful download. Closes the audit loop. |
-| `vta/backup/initiate-import/1.0` | Request import. Returns upload BundleDescriptor with POST target. |
-| `vta/backup/finalize-import/1.0` | Apply uploaded bytes; returns `{ status, dids_loaded, contexts_loaded }`. |
-| `vta/backup/abort/1.0` | Cancel an in-flight bundle by `bundle_id`. |
+| `spec/vta/backup/initiate-export/1.0` | Request export. Returns `BundleDescriptor { bundle_id, transport_url, transport_token, expected_sha256, expected_size_bytes, algorithm, expires_at }`. Authed + audit-logged. |
+| `spec/vta/backup/complete-export/1.0` | Optional client ack of successful download. Closes the audit loop. |
+| `spec/vta/backup/initiate-import/1.0` | Request import. Returns upload BundleDescriptor with POST target. |
+| `spec/vta/backup/finalize-import/1.0` | Apply uploaded bytes; returns `{ status, dids_loaded, contexts_loaded }`. |
+| `spec/vta/backup/abort/1.0` | Cancel an in-flight bundle by `bundle_id`. |
 
 **Plus one REST endpoint that stays REST (excluded from migration):**
 `GET /backup/blob/{bundle_id}` with `X-Export-Token` header. Streams
@@ -246,37 +268,37 @@ Algorithms supported initially: `stream` (this VTA serves the bytes).
 Future: `s3-presigned`, `chunked-trust-task` (for DIDComm-only deployments
 with no HTTPS transport).
 
-### Config slice (`vta/config/*`)
+### Config slice (`spec/vta/config/*`)
 
 | URI | Today's surface |
 |---|---|
-| `vta/config/get/1.0` | DIDComm `get-config` |
-| `vta/config/update/1.0` | DIDComm `update-config` |
+| `spec/vta/config/get/1.0` | DIDComm `get-config` |
+| `spec/vta/config/update/1.0` | DIDComm `update-config` |
 
-### Discovery slice (`vta/discovery/*`)
+### Discovery slice (`spec/vta/discovery/*`)
 
 | URI | Today's surface |
 |---|---|
-| `vta/discovery/capabilities/1.0` | `GET /capabilities` |
+| `spec/vta/discovery/capabilities/1.0` | `GET /capabilities` |
 
-### VTA management slice (`vta/management/*`)
+### VTA management slice (`spec/vta/management/*`)
 
 | URI | Today's surface | Notes |
 |---|---|---|
-| `vta/management/reload-services/1.0` | `POST /vta/restart` (current implementation does soft reload, not process restart) | Tears down and re-initializes REST, DIDComm, storage threads with current config. Does NOT restart the process. Use after `vta/config/update/1.0` to apply changes. Super-admin only. URI renamed from `restart` to `reload-services` to match actual semantics. |
+| `spec/vta/management/reload-services/1.0` | `POST /vta/restart` (current implementation does soft reload, not process restart) | Tears down and re-initializes REST, DIDComm, storage threads with current config. Does NOT restart the process. Use after `spec/vta/config/update/1.0` to apply changes. Super-admin only. URI renamed from `restart` to `reload-services` to match actual semantics. |
 
 Metrics is excluded from migration entirely — see "Excluded from
 migration" below.
 
-### Join requests (`vta/join-requests/*`)
+### Join requests (`spec/vta/join-requests/*`)
 
 VTC↔VTA bridge — currently DIDComm-only.
 
 | URI | Today's surface |
 |---|---|
-| `vta/join-requests/request/1.0` | DIDComm `join-requests/request` |
-| `vta/join-requests/decision/1.0` | DIDComm `join-requests/decision` |
-| `vta/join-requests/list/1.0` | DIDComm `join-requests/list` |
+| `spec/vta/join-requests/request/1.0` | DIDComm `join-requests/request` |
+| `spec/vta/join-requests/decision/1.0` | DIDComm `join-requests/decision` |
+| `spec/vta/join-requests/list/1.0` | DIDComm `join-requests/list` |
 
 **VTA URI count:** ~79 (precise count after slice-by-slice spec lockdown). VTC ops excluded from this initiative.
 
@@ -289,51 +311,51 @@ The complete set lives in `did-hosting-common::did_hosting_tasks`
 
 | URI | Status |
 |---|---|
-| `did-hosting/auth/authenticate/1.0` | registered; handler still uses legacy `affinidi.com/webvh/1.0/authenticate` (Phase 4.4 work) |
-| `did-hosting/auth/authenticate-response/1.0` | registered |
-| `did-hosting/auth/challenge/1.0` | registered |
-| `did-hosting/auth/refresh/1.0` | registered |
-| `did-hosting/auth/passkey-{enroll,login}-{start,finish}/1.0` | registered — passkey flow already specced |
-| `did-hosting/auth/passkey-invite/1.0` | registered |
+| `spec/did-hosting/auth/authenticate/1.0` | registered; handler still uses legacy `affinidi.com/webvh/1.0/authenticate` (Phase 4.4 work) |
+| `spec/did-hosting/auth/authenticate-response/1.0` | registered |
+| `spec/did-hosting/auth/challenge/1.0` | registered |
+| `spec/did-hosting/auth/refresh/1.0` | registered |
+| `spec/did-hosting/auth/passkey-{enroll,login}-{start,finish}/1.0` | registered — passkey flow already specced |
+| `spec/did-hosting/auth/passkey-invite/1.0` | registered |
 
 ### Existing — ACL, DID lifecycle, server registration, domain management, registry, observability
 
 All registered. See `did_hosting_tasks.rs` for the full list. No new URIs
 required for these in this initiative.
 
-### Existing — WebVH-protocol-specific (`webvh/*`)
+### Existing — WebVH-protocol-specific (`spec/webvh/*`)
 
 | URI | Status |
 |---|---|
-| `webvh/did/witness-publish/1.0` | registered |
-| `webvh/did/witness-confirm/1.0` | registered |
-| `webvh/did/sync-update/1.0` | registered |
-| `webvh/did/sync-update-ack/1.0` | registered |
-| `webvh/did/sync-delete/1.0` | registered |
-| `webvh/did/sync-delete-ack/1.0` | registered |
+| `spec/webvh/did/witness-publish/1.0` | registered |
+| `spec/webvh/did/witness-confirm/1.0` | registered |
+| `spec/webvh/did/sync-update/1.0` | registered |
+| `spec/webvh/did/sync-update-ack/1.0` | registered |
+| `spec/webvh/did/sync-delete/1.0` | registered |
+| `spec/webvh/did/sync-delete-ack/1.0` | registered |
 
 ### Net-new for this initiative
 
 | URI | Purpose | Slice |
 |---|---|---|
-| `did-hosting/admin/swap-did/1.0` | DID swap ceremony (cold-start finalisation per `[[project-browser-plugin-rp-login]]`). **Payload shape:** `{ new_did, new_did_proof: <embedded DataIntegrityProof by new DID's authentication VM> }`. Outer trust-task proof is by the OLD DID's session key (`eddsa-jcs-2022`); inner `new_did_proof` proves control of the new DID via any standard cryptosuite (`eddsa-jcs-2022` for VTA-managed Ed25519 `#key-1`, or `ecdsa-jcs-2019` for P-256). | Phase 4.2 (mega-project: Phase 2.2) |
-| `did-hosting/admin/swap-did-response/1.0` | response with fresh capability JWT | Phase 4.2 |
+| `spec/did-hosting/admin/swap-did/1.0` | DID swap ceremony (cold-start finalisation per `[[project-browser-plugin-rp-login]]`). **Payload shape:** `{ new_did, new_did_proof: <embedded DataIntegrityProof by new DID's authentication VM> }`. Outer trust-task proof is by the OLD DID's session key (`eddsa-jcs-2022`); inner `new_did_proof` proves control of the new DID via any standard cryptosuite (`eddsa-jcs-2022` for VTA-managed Ed25519 `#key-1`, or `ecdsa-jcs-2019` for P-256). | Phase 4.2 (mega-project: Phase 2.2) |
+| `spec/did-hosting/admin/swap-did-response/1.0` | response with fresh capability JWT | Phase 4.2 |
 
 That's it for webvh side — two new URIs.
 
-## Boundary between `vta/webvh/*` and `did-hosting/*`
+## Boundary between `spec/vta/webvh/*` and `spec/did-hosting/*`
 
 Both services touch WebVH DIDs. Disambiguation:
 
 | Operation lives in | Means |
 |---|---|
-| `vta/webvh/*` | VTA-side: VTA mints the DID and its keys, owns the local `did.jsonl`, decides when to update or rotate. VTA pushes updates to the WebVH host. |
-| `did-hosting/*` | Host-side: receives DID-doc updates from controllers, publishes WebVH log entries, runs witness/watcher, serves resolution requests. Doesn't own the keys. |
-| `webvh/*` | Protocol-mechanical ops on WebVH's append-only log (witness publish/confirm, sync). Host runs these but they're protocol-level, not host-admin-level. |
+| `spec/vta/webvh/*` | VTA-side: VTA mints the DID and its keys, owns the local `did.jsonl`, decides when to update or rotate. VTA pushes updates to the WebVH host. |
+| `spec/did-hosting/*` | Host-side: receives DID-doc updates from controllers, publishes WebVH log entries, runs witness/watcher, serves resolution requests. Doesn't own the keys. |
+| `spec/webvh/*` | Protocol-mechanical ops on WebVH's append-only log (witness publish/confirm, sync). Host runs these but they're protocol-level, not host-admin-level. |
 
 Concrete examples:
-- VTA wants to rotate a key on a DID it controls → `vta/webvh/dids/rotate-keys/1.0` to the VTA, which then sends `webvh/did/sync-update/1.0` to the host. Two different URIs, two different actions, on two different services.
-- Operator wants to add a host to their VTA's known-hosts list → `vta/webvh/servers/add/1.0`. Adding a controller authorisation to the host itself → `did-hosting/acl/create/1.0`.
+- VTA wants to rotate a key on a DID it controls → `spec/vta/webvh/dids/rotate-keys/1.0` to the VTA, which then sends `spec/webvh/did/sync-update/1.0` to the host. Two different URIs, two different actions, on two different services.
+- Operator wants to add a host to their VTA's known-hosts list → `spec/vta/webvh/servers/add/1.0`. Adding a controller authorisation to the host itself → `spec/did-hosting/acl/create/1.0`.
 
 ## Excluded from migration
 
@@ -343,9 +365,9 @@ These wire surfaces do NOT become trust-task envelopes:
 |---|---|
 | `GET /health/details` | Operator/infra observability. Health checks must be cheap and proxy-friendly; trust-task overhead is wrong here. |
 | `GET /metrics` | Prometheus scrape format. Standard exporter contract; not application-level. |
-| `GET /did/{did}/log` (public, unauthed) | **LOAD-BEARING**: failover path for WebVH log resolution. When a WebVH hosting service drops a LogEntry, any DID resolver in the world must be able to fetch the canonical copy from the minting VTA. Wrapping it in a trust-task envelope makes it useless for that purpose. Stays plain REST + public-unauthed forever. (The authed admin equivalent `GET /webvh/dids/{did}/log` DOES migrate to `vta/webvh/dids/get-log/1.0`.) |
+| `GET /did/{did}/log` (public, unauthed) | **LOAD-BEARING**: failover path for WebVH log resolution. When a WebVH hosting service drops a LogEntry, any DID resolver in the world must be able to fetch the canonical copy from the minting VTA. Wrapping it in a trust-task envelope makes it useless for that purpose. Stays plain REST + public-unauthed forever. (The authed admin equivalent `GET /webvh/dids/{did}/log` DOES migrate to `spec/vta/webvh/dids/get-log/1.0`.) |
 | Mediator pickup (DIDComm transport infrastructure) | Mediator protocol is its own DIDComm spec (`coordinate-mediation/2.0`, `messagepickup/3.0`); not application-level. |
-| Internal server-push from server → control plane (webvh stats sync over HTTP) | Already trust-task in webvh-service (`did-hosting/server/stats-sync/1.0`); no VTA equivalent needed. |
+| Internal server-push from server → control plane (webvh stats sync over HTTP) | Already trust-task in webvh-service (`spec/did-hosting/server/stats-sync/1.0`); no VTA equivalent needed. |
 | KMS attest/unwrap (TEE startup-time only) | Pre-bootstrap; no JWT, no client, no envelope. |
 
 ## Migration mapping (legacy → trust-task URI)
@@ -446,7 +468,7 @@ Total VTA: ~79 URIs. Total WebVH (existing + new): 63.
 
 | Cryptosuite | Where used |
 |---|---|
-| **WebAuthn (no cryptosuite)** | Browser-side passkey assertions carried as **trust-task payload data** (NOT a Data Integrity proof on the trust-task itself). Verified via webauthn-rs against DID-resolved VMs. Used by `vta/auth/passkey-login-finish/1.0`, `did-hosting/auth/passkey-login-finish/1.0`, and any task that needs step-up user-presence (e.g. `vta/backup/initiate-export/1.0` for sensitive exports). |
+| **WebAuthn (no cryptosuite)** | Browser-side passkey assertions carried as **trust-task payload data** (NOT a Data Integrity proof on the trust-task itself). Verified via webauthn-rs against DID-resolved VMs. Used by `spec/vta/auth/passkey-login-finish/1.0`, `spec/did-hosting/auth/passkey-login-finish/1.0`, and any task that needs step-up user-presence (e.g. `spec/vta/backup/initiate-export/1.0` for sensitive exports). |
 | `eddsa-jcs-2022` | Per-call proofs by session keys (Ed25519, `did:key:z6Mk…`), cold-start `did:key` direct signing |
 | `ecdsa-jcs-2019` | When the user's primary VM is P-256 and they sign with it directly (rare; passkey path is normal) |
 
@@ -495,12 +517,12 @@ here so they're not relitigated per-slice.
 
 ## Resolved decisions (2026-05-19 review)
 
-1. **`vta/management/reload-services/1.0`** — keep, renamed from `restart`. The current implementation does an in-process soft reload, not a binary restart, and the URI now reflects that.
-2. **`vta/keys/get-secret/1.0`** → **`vta/seeds/export-mnemonic/1.0`** — relocated to the seeds slice and renamed. Misleading "per-key" semantics fixed; same guard machinery (`MnemonicExportGuard`).
+1. **`spec/vta/management/reload-services/1.0`** — keep, renamed from `restart`. The current implementation does an in-process soft reload, not a binary restart, and the URI now reflects that.
+2. **`spec/vta/keys/get-secret/1.0`** → **`spec/vta/seeds/export-mnemonic/1.0`** — relocated to the seeds slice and renamed. Misleading "per-key" semantics fixed; same guard machinery (`MnemonicExportGuard`).
 3. **`GET /did/{did}/log`** — excluded from migration. Load-bearing failover path for public WebVH resolution. Marked in "Excluded from migration" with a `LOAD-BEARING` comment that should appear on the route itself in code.
 4. **VTC** — out of scope. `vtc-service` stays on bespoke DIDComm/REST until a follow-on initiative.
-5. **Sealed-armor envelopes** — payload-of. The trust-task envelope holds metadata; the armor blob IS the payload value (a string). No double-wrapping. Applies to `vta/bootstrap/request-response/1.0` and `vta/bootstrap/provision-integration-response/1.0`.
-6. **Large backup payloads** — three-phase descriptor pattern (initiate → out-of-band transport → finalize). Bulk bytes flow over a token-gated streaming REST endpoint that's excluded from the trust-task migration; the descriptor in the trust-task carries hash + size + transport URL + token, so integrity is verified end-to-end against signed metadata. Pluggable transport (stream-from-VTA in v1, S3-presigned later) without breaking clients. See revised `vta/backup/*` slice and Excluded list.
+5. **Sealed-armor envelopes** — payload-of. The trust-task envelope holds metadata; the armor blob IS the payload value (a string). No double-wrapping. Applies to `spec/vta/bootstrap/request-response/1.0` and `spec/vta/bootstrap/provision-integration-response/1.0`.
+6. **Large backup payloads** — three-phase descriptor pattern (initiate → out-of-band transport → finalize). Bulk bytes flow over a token-gated streaming REST endpoint that's excluded from the trust-task migration; the descriptor in the trust-task carries hash + size + transport URL + token, so integrity is verified end-to-end against signed metadata. Pluggable transport (stream-from-VTA in v1, S3-presigned later) without breaking clients. See revised `spec/vta/backup/*` slice and Excluded list.
 
 ## Action items
 

@@ -209,10 +209,12 @@ mod tests {
     /// pending resolution.
     #[test]
     fn framework_requires_canonical_uri_in_wire_type_field() {
-        // Canonical form parses.
+        // Canonical form parses — with HIERARCHICAL slug
+        // (`vta/auth/revoke-session`) per SPEC.md slug grammar
+        // (`acl/grant`-style nesting is permitted).
         let canonical = serde_json::json!({
             "id": "urn:uuid:00000000-0000-0000-0000-000000000001",
-            "type": "https://trusttasks.org/spec/vta-auth-revoke-session/1.0",
+            "type": "https://trusttasks.org/spec/vta/auth/revoke-session/1.0",
             "issuer": "did:example:alice",
             "recipient": "did:example:vta",
             "issuedAt": "2026-05-20T00:00:00Z",

@@ -9225,6 +9225,7 @@ dependencies = [
  "time",
  "tokio",
  "tracing",
+ "trust-tasks-rs",
  "url",
  "uuid",
  "windows-native-keyring-store",

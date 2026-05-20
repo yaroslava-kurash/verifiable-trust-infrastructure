@@ -161,6 +161,11 @@ required-features = ["sealed-transfer", "provision-integration"]
 tokio = { workspace = true }
 tempfile = "3"
 wiremock = "0.6"
+# Framework type-uri parser — used only by the trust-task URI
+# registry test (`every_uri_parses_as_framework_type_uri`) to pin
+# framework canonical-form conformance. Dev-only so the published
+# artifact stays slim.
+trust-tasks-rs = { workspace = true }
 # Examples need direct access to crypto primitives the SDK normally
 # encapsulates — pulled into dev-deps only so the published artifact
 # stays slim.
