@@ -14,17 +14,25 @@
     "./ecdh-1pu": "./src/ecdh-1pu.js",
     "./a256cbc-hs512": "./src/a256cbc-hs512.js",
     "./pack": "./src/pack.js",
-    "./unpack": "./src/unpack.js"
+    "./unpack": "./src/unpack.js",
+    "./did-key": "./src/did-key.js",
+    "./did-webvh": "./src/did-webvh.js",
+    "./resolver": "./src/resolver.js"
   },
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "build:demo": "esbuild src/index.js --bundle --format=esm --platform=browser --target=es2022 --minify --legal-comments=inline --outfile=../examples/vta-auth-demo/vendor/vti-didcomm-js.js"
   },
   "license": "Apache-2.0",
   "engines": {
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "@noble/curves": "^2.2.0"
+    "@noble/curves": "^2.2.0",
+    "didwebvh-ts": "^2.7.4"
   },
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "esbuild": "^0.28.0"
+  }
 }

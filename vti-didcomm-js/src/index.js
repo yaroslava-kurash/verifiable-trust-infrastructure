@@ -2,7 +2,8 @@
 //
 // B1: crypto primitives (base64url, multibase, jwk, concat-kdf).
 // B2: ECDH-1PU + AES + A256CBC-HS512 + pack/unpack.
-// B3+: DID resolver, mediator transport — see
+// B3: DID resolver (did:key in-tree, did:webvh via didwebvh-ts).
+// B4+: mediator transport — see
 //      `docs/05-design-notes/didcomm-js-implementation.md`.
 
 export * as base64url from "./base64url.js";
@@ -15,3 +16,6 @@ export * as aes from "./aes.js";
 export * as a256cbcHs512 from "./a256cbc-hs512.js";
 export { pack } from "./pack.js";
 export { unpack } from "./unpack.js";
+export * as didKey from "./did-key.js";
+export * as didWebvh from "./did-webvh.js";
+export { createResolver, defaultResolver, resolve } from "./resolver.js";
