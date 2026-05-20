@@ -205,12 +205,40 @@ pub const TASK_SEEDS_ROTATE_1_0: &str = "https://trusttasks.org/spec/vta/seeds/r
 pub const TASK_SEEDS_EXPORT_MNEMONIC_1_0: &str =
     "https://trusttasks.org/spec/vta/seeds/export-mnemonic/1.0";
 
+// ─── Audit slice (spec/vta/audit/*) ──────────────────────────────────────
+
+/// `spec/vta/audit/list-logs/1.0` — list audit log entries (paginated,
+/// filterable). Payload:
+/// [`crate::protocols::audit_management::list::ListAuditLogsBody`].
+/// Auth: Admin.
+pub const TASK_AUDIT_LIST_LOGS_1_0: &str = "https://trusttasks.org/spec/vta/audit/list-logs/1.0";
+
+/// `spec/vta/audit/get-retention/1.0` — read the current retention
+/// period. Payload:
+/// [`crate::protocols::audit_management::retention::GetRetentionBody`]
+/// (empty). Auth: Admin.
+pub const TASK_AUDIT_GET_RETENTION_1_0: &str =
+    "https://trusttasks.org/spec/vta/audit/get-retention/1.0";
+
+/// `spec/vta/audit/update-retention/1.0` — update retention period.
+/// Payload:
+/// [`crate::protocols::audit_management::retention::UpdateRetentionBody`].
+/// Auth: Super Admin only.
+pub const TASK_AUDIT_UPDATE_RETENTION_1_0: &str =
+    "https://trusttasks.org/spec/vta/audit/update-retention/1.0";
+
+/// `spec/vta/discovery/capabilities/1.0` — describe VTA features,
+/// services, and configured webvh hosts. Payload: empty
+/// (`ListSeedsBody`-style — no input required). Auth: any
+/// authenticated user.
+pub const TASK_DISCOVERY_CAPABILITIES_1_0: &str =
+    "https://trusttasks.org/spec/vta/discovery/capabilities/1.0";
+
 // ─── Future slices ───────────────────────────────────────────────────────
 //
-// audit, attestation, services, webvh, did-templates, passkey-vms,
-// backup, config, discovery, management, join-requests, bootstrap.
-// Keys import + wrapping-key defer to follow-on work (import has
-// transport-unwrap complexity at the route boundary).
+// attestation, services, webvh, did-templates, passkey-vms, backup,
+// config, management, join-requests, bootstrap. Keys import + wrapping-
+// key defer to follow-on work (transport-unwrap complexity).
 //
 // Each slice ships in its own Phase 3 PR. The migration mapping table
 // in docs/05-design-notes/trust-task-uri-registry.md enumerates the
@@ -252,6 +280,12 @@ pub const ALL_URIS: &[&str] = &[
     TASK_SEEDS_LIST_1_0,
     TASK_SEEDS_ROTATE_1_0,
     TASK_SEEDS_EXPORT_MNEMONIC_1_0,
+    // Audit slice
+    TASK_AUDIT_LIST_LOGS_1_0,
+    TASK_AUDIT_GET_RETENTION_1_0,
+    TASK_AUDIT_UPDATE_RETENTION_1_0,
+    // Discovery
+    TASK_DISCOVERY_CAPABILITIES_1_0,
 ];
 
 #[cfg(test)]

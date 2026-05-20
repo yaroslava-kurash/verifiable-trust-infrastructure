@@ -31,6 +31,8 @@ use vta_sdk::protocols::acl_management::delete::DeleteAclBody;
 use vta_sdk::protocols::acl_management::get::GetAclBody;
 use vta_sdk::protocols::acl_management::list::ListAclBody;
 use vta_sdk::protocols::acl_management::update::UpdateAclBody;
+use vta_sdk::protocols::audit_management::list::ListAuditLogsBody;
+use vta_sdk::protocols::audit_management::retention::{GetRetentionBody, UpdateRetentionBody};
 use vta_sdk::protocols::auth::{RevokeSessionRequest, RevokeSessionResponse};
 use vta_sdk::protocols::context_management::create::CreateContextBody;
 use vta_sdk::protocols::context_management::delete::{DeleteContextBody, DeleteContextPreviewBody};
@@ -38,6 +40,9 @@ use vta_sdk::protocols::context_management::get::GetContextBody;
 use vta_sdk::protocols::context_management::list::ListContextsBody;
 use vta_sdk::protocols::context_management::update::UpdateContextBody;
 use vta_sdk::protocols::context_management::update_did::UpdateContextDidBody;
+use vta_sdk::protocols::discovery::{
+    CapabilitiesBody, CapabilitiesResponse, FeaturesInfo, ServicesInfo, WebvhServerInfo,
+};
 use vta_sdk::protocols::key_management::create::CreateKeyBody;
 use vta_sdk::protocols::key_management::get::GetKeyBody;
 use vta_sdk::protocols::key_management::list::ListKeysBody;
@@ -170,6 +175,20 @@ async fn dispatch_typed(state: &AppState, auth: &AuthClaims, doc: TrustTask<Valu
         vta_sdk::trust_tasks::TASK_SEEDS_ROTATE_1_0 => handle_seeds_rotate(state, auth, doc).await,
         vta_sdk::trust_tasks::TASK_SEEDS_EXPORT_MNEMONIC_1_0 => {
             handle_seeds_export_mnemonic(state, auth, doc).await
+        }
+        // ─── Audit slice ─────────────────────────────────────────────
+        vta_sdk::trust_tasks::TASK_AUDIT_LIST_LOGS_1_0 => {
+            handle_audit_list_logs(state, auth, doc).await
+        }
+        vta_sdk::trust_tasks::TASK_AUDIT_GET_RETENTION_1_0 => {
+            handle_audit_get_retention(state, auth, doc).await
+        }
+        vta_sdk::trust_tasks::TASK_AUDIT_UPDATE_RETENTION_1_0 => {
+            handle_audit_update_retention(state, auth, doc).await
+        }
+        // ─── Discovery ───────────────────────────────────────────────
+        vta_sdk::trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0 => {
+            handle_discovery_capabilities(state, auth, doc).await
         }
         // ─── Unknown / REST-routed ───────────────────────────────────
         //
@@ -853,6 +872,127 @@ async fn handle_seeds_export_mnemonic(
     }
 }
 
+// ─── Audit slice handlers ────────────────────────────────────────────────
+
+/// Handler for `spec/vta/audit/list-logs/1.0`. Admin only.
+async fn handle_audit_list_logs(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> Response {
+    let req: ListAuditLogsBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    match operations::audit::list_audit_logs(&state.audit_ks, auth, &req, TRANSPORT_TRUST_TASK)
+        .await
+    {
+        Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// Handler for `spec/vta/audit/get-retention/1.0`. Admin only.
+async fn handle_audit_get_retention(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> Response {
+    let _req: GetRetentionBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    match operations::audit::get_retention(&state.config, auth, TRANSPORT_TRUST_TASK).await {
+        Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+/// Handler for `spec/vta/audit/update-retention/1.0`. Super-admin only.
+async fn handle_audit_update_retention(
+    state: &AppState,
+    auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> Response {
+    let req: UpdateRetentionBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    match operations::audit::update_retention(
+        &state.config,
+        &state.audit_ks,
+        auth,
+        req.retention_days,
+        TRANSPORT_TRUST_TASK,
+    )
+    .await
+    {
+        Ok(body) => success_response(&doc, body),
+        Err(e) => app_error_to_reject(&doc, e),
+    }
+}
+
+// ─── Discovery handler ───────────────────────────────────────────────────
+
+/// Handler for `spec/vta/discovery/capabilities/1.0`. Any authenticated
+/// caller. Mirrors the inline logic in
+/// `routes::capabilities::capabilities`; if that ever grows beyond
+/// trivial it should be extracted to `operations::discovery`.
+async fn handle_discovery_capabilities(
+    state: &AppState,
+    _auth: &AuthClaims,
+    doc: TrustTask<Value>,
+) -> Response {
+    let _req: CapabilitiesBody = match parse_payload(&doc) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+
+    let config = state.config.read().await;
+
+    let features = FeaturesInfo {
+        webvh: cfg!(feature = "webvh"),
+        didcomm: cfg!(feature = "didcomm"),
+        tee: cfg!(feature = "tee"),
+        rest: cfg!(feature = "rest"),
+    };
+
+    let services = ServicesInfo {
+        rest: config.services.rest,
+        didcomm: config.services.didcomm,
+    };
+
+    #[cfg(feature = "webvh")]
+    let webvh_servers = match crate::webvh_store::list_servers(&state.webvh_ks).await {
+        Ok(servers) => servers
+            .into_iter()
+            .map(|s| WebvhServerInfo {
+                id: s.id,
+                label: s.label,
+            })
+            .collect(),
+        Err(e) => return app_error_to_reject(&doc, e),
+    };
+    #[cfg(not(feature = "webvh"))]
+    let webvh_servers: Vec<WebvhServerInfo> = vec![];
+
+    let mut did_creation_modes = vec!["vta-built".to_string()];
+    if cfg!(feature = "webvh") {
+        did_creation_modes.push("template".to_string());
+        did_creation_modes.push("final".to_string());
+        did_creation_modes.push("user-specified-keys".to_string());
+    }
+
+    let body = CapabilitiesResponse {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        features,
+        services,
+        webvh_servers,
+        did_creation_modes,
+    };
+    success_response(&doc, body)
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 /// Parse a trust-task document's `payload` field as the typed body
@@ -1118,6 +1258,10 @@ mod tests {
             vta_sdk::trust_tasks::TASK_SEEDS_LIST_1_0,
             vta_sdk::trust_tasks::TASK_SEEDS_ROTATE_1_0,
             vta_sdk::trust_tasks::TASK_SEEDS_EXPORT_MNEMONIC_1_0,
+            vta_sdk::trust_tasks::TASK_AUDIT_LIST_LOGS_1_0,
+            vta_sdk::trust_tasks::TASK_AUDIT_GET_RETENTION_1_0,
+            vta_sdk::trust_tasks::TASK_AUDIT_UPDATE_RETENTION_1_0,
+            vta_sdk::trust_tasks::TASK_DISCOVERY_CAPABILITIES_1_0,
         ];
 
         // URIs deliberately routed via dedicated unauth REST endpoints
