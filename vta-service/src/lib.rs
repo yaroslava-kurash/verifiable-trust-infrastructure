@@ -10,6 +10,7 @@ pub mod acl;
 pub mod acl_sweeper;
 pub mod audit;
 pub mod auth;
+pub mod backup_bundle_store;
 pub mod config;
 pub mod contexts;
 pub mod did_templates;
