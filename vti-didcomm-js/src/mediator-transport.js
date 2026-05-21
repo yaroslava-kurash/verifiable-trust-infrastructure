@@ -33,6 +33,25 @@ import * as jwk from "./jwk.js";
 
 const LIVE_DELIVERY_CHANGE_TYPE = "https://didcomm.org/messagepickup/3.0/live-delivery-change";
 
+// A second, application subprotocol offered alongside the bearer one.
+//
+// Why it's required: the mediator authenticates via the `bearer.<jwt>`
+// subprotocol, but when ONLY that entry is offered it selects no
+// subprotocol and the 101 response carries no `Sec-WebSocket-Protocol`
+// header. A spec-strict WHATWG client (every browser, and Node's
+// undici) treats "I offered a subprotocol, the server agreed to none"
+// as a handshake failure and closes with code 1006. Offering a second,
+// non-bearer entry gives the mediator something to echo back (it
+// passes non-bearer entries through verbatim), so the client sees a
+// selected protocol and the upgrade completes.
+//
+// It must be a valid RFC 6455 subprotocol token — NO separators. The
+// canonical `didcomm/v2` is rejected at WebSocket construction because
+// `/` isn't a token char, so we use a separator-free value. The
+// mediator never acts on it and the VTA never sees it; it exists only
+// to satisfy the subprotocol-echo handshake.
+const WS_APP_SUBPROTOCOL = "didcomm";
+
 /**
  * Build the `live-delivery-change` plaintext that enables live
  * delivery over the current WebSocket. The caller authcrypt-packs it
@@ -192,10 +211,15 @@ export class MediatorSession {
 
   _openSocket() {
     return new Promise((resolve, reject) => {
-      // Subprotocol bearer: ["bearer.<jwt>"]. The mediator reads the
-      // JWT from Sec-WebSocket-Protocol when no Authorization header
-      // is present (browsers can't set the header).
-      const ws = new this.WebSocketImpl(this.mediator.wsEndpoint, [`bearer.${this.mediatorJwt}`]);
+      // Subprotocol bearer: ["bearer.<jwt>", "<app>"]. The mediator
+      // reads the JWT from Sec-WebSocket-Protocol when no Authorization
+      // header is present (browsers can't set the header), and echoes
+      // the non-bearer app subprotocol back so a spec-strict client
+      // accepts the 101 (see WS_APP_SUBPROTOCOL).
+      const ws = new this.WebSocketImpl(this.mediator.wsEndpoint, [
+        `bearer.${this.mediatorJwt}`,
+        WS_APP_SUBPROTOCOL,
+      ]);
       this.ws = ws;
       ws.onmessage = (ev) => this._onFrame(ev.data);
       ws.onerror = (ev) => {

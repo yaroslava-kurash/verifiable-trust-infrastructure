@@ -148,8 +148,11 @@ test("MediatorSession: connect sends live-delivery-change; waitFor resolves on m
   await session.connect();
   const ws = FakeWebSocket.last;
 
-  // Subprotocol bearer was used.
-  assert.deepEqual(ws.protocols, ["bearer.med.jwt.token"]);
+  // Subprotocol bearer + a non-bearer app entry (so the mediator can
+  // echo one back and a spec-strict client accepts the 101).
+  assert.equal(ws.protocols[0], "bearer.med.jwt.token");
+  assert.equal(ws.protocols.length, 2);
+  assert.ok(!ws.protocols[1].startsWith("bearer."));
   // connect() sent exactly one frame: the live-delivery-change,
   // authcrypt'd to the mediator. Unpack it as the mediator to verify.
   assert.equal(ws.sent.length, 1);
