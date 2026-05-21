@@ -91,35 +91,49 @@ fn response<T: serde::Serialize>(
     Ok(Some(DIDCommResponse::new(msg_type, body)))
 }
 
+/// DIDComm `type` for Trust-Tasks envelopes, per the framework binding
+/// `https://trusttasks.org/binding/didcomm/0.1`: a single reserved type
+/// whose `body` carries the full `TrustTask<P>` JSON. Conformant
+/// consumers reject any other type. Mirrors
+/// `trust_tasks_didcomm::ENVELOPE_TYPE`; defined locally to avoid taking
+/// a dependency on the binding crate for one constant.
+pub(crate) const TRUST_TASK_ENVELOPE_TYPE: &str =
+    "https://trusttasks.org/binding/didcomm/0.1/envelope";
+
 /// Generic DIDComm handler for the Trust-Tasks surface.
 ///
-/// The `BridgeHandler` routes any inbound message whose `type` is under
-/// `https://trusttasks.org/spec/` here, instead of a per-protocol
-/// handler. The message body carries the full `TrustTask<Value>`
-/// envelope (identical to the REST `POST /api/trust-tasks` body); the
-/// authcrypt sender is the authenticated caller.
+/// Routed at the single binding envelope type [`TRUST_TASK_ENVELOPE_TYPE`];
+/// the message body carries the full `TrustTask<Value>` envelope
+/// (identical to the REST `POST /api/trust-tasks` body, whose own `type`
+/// field selects the operation). The authcrypt sender is the
+/// authenticated caller.
 ///
 /// Delegates to the shared `dispatch_trust_task_core` so REST and
 /// DIDComm run byte-identical routing + authorization, then returns the
-/// framework result/error document as the reply body. The trust-task
-/// document is self-describing (its own `type` + status `code`), so the
-/// HTTP status the core attaches is dropped on the DIDComm wire.
-pub async fn handle_trust_task(state: &AppState, message: &Message) -> HandlerResult {
+/// framework result/error document — itself a trust-task envelope — as
+/// the reply body. The document is self-describing (its own `type` +
+/// status `code`), so the HTTP status the core attaches is dropped on
+/// the DIDComm wire.
+pub async fn handle_trust_task(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(app_state): Extension<AppState>,
+) -> HandlerResult {
     // Authenticate the authcrypt sender → AuthClaims (role + allowed
     // contexts resolved from the ACL, expiry enforced — same as REST).
-    let auth = app_try!(auth_from_message(message, &state.acl_ks).await);
+    let auth = app_try!(auth_from_message(&message, &app_state.acl_ks).await);
 
     // The DIDComm message body IS the trust-task envelope; hand the raw
     // bytes to the shared core exactly as the REST route does.
     let body = serde_json::to_vec(&message.body).map_err(handler_err)?;
-    let response = crate::routes::trust_tasks::dispatch_trust_task_core(state, &auth, &body).await;
+    let response =
+        crate::routes::trust_tasks::dispatch_trust_task_core(&app_state, &auth, &body).await;
 
     let doc = response_into_json(response).await?;
 
-    // Reply `type` echoes the request URI; the client correlates by
-    // `thid` (set by the service from the inbound id) and reads the
-    // framework document from the body.
-    Ok(Some(DIDCommResponse::new(message.typ.as_str(), doc)))
+    // The reply is itself a trust-task envelope; the service sets `thid`
+    // from the inbound message id for client correlation.
+    Ok(Some(DIDCommResponse::new(TRUST_TASK_ENVELOPE_TYPE, doc)))
 }
 
 /// Decompose an axum `Response` (the shared core's return) into its JSON
@@ -1523,22 +1537,7 @@ pub async fn handle_rotate_did_webvh_keys(
     )
 }
 
-pub async fn handle_unknown(
-    _ctx: HandlerContext,
-    message: Message,
-    Extension(app_state): Extension<AppState>,
-) -> HandlerResult {
-    // Trust-Tasks surface: any inbound type under the trusttasks.org
-    // namespace routes through the generic trust-task handler (the
-    // message body carries the full envelope). It lands in the
-    // fallback rather than a per-type route because the URI set is open
-    // and versioned — one generic handler covers every slice. The
-    // router's MessagePolicy (require_encrypted + require_authenticated)
-    // still applies, since the fallback sits behind that layer.
-    if message.typ.starts_with("https://trusttasks.org/spec/") {
-        return handle_trust_task(&app_state, &message).await;
-    }
-
+pub async fn handle_unknown(_ctx: HandlerContext, message: Message) -> HandlerResult {
     let from = message.from.as_deref().unwrap_or("unknown");
     let thid = message.thid.as_deref().unwrap_or("none");
 

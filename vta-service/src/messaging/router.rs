@@ -186,12 +186,19 @@ pub fn build_handler(
     let mut router = Router::new()
         .extension(state)
         // Full REST `AppState`, injected so the generic trust-task
-        // fallback handler can drive the shared `dispatch_trust_task_core`
+        // handler can drive the shared `dispatch_trust_task_core`
         // (which needs keyspaces not mirrored onto `VtaState`).
         .extension(app_state)
         // Built-in protocol handlers
         .route(TRUST_PING_TYPE, handler_fn(trust_ping_handler))?
         .route(MESSAGE_PICKUP_STATUS_TYPE, handler_fn(ignore_handler))?
+        // Trust-Tasks: one binding envelope type carries every slice's
+        // `TrustTask<P>` in its body; the handler dispatches on the
+        // inner envelope's own `type` via the shared REST dispatcher.
+        .route(
+            handlers::TRUST_TASK_ENVELOPE_TYPE,
+            handler_fn(handlers::handle_trust_task),
+        )?
         // Key management
         .route(
             key_management::CREATE_KEY,
