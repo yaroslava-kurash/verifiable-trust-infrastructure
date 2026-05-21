@@ -62,7 +62,8 @@ mod seeds;
 #[cfg(feature = "webvh")]
 mod webvh;
 
-use helpers::{body_parse_error_response, method_not_found};
+use helpers::{body_parse_error_response, method_not_found, reject_with};
+use trust_tasks_rs::RejectReason;
 
 /// URIs that the VTA exposes through dedicated unauth REST routes
 /// rather than the authenticated `/api/trust-tasks` dispatcher.
@@ -215,6 +216,22 @@ pub(crate) async fn dispatch_trust_task_core(
 
     // 3. Dispatch by type URI.
     dispatch_typed(state, auth, doc).await
+}
+
+/// Build a Trust-Task rejection `Response` for a request whose envelope
+/// bytes are in `body`, WITHOUT dispatching it.
+///
+/// The DIDComm trust-task handler uses this when it can't authorize the
+/// transport peer (no ACL entry), so the reply is still a proper
+/// Trust-Task error document — not a DIDComm problem-report, which a
+/// conformant Trust-Task client can't read. (On REST the JWT extractor
+/// rejects unauthenticated callers before dispatch, so this gap is
+/// DIDComm-only.)
+pub(crate) fn reject_trust_task(body: &[u8], reason: RejectReason) -> Response {
+    match serde_json::from_slice::<TrustTask<Value>>(body) {
+        Ok(doc) => reject_with(&doc, reason),
+        Err(e) => body_parse_error_response(&e.to_string()),
+    }
 }
 
 /// Type-dispatch over the inbound document's `type` URI.

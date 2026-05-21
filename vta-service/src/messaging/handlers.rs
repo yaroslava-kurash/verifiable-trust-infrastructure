@@ -119,15 +119,25 @@ pub async fn handle_trust_task(
     message: Message,
     Extension(app_state): Extension<AppState>,
 ) -> HandlerResult {
-    // Authenticate the authcrypt sender → AuthClaims (role + allowed
-    // contexts resolved from the ACL, expiry enforced — same as REST).
-    let auth = app_try!(auth_from_message(&message, &app_state.acl_ks).await);
-
-    // The DIDComm message body IS the trust-task envelope; hand the raw
-    // bytes to the shared core exactly as the REST route does.
+    // The DIDComm message body IS the trust-task envelope.
     let body = serde_json::to_vec(&message.body).map_err(handler_err)?;
-    let response =
-        crate::routes::trust_tasks::dispatch_trust_task_core(&app_state, &auth, &body).await;
+
+    // Authenticate the authcrypt sender → AuthClaims (role + allowed
+    // contexts resolved from the ACL, expiry enforced — same as REST). On
+    // failure (e.g. the peer has no ACL entry) reply with a Trust-Task
+    // `permission_denied` *envelope*, not a DIDComm problem-report — a
+    // conformant Trust-Task client only understands binding envelopes.
+    let response = match auth_from_message(&message, &app_state.acl_ks).await {
+        Ok(auth) => {
+            crate::routes::trust_tasks::dispatch_trust_task_core(&app_state, &auth, &body).await
+        }
+        Err(e) => crate::routes::trust_tasks::reject_trust_task(
+            &body,
+            trust_tasks_rs::RejectReason::PermissionDenied {
+                reason: e.to_string(),
+            },
+        ),
+    };
 
     let doc = response_into_json(response).await?;
 
