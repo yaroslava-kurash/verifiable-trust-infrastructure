@@ -85,6 +85,27 @@ test("did:webvh: rejects an empty log", async () => {
   );
 });
 
+test("did:webvh: surfaces a resolution error instead of a null document", async () => {
+  // A did:webvh whose host is unreachable (or whose log fails
+  // verification) makes didwebvh-ts return `{ doc, meta: { error } }`
+  // rather than throwing. Our wrapper must turn that into a thrown
+  // error with the reason — not pass a null `doc` downstream where it
+  // surfaces as "Cannot read properties of null".
+  await assert.rejects(
+    () => didWebvh.resolve("did:webvh:nonexistent-scid:127.0.0.1:0"),
+    (err) => {
+      // Either our explicit "resolve failed" wrapper or a propagated
+      // network error is acceptable — what matters is it's NOT a
+      // "Cannot read properties of null" TypeError.
+      assert.ok(
+        !/Cannot read properties of null/.test(err.message),
+        `should not be a null-deref: ${err.message}`,
+      );
+      return true;
+    },
+  );
+});
+
 // ─── Identifier shape ───────────────────────────────────────────────────
 
 test("did:webvh resolve: rejects non-string input", async () => {

@@ -284,7 +284,13 @@ function tokenResult(resp, path) {
 }
 
 async function resolveVtaRecipient(vtaDid) {
-  const { didDocument } = await resolveDid(vtaDid);
+  const resolution = await resolveDid(vtaDid);
+  const didDocument = resolution?.didDocument;
+  if (!didDocument || typeof didDocument !== "object") {
+    throw new Error(
+      `vta-rest-auth: could not resolve a DID document for ${vtaDid} (resolver returned no document)`,
+    );
+  }
   const ka = didDocument.keyAgreement;
   if (!ka || ka.length === 0) {
     throw new Error(`vta-rest-auth: ${vtaDid} has no keyAgreement entries`);

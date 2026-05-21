@@ -78,8 +78,26 @@ async function defaultEd25519Verifier() {
 /**
  * Map `didwebvh-ts`'s `{did, doc, meta}` shape onto the W3C DID
  * Resolution result shape we use elsewhere in this library.
+ *
+ * `resolveDID` does NOT throw on failure — it returns a result whose
+ * `meta.error` carries the reason (network failure, hash-chain
+ * mismatch, etc.) and whose `doc` is empty/null. We turn that into a
+ * thrown error so callers don't trip over a null `didDocument`
+ * downstream with an opaque "Cannot read properties of null" message.
  */
 function adaptResolutionResult(result) {
+  const err = result?.meta?.error;
+  if (err) {
+    const detail = result?.meta?.problemDetails?.detail;
+    throw new Error(
+      `did:webvh resolve failed: ${err}${detail ? ` — ${detail}` : ""}`,
+    );
+  }
+  if (!result?.doc || typeof result.doc !== "object") {
+    throw new Error(
+      "did:webvh resolve: resolver returned no DID document (and no error) — the log may be empty or unreachable",
+    );
+  }
   return {
     didDocument: result.doc,
     didResolutionMetadata: { contentType: "application/did+ld+json" },
