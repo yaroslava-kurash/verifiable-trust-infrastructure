@@ -503,57 +503,68 @@ pub async fn run(
             None
         };
 
+        // Build the shared `AppState` once, before the REST thread spawn.
+        // Both the REST front-end and the DIDComm → trust-task dispatch
+        // bridge need it; constructing it here (rather than inside the
+        // REST block) keeps a single owned copy in scope that each
+        // consumer clones. `AppState` is `Clone`.
+        #[cfg(any(feature = "rest", feature = "didcomm"))]
+        let wrapping_cache = crate::keys::wrapping::WrappingKeyCache::new();
+        #[cfg(any(feature = "rest", feature = "didcomm"))]
+        wrapping_cache.clone().spawn_reaper();
+
+        #[cfg(any(feature = "rest", feature = "didcomm"))]
+        let app_state = AppState {
+            keys_ks,
+            sessions_ks,
+            acl_ks,
+            contexts_ks,
+            did_templates_ks,
+            audit_ks,
+            imported_ks,
+            cache_ks,
+            sealed_nonces_ks,
+            backup_bundles_ks,
+            backup_blob_dir,
+            #[cfg(feature = "webvh")]
+            webvh_ks,
+            #[cfg(feature = "webvh")]
+            passkey_vms_ks,
+            #[cfg(feature = "webvh")]
+            drains_ks,
+            #[cfg(feature = "webvh")]
+            snapshot_ks,
+            #[cfg(feature = "webvh")]
+            mediator_registry: Arc::clone(&mediator_registry),
+            #[cfg(feature = "webvh")]
+            drain_sweeper: Arc::clone(&drain_sweeper),
+            #[cfg(feature = "webvh")]
+            webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks::new(),
+            telemetry: Arc::clone(&telemetry),
+            wrapping_cache,
+            config: Arc::new(RwLock::new(config.clone())),
+            seed_store: seed_store.clone(),
+            did_resolver: auth.did_resolver,
+            secrets_resolver: auth.secrets_resolver.clone(),
+            #[cfg(feature = "didcomm")]
+            signing_vm_id: auth.signing_vm_id.clone(),
+            #[cfg(feature = "didcomm")]
+            ka_vm_id: auth.ka_vm_id.clone(),
+            #[cfg(feature = "didcomm")]
+            didcomm_bridge: didcomm_bridge.clone(),
+            jwt_keys: auth.jwt_keys,
+            atm: auth.atm,
+            tee: tee_context.clone(),
+            restart_tx: restart_tx.clone(),
+            #[cfg(feature = "rest")]
+            metrics_handle: None, // Set in REST thread after install
+        };
+
         // Spawn REST thread (conditional)
         #[cfg(feature = "rest")]
         let rest_handle = if let Some(ref listener_ref) = std_listener {
             let listener = listener_ref.try_clone().map_err(AppError::Io)?;
-            let wrapping_cache = crate::keys::wrapping::WrappingKeyCache::new();
-            wrapping_cache.clone().spawn_reaper();
-
-            let state = AppState {
-                keys_ks,
-                sessions_ks,
-                acl_ks,
-                contexts_ks,
-                did_templates_ks,
-                audit_ks,
-                imported_ks,
-                cache_ks,
-                sealed_nonces_ks,
-                backup_bundles_ks,
-                backup_blob_dir,
-                #[cfg(feature = "webvh")]
-                webvh_ks,
-                #[cfg(feature = "webvh")]
-                passkey_vms_ks,
-                #[cfg(feature = "webvh")]
-                drains_ks,
-                #[cfg(feature = "webvh")]
-                snapshot_ks,
-                #[cfg(feature = "webvh")]
-                mediator_registry: Arc::clone(&mediator_registry),
-                #[cfg(feature = "webvh")]
-                drain_sweeper: Arc::clone(&drain_sweeper),
-                #[cfg(feature = "webvh")]
-                webvh_auth_locks: crate::operations::did_webvh::WebvhAuthLocks::new(),
-                telemetry: Arc::clone(&telemetry),
-                wrapping_cache,
-                config: Arc::new(RwLock::new(config.clone())),
-                seed_store: seed_store.clone(),
-                did_resolver: auth.did_resolver,
-                secrets_resolver: auth.secrets_resolver.clone(),
-                #[cfg(feature = "didcomm")]
-                signing_vm_id: auth.signing_vm_id.clone(),
-                #[cfg(feature = "didcomm")]
-                ka_vm_id: auth.ka_vm_id.clone(),
-                #[cfg(feature = "didcomm")]
-                didcomm_bridge: didcomm_bridge.clone(),
-                jwt_keys: auth.jwt_keys,
-                atm: auth.atm,
-                tee: tee_context.clone(),
-                restart_tx: restart_tx.clone(),
-                metrics_handle: None, // Set in REST thread after install
-            };
+            let state = app_state.clone();
             let mut rest_shutdown_rx = shutdown_rx.clone();
             Some(
                 std::thread::Builder::new()
@@ -624,6 +635,7 @@ pub async fn run(
 
                     let handler = messaging::router::build_handler(
                         Arc::clone(vta_state),
+                        app_state.clone(),
                         didcomm_bridge.clone(),
                     )
                     .map_err(|e| {

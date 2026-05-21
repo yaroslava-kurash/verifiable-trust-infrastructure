@@ -18,6 +18,7 @@ use affinidi_did_resolver_cache_sdk::DIDCacheClient;
 use crate::config::AppConfig;
 use crate::didcomm_bridge::DIDCommBridge;
 use crate::keys::seed_store::SeedStore;
+use crate::server::AppState;
 use crate::store::KeyspaceHandle;
 
 use super::handlers;
@@ -179,10 +180,15 @@ impl affinidi_messaging_didcomm_service::DIDCommHandler for BridgeHandler {
 /// outbound request-response routing via the shared [`DIDCommBridge`].
 pub fn build_handler(
     state: Arc<VtaState>,
+    app_state: AppState,
     bridge: Arc<DIDCommBridge>,
 ) -> Result<BridgeHandler, DIDCommServiceError> {
     let mut router = Router::new()
         .extension(state)
+        // Full REST `AppState`, injected so the generic trust-task
+        // fallback handler can drive the shared `dispatch_trust_task_core`
+        // (which needs keyspaces not mirrored onto `VtaState`).
+        .extension(app_state)
         // Built-in protocol handlers
         .route(TRUST_PING_TYPE, handler_fn(trust_ping_handler))?
         .route(MESSAGE_PICKUP_STATUS_TYPE, handler_fn(ignore_handler))?

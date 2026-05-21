@@ -20,7 +20,7 @@ pub mod keys;
 mod passkey_vms;
 #[cfg(feature = "webvh")]
 mod protocol;
-mod trust_tasks;
+pub(crate) mod trust_tasks;
 mod vta;
 
 use std::sync::Arc;

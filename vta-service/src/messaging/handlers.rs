@@ -21,6 +21,7 @@ use crate::acl::Role;
 use crate::error::AppError;
 use crate::messaging::auth::auth_from_message;
 use crate::operations;
+use crate::server::AppState;
 
 use super::router::VtaState;
 
@@ -88,6 +89,48 @@ fn response<T: serde::Serialize>(
 ) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
     let body = serde_json::to_value(result).map_err(handler_err)?;
     Ok(Some(DIDCommResponse::new(msg_type, body)))
+}
+
+/// Generic DIDComm handler for the Trust-Tasks surface.
+///
+/// The `BridgeHandler` routes any inbound message whose `type` is under
+/// `https://trusttasks.org/spec/` here, instead of a per-protocol
+/// handler. The message body carries the full `TrustTask<Value>`
+/// envelope (identical to the REST `POST /api/trust-tasks` body); the
+/// authcrypt sender is the authenticated caller.
+///
+/// Delegates to the shared `dispatch_trust_task_core` so REST and
+/// DIDComm run byte-identical routing + authorization, then returns the
+/// framework result/error document as the reply body. The trust-task
+/// document is self-describing (its own `type` + status `code`), so the
+/// HTTP status the core attaches is dropped on the DIDComm wire.
+pub async fn handle_trust_task(state: &AppState, message: &Message) -> HandlerResult {
+    // Authenticate the authcrypt sender → AuthClaims (role + allowed
+    // contexts resolved from the ACL, expiry enforced — same as REST).
+    let auth = app_try!(auth_from_message(message, &state.acl_ks).await);
+
+    // The DIDComm message body IS the trust-task envelope; hand the raw
+    // bytes to the shared core exactly as the REST route does.
+    let body = serde_json::to_vec(&message.body).map_err(handler_err)?;
+    let response = crate::routes::trust_tasks::dispatch_trust_task_core(state, &auth, &body).await;
+
+    let doc = response_into_json(response).await?;
+
+    // Reply `type` echoes the request URI; the client correlates by
+    // `thid` (set by the service from the inbound id) and reads the
+    // framework document from the body.
+    Ok(Some(DIDCommResponse::new(message.typ.as_str(), doc)))
+}
+
+/// Decompose an axum `Response` (the shared core's return) into its JSON
+/// body. The body is always a serialised framework trust-task document.
+async fn response_into_json(
+    resp: axum::response::Response,
+) -> Result<serde_json::Value, DIDCommServiceError> {
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .map_err(handler_err)?;
+    serde_json::from_slice(&bytes).map_err(handler_err)
 }
 
 // ---------------------------------------------------------------------------
@@ -1480,7 +1523,22 @@ pub async fn handle_rotate_did_webvh_keys(
     )
 }
 
-pub async fn handle_unknown(_ctx: HandlerContext, message: Message) -> HandlerResult {
+pub async fn handle_unknown(
+    _ctx: HandlerContext,
+    message: Message,
+    Extension(app_state): Extension<AppState>,
+) -> HandlerResult {
+    // Trust-Tasks surface: any inbound type under the trusttasks.org
+    // namespace routes through the generic trust-task handler (the
+    // message body carries the full envelope). It lands in the
+    // fallback rather than a per-type route because the URI set is open
+    // and versioned — one generic handler covers every slice. The
+    // router's MessagePolicy (require_encrypted + require_authenticated)
+    // still applies, since the fallback sits behind that layer.
+    if message.typ.starts_with("https://trusttasks.org/spec/") {
+        return handle_trust_task(&app_state, &message).await;
+    }
+
     let from = message.from.as_deref().unwrap_or("unknown");
     let thid = message.thid.as_deref().unwrap_or("none");
 

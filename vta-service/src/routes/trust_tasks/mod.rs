@@ -178,10 +178,30 @@ pub async fn dispatch_trust_task(
     State(state): State<AppState>,
     body: axum::body::Bytes,
 ) -> Result<Response, AppError> {
+    Ok(dispatch_trust_task_core(&state, &auth, &body).await)
+}
+
+/// Transport-agnostic trust-task dispatch core.
+///
+/// Parses the envelope bytes and dispatches by `type` URI, returning
+/// the framework result/error document wrapped in a `Response` (the
+/// status code comes from the framework's status table). Shared by:
+/// - the REST route [`dispatch_trust_task`] (returns the `Response` as-is), and
+/// - the DIDComm trust-task handler
+///   (`crate::messaging::handlers::handle_trust_task`), which decomposes
+///   the `Response` body into a DIDComm reply.
+///
+/// `body` is the full `TrustTask<Value>` envelope JSON — the HTTP POST
+/// body on REST, the DIDComm message body on DIDComm.
+pub(crate) async fn dispatch_trust_task_core(
+    state: &AppState,
+    auth: &AuthClaims,
+    body: &[u8],
+) -> Response {
     // 1. Parse the envelope.
-    let doc: TrustTask<Value> = match serde_json::from_slice(&body) {
+    let doc: TrustTask<Value> = match serde_json::from_slice(body) {
         Ok(d) => d,
-        Err(e) => return Ok(body_parse_error_response(&e.to_string())),
+        Err(e) => return body_parse_error_response(&e.to_string()),
     };
 
     // 2. Session-pubkey binding pre-check.
@@ -191,11 +211,10 @@ pub async fn dispatch_trust_task(
     // that the proof's `verificationMethod` matches the JWT-bound
     // pubkey before any handler runs. Phase 2 scaffold elides this —
     // no passkey-bound sessions exist yet on the VTA side.
-    let _ = &auth;
+    let _ = auth;
 
     // 3. Dispatch by type URI.
-    let outcome = dispatch_typed(&state, &auth, doc).await;
-    Ok(outcome)
+    dispatch_typed(state, auth, doc).await
 }
 
 /// Type-dispatch over the inbound document's `type` URI.
