@@ -261,21 +261,51 @@ mod verify_impl {
             if !matches {
                 continue;
             }
-            let mb = vm
-                .get("publicKeyMultibase")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    AclSwapError::InvalidClaim(format!(
-                        "verificationMethod '{id}' has no publicKeyMultibase"
-                    ))
-                })?;
-            return crate::did_key::decode_ed25519_public_key_multibase(mb).map_err(|e| {
-                AclSwapError::InvalidClaim(format!("decode publicKeyMultibase for '{id}': {e}"))
-            });
+            // A resolver may emit the key as Multikey (publicKeyMultibase) or
+            // as a JWK (publicKeyJwk: OKP/Ed25519). did:peer resolution in
+            // particular tends to use JWK, so accept both.
+            if let Some(mb) = vm.get("publicKeyMultibase").and_then(|v| v.as_str()) {
+                return crate::did_key::decode_ed25519_public_key_multibase(mb).map_err(|e| {
+                    AclSwapError::InvalidClaim(format!("decode publicKeyMultibase for '{id}': {e}"))
+                });
+            }
+            if let Some(jwk) = vm.get("publicKeyJwk") {
+                return ed25519_pub_from_jwk(jwk).map_err(|e| {
+                    AclSwapError::InvalidClaim(format!("decode publicKeyJwk for '{id}': {e}"))
+                });
+            }
+            return Err(AclSwapError::InvalidClaim(format!(
+                "verificationMethod '{id}' has neither publicKeyMultibase nor publicKeyJwk"
+            )));
         }
         Err(AclSwapError::InvalidClaim(format!(
             "verificationMethod '{target_vm_id}' not found in DID document"
         )))
+    }
+
+    /// Decode an Ed25519 public key from an OKP JWK (`{kty:OKP, crv:Ed25519,
+    /// x:<base64url>}`).
+    fn ed25519_pub_from_jwk(jwk: &Value) -> Result<[u8; 32], AclSwapError> {
+        use base64::Engine;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
+
+        if jwk.get("kty").and_then(|v| v.as_str()) != Some("OKP")
+            || jwk.get("crv").and_then(|v| v.as_str()) != Some("Ed25519")
+        {
+            return Err(AclSwapError::InvalidClaim(
+                "publicKeyJwk is not an OKP/Ed25519 key".into(),
+            ));
+        }
+        let x = jwk
+            .get("x")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| AclSwapError::InvalidClaim("publicKeyJwk has no 'x'".into()))?;
+        let bytes = B64URL
+            .decode(x.as_bytes())
+            .map_err(|e| AclSwapError::InvalidClaim(format!("decode jwk 'x': {e}")))?;
+        bytes
+            .try_into()
+            .map_err(|_| AclSwapError::InvalidClaim("jwk 'x' is not 32 bytes".into()))
     }
 
     #[cfg(test)]
@@ -328,6 +358,26 @@ mod verify_impl {
                 .unwrap();
             assert!(verified.holder().starts_with("did:key:z6Mk"));
             assert_eq!(verified.nonce(), Some("n-123"));
+        }
+
+        #[test]
+        fn verifies_against_a_publickeyjwk_document() {
+            // did:peer resolvers often emit publicKeyJwk rather than multibase.
+            let (jws, _, sk) = make_jws(AUD, 10_000);
+            let did = AclSwapPresentation::new(jws.clone()).peek_holder().unwrap();
+            let mb = did.strip_prefix("did:key:").unwrap();
+            let x = B64URL.encode(sk.verifying_key().to_bytes());
+            let doc = json!({
+                "id": did,
+                "verificationMethod": [{
+                    "id": format!("{did}#{mb}"),
+                    "publicKeyJwk": { "kty": "OKP", "crv": "Ed25519", "x": x },
+                }],
+            });
+            let verified = AclSwapPresentation::new(jws)
+                .verify(&doc, AUD, 1_000)
+                .unwrap();
+            assert_eq!(verified.holder(), did);
         }
 
         #[test]
