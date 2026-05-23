@@ -51,6 +51,8 @@ pub async fn challenge(
         // AAL is unknown at challenge time; populated on authenticate.
         amr: Vec::new(),
         acr: String::new(),
+        token_id: None,
+        session_pubkey_b58btc: None,
     };
 
     let sessions = state.sessions_ks.clone();
@@ -458,6 +460,8 @@ pub async fn passkey_login_finish(
         tee_attested: false,
         amr: claims.amr.clone(),
         acr: claims.acr.clone(),
+        token_id: None,
+        session_pubkey_b58btc: None,
     };
     store_session(&state.sessions_ks, &session).await?;
     store_refresh_index(&state.sessions_ks, &refresh_token, &session_id).await?;

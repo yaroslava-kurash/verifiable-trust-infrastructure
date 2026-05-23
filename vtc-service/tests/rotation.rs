@@ -155,6 +155,8 @@ async fn build_fixture() -> Fixture {
             tee_attested: false,
             amr: Vec::new(),
             acr: String::new(),
+            token_id: None,
+            session_pubkey_b58btc: None,
         },
     )
     .await

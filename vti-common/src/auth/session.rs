@@ -53,6 +53,29 @@ pub struct Session {
     pub amr: Vec<String>,
     #[serde(default)]
     pub acr: String,
+    /// JWT `jti` rotation pin. Set per-token-issue so old JWTs are
+    /// immediately invalidated when a new token is minted for the
+    /// same session — the `AuthClaims` extractor compares the JWT's
+    /// `jti` against this field and rejects mismatches.
+    ///
+    /// Optional because not every consumer uses per-token-issue
+    /// rotation; the canonical extractor checks this only when
+    /// `Some(_)`. `#[skip_serializing_if = "Option::is_none"]`
+    /// keeps the field out of the serialised form when unused so
+    /// existing storage rows do not gain a `token_id: null` column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_id: Option<String>,
+    /// Ephemeral session pubkey for Data Integrity proof binding
+    /// (`eddsa-jcs-2022`). Ed25519 multikey, base58btc with the
+    /// `z` prefix (e.g. `z6MkfBwQrx…`). The corresponding
+    /// `did:key:<this>` is the verificationMethod the holder uses
+    /// when signing trust-task envelopes for this session.
+    ///
+    /// `None` for clients that did not register a session pubkey;
+    /// REQUIRED-spec dispatch then rejects proofless envelopes per
+    /// the trust-task framework's IS_PROOF_REQUIRED gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_pubkey_b58btc: Option<String>,
 }
 
 impl std::fmt::Debug for Session {
@@ -60,7 +83,7 @@ impl std::fmt::Debug for Session {
         f.debug_struct("Session")
             .field("session_id", &self.session_id)
             .field("did", &self.did)
-            .field("challenge", &self.challenge)
+            .field("challenge", &"<redacted>")
             .field("state", &self.state)
             .field("created_at", &self.created_at)
             .field(
@@ -71,6 +94,8 @@ impl std::fmt::Debug for Session {
             .field("tee_attested", &self.tee_attested)
             .field("amr", &self.amr)
             .field("acr", &self.acr)
+            .field("token_id", &self.token_id.as_ref().map(|_| "<redacted>"))
+            .field("session_pubkey_b58btc", &self.session_pubkey_b58btc)
             .finish()
     }
 }
@@ -293,6 +318,8 @@ mod tests {
             tee_attested: false,
             amr: Vec::new(),
             acr: String::new(),
+            token_id: None,
+            session_pubkey_b58btc: None,
         }
     }
 

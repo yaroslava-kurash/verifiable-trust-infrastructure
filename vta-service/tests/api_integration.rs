@@ -85,6 +85,8 @@ impl TestContext {
             tee_attested: false,
             amr: Vec::new(),
             acr: String::new(),
+            token_id: None,
+            session_pubkey_b58btc: None,
         };
         store_session(self.sessions_ks(), &session)
             .await

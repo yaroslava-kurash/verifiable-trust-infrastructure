@@ -180,6 +180,8 @@ async fn mint_session(fix: &Fixture, audience: &str) -> String {
             tee_attested: false,
             amr: Vec::new(),
             acr: String::new(),
+            token_id: None,
+            session_pubkey_b58btc: None,
         },
     )
     .await

@@ -138,6 +138,8 @@ pub async fn challenge(
         // session transitions to Authenticated.
         amr: Vec::new(),
         acr: String::new(),
+        token_id: None,
+        session_pubkey_b58btc: None,
     };
 
     store_session(&state.sessions_ks, &session).await?;
@@ -666,6 +668,8 @@ pub async fn passkey_login_start(
         // verifies and the session transitions to Authenticated.
         amr: Vec::new(),
         acr: String::new(),
+        token_id: None,
+        session_pubkey_b58btc: None,
     };
     store_session(&state.sessions_ks, &session).await?;
 

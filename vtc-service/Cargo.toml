@@ -58,7 +58,7 @@ name = "vtc"
 path = "src/main.rs"
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.6", features = [
+vti-common = { path = "../vti-common", version = "0.7", features = [
   "passkey",
   # `setup` gates the shared dialoguer-driven secrets-prompt helper
   # the wizard calls into.

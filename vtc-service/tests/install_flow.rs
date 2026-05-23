@@ -265,6 +265,8 @@ async fn admin_jwt_for(fix: &Fixture, admin_did: &str) -> String {
         tee_attested: false,
         amr: Vec::new(),
         acr: String::new(),
+        token_id: None,
+        session_pubkey_b58btc: None,
     };
     store_session(&fix.state.sessions_ks, &session)
         .await

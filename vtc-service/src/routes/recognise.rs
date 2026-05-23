@@ -223,6 +223,8 @@ pub async fn mint_recognised_session(
         tee_attested: false,
         amr: vec!["did".to_string()],
         acr: "aal1".to_string(),
+        token_id: None,
+        session_pubkey_b58btc: None,
     };
     store_session(&state.sessions_ks, &session).await?;
 
