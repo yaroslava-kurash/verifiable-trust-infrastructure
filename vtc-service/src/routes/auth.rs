@@ -102,6 +102,7 @@ async fn authenticate_and_mint(
             challenge,
             signer_did: sender_base,
             created_time: None,
+            session_pubkey_b58btc: None,
         },
     )
     .await

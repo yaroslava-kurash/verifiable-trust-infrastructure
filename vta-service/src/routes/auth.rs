@@ -118,6 +118,7 @@ pub async fn authenticate(
             // for a follow-up that threads it through the ATM
             // unpack metadata.
             created_time: None,
+            session_pubkey_b58btc: None,
         },
     )
     .await?;

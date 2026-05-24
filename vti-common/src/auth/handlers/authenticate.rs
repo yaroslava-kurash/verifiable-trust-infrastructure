@@ -151,6 +151,9 @@ pub async fn handle_authenticate_with_aal<B: AuthBackend>(
     session.refresh_expires_at = Some(refresh_expires_at);
     session.amr = amr.clone();
     session.acr = acr.clone();
+    if let Some(pk) = input.session_pubkey_b58btc {
+        session.session_pubkey_b58btc = Some(pk);
+    }
 
     backend
         .sessions()

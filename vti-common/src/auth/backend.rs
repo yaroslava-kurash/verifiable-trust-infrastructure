@@ -458,6 +458,15 @@ pub struct AuthenticateInput {
     /// Optional message `created_time` for DIDComm freshness
     /// checking. `None` for REST transports.
     pub created_time: Option<u64>,
+    /// Optional ephemeral session pubkey to register against
+    /// this session at the auth transition. SIOPv2 callers
+    /// (did-hosting-control) carry one to support
+    /// Data-Integrity-proof binding on subsequent
+    /// trust-task envelopes; DIDComm transports normally leave
+    /// this `None`. The route layer is responsible for any
+    /// shape-validation (e.g. `z6Mk…` Ed25519 multikey prefix)
+    /// before passing it in.
+    pub session_pubkey_b58btc: Option<String>,
 }
 
 /// Inputs to `/auth/refresh` after the transport layer has
