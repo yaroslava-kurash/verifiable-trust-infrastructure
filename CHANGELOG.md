@@ -2,6 +2,69 @@
 
 ## Unreleased
 
+### Security review follow-ups (external patches 02, 03, 04, 05, 07, 08, 10)
+
+Seven findings from the April 2026 external security review are addressed
+in this release. Patches 01 and 06 (DIDComm sender-DID binding on
+`/auth/refresh`) were already closed by the prior auth-handler
+consolidation; patch 09 (test-helper migration) has an invalid premise
+in the current tree and is tracked separately. Each fix below ships
+with a focused regression test.
+
+- **#4 (Critical) — BIP-32 `allocate_path` race.**
+  `vta-service/src/keys/paths.rs`: the read-increment-write of the
+  per-base path counter was a TOCTOU race. Two concurrent
+  `allocate_path` calls could be handed identical derivation paths,
+  producing two `KeyRecord`s that share a private key. Serialised
+  with a process-wide `tokio::sync::Mutex`. Regression test launches
+  64 concurrent allocations against one base and asserts all paths
+  are distinct.
+- **#10 (High) — `delete_did_webvh` cross-context.**
+  `vta-service/src/operations/did_webvh/mod.rs`: only checked
+  `require_admin`, never `require_context(record.context_id)`, so a
+  context-scoped admin could trigger remote deletion (via the stored
+  mnemonic) and local key cleanup of did:webvh records owned by other
+  contexts on the same VTA. Now mirrors the scoping that create / get /
+  get_log / list already enforce.
+- **#7 (High) — `AuthConfig` / `SecretsConfig` Debug leak.**
+  `vti-common/src/config.rs`: replace `#[derive(Debug)]` with manual
+  impls that print `<redacted>` for `jwt_signing_key` (Ed25519
+  access-token signer) and `inline_secret` (master seed / HMAC).
+  Serialize is intact — config files still round-trip. Enclave-mode
+  logs forward over vsock to the host, where a stray `{:?}` would
+  otherwise be a near-total compromise.
+- **#8 (High) — vta-sdk protocol message Debug leaks.**
+  Manual `Debug` impls across `vta-sdk/src/protocols/{auth,
+  backup_management/types, did_management/create, key_management/
+  {create,secret}, seed_management/rotate}.rs`. Mnemonics, seeds,
+  private keys, access / refresh tokens, backup passwords no longer
+  appear in `{:?}` output. Wire formats and sealed-transfer payloads
+  unchanged. Note the original audit named `AuthenticateData` — that
+  type was replaced by `TokenBundle` during the auth consolidation;
+  the fix applies to the current shape.
+- **#3 (Medium) — `delete_acl` role floor.**
+  `vta-service/src/operations/acl.rs`: an Initiator whose
+  `allowed_contexts` overlapped an Admin entry could delete that
+  Admin. `update_acl` was already protected by an admin-only floor;
+  the delete path now also calls `validate_role_assignment(auth,
+  &entry.role)` after the visibility check.
+- **#5 (Medium) — `get_key` / `list_keys` Reader-role floor.**
+  `vta-service/src/operations/keys.rs`: `Monitor`-role principals
+  (intended for metrics/health only) could read key records when
+  context scope happened to overlap. Both operations now call
+  `auth.require_read()` at the top so the floor fires before any
+  per-record filter and covers REST + DIDComm equally.
+- **#2 (Medium DoS) — backup nonce/salt length validation.**
+  `vta-service/src/operations/backup/mod.rs`: `Nonce::from_slice`
+  panics on wrong-length input, so a crafted backup envelope with a
+  non-12-byte nonce (or non-32-byte salt) would take the import
+  handler down. The KDF-parameter bounds half of the patch was
+  already in; the length checks complete the fix.
+
+External tracker file at
+`~/Downloads/patches/verifiable-trust-infrastructure/REVIEW_2026-04_TRACKER.md`
+maps each patch to the commit that addressed it.
+
 ### Built-in DID templates renamed `webvh-*` → `did-hosting-*`
 
 Aligns the SDK's built-in template names with the broader OpenVTC
