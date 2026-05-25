@@ -95,6 +95,115 @@ groups both halves. `did-hosting` is reserved by
 `trust-task-uri-registry.md` for the host-side trust-task namespace
 (`spec/did-hosting/*`), a distinct concern.
 
+### Adopt `did-management/0.1` Trust-Task surface + per-DID domain selection
+
+Pairs with [`affinidi/affinidi-webvh-service` PR #15](https://github.com/affinidi/affinidi-webvh-service/pull/15)
+and the draft spec category in
+[`trustoverip/dtgwg-trust-tasks-tf` PR #40](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/40).
+The VTA's webvh client now speaks the v0.1 `did-management/...`
+surface and lets operators direct DID provisioning at a specific
+hosting domain when the remote backplane serves multiple tenants.
+
+#### Outbound Trust-Task URIs migrated to v0.1
+
+- **`vta-service/src/webvh_didcomm.rs`** stops emitting the legacy
+  `https://affinidi.com/webvh/1.0/did/...` constants. Every outbound
+  DIDComm message now carries a v0.1 `did-management/...` type URI:
+  `did/check-name/0.1` (with `reserve: true`) replaces
+  `did/request/1.0` for slot reservations; `did/register/0.1`,
+  `did/publish/0.1`, and `did/delete/0.1` replace their 1.0
+  siblings. Response sides use the framework's `#response`
+  fragment rather than a paired URI.
+- **`vta-service/src/webvh_client.rs`** (REST) sends the same v0.1
+  payload shape on `POST /api/dids` and `POST /api/dids/register`:
+  `method` discriminator + `didData` field (replacing the legacy
+  `did_log`). The remote `did-hosting-control` accepts both
+  shapes through its alias map during the v0.7 deprecation window,
+  but moving outbound traffic to the canonical surface keeps the
+  VTA off the runtime deprecation warn lines those hosts now
+  emit (`legacy_task=... successor=... sunset=v0.8.0`).
+- **`POST /api/dids/check`** payload gains a `reserve: bool` flag.
+  When set + path available, the host atomically commits a
+  reservation under the caller and returns `{ available, reserved,
+  mnemonic, didUrl }` in one round-trip — absorbs the legacy
+  request_uri call for the common "check, then claim" flow.
+
+#### Per-DID domain selection threaded through the stack
+
+A VTA managing slots across multiple tenant domains on one shared
+`did-hosting-control` backplane can now name the target domain on
+every relevant call. Every layer carries the field optionally;
+omitted means "let the server resolve via the caller's ACL
+default → its system default."
+
+- **Data model**:
+  `CreateDidWebvhBody` / `CreateDidWebvhRequest` /
+  `CreateDidWebvhParams` gain `domain: Option<String>`.
+  `RegisterDidWithServerBody` / `RegisterDidWithServerParams` ditto.
+  All five wire shapes serialise with `skip_serializing_if =
+  "Option::is_none"` so v0.7 callers and hosts that don't yet
+  understand the field are unaffected.
+- **Outbound calls**:
+  `WebvhClient::{request_uri, register_did_atomic, publish_did,
+  delete_did, check_path}` and the parallel `WebvhDIDCommClient`
+  all take `Option<&str>` domain. The transport enum and the
+  `_authenticated` wrappers thread it through.
+- **End-to-end**: explicit `--domain` (CLI) → `CreateDidWebvhRequest`
+  body → vta-service handler → `WebvhTransport` → DIDComm/REST
+  payload → did-hosting-control resolves it. An unknown domain on
+  the remote comes back as the spec-level error
+  `did-management:unknown_domain` (per the category conventions in
+  the trust-tasks PR), which the CLI surfaces unchanged so
+  operators can correlate.
+
+#### Operator CLI gains domain UX
+
+- **`pnm did-mgmt dids create --domain <name>`** and
+  **`pnm did-mgmt dids register --domain <name>`** are new optional
+  flags. When omitted the server resolves through the standard
+  chain.
+- **Interactive prompt** when stdin is a TTY, the operator targeted
+  a specific hosting server, and `--domain` was omitted: the CLI
+  fetches the server's available domains (caller-scoped view) and
+  asks the operator to pick — single-domain servers, non-TTY
+  invocations (CI / scripts), and servers that fail the
+  domain-list call all skip the prompt and let the server resolve.
+- **`pnm did-mgmt dids list-domains --server <id>`** is a new
+  top-level subcommand. Walks the server's `/api/me/domains`
+  (proxied through the VTA, authenticated with the VTA's
+  credentials) and prints the caller-scoped subset, flagging the
+  system default. Use this to discover legitimate `--domain`
+  values before the first call.
+
+#### Supporting plumbing
+
+- New SDK protocol message id
+  `https://firstperson.network/protocols/did-management/1.0/list-webvh-server-domains`
+  + result variant. `VtaClient::list_webvh_server_domains()`
+  exposes it.
+- New `vta-service` REST route `GET /webvh/servers/:id/domains`
+  authenticates the VTA to the named hosting server through the
+  existing `WebvhTransport` / `auth_cache` machinery and forwards
+  the response. DIDComm-only servers return an empty list (the
+  v0.1 `me/domains` task is REST-only on the hosting-control
+  side); the CLI then falls back to the server-side resolution
+  chain rather than blocking the operator.
+- All call sites updated: `operations/did_webvh/mod.rs`,
+  `update/orchestrator.rs`, `provision_integration/mod.rs`,
+  `setup/{from_toml,interactive}.rs`, `webvh_cli.rs`,
+  `messaging/handlers.rs`, `routes/{did_webvh,trust_tasks/webvh}.rs`,
+  and the SDK tests under `vta-sdk/tests/client_rest.rs`.
+
+Out of scope for this change — to land separately:
+
+- The DID-method extension shape
+  (`ext.vnd.trusttasks.did-method-webvh.*` carrying SCID, witness
+  URLs, update-key multibase) is sketched in the trust-tasks PR
+  but the VTA's outbound payloads don't emit it yet. The
+  framework's ignore-unknown rule keeps current hosts accepting
+  our absence and our consumers accepting hosts that include
+  theirs.
+
 ### Security review follow-ups (external patches 02, 03, 04, 05, 07, 08, 09, 10)
 
 Eight findings from the April 2026 external security review.

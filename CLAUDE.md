@@ -453,14 +453,48 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **Refused if** the DID is already server-managed (re-pointing
   a hosted DID at a different host needs coordinated teardown on
   the old host and is out of scope for this op).
-- **CLI**: `pnm did-mgmt dids register --did <did> --server <id>`
-  (online, REST). `vta did-mgmt dids register …` (offline; daemon
-  must be stopped, fjall lock; not available in TEE).
+- **CLI**: `pnm did-mgmt dids register --did <did> --server <id>
+  [--domain <name>]` (online, REST). `vta did-mgmt dids register …`
+  (offline; daemon must be stopped, fjall lock; not available in TEE).
 - **Code**: `vta-service/src/operations/did_webvh/register_server.rs`,
   `vta-service/src/routes/did_webvh.rs::register_did_with_server_handler`,
   `vta_sdk::client::VtaClient::register_did_with_server`.
 - **Docs**: `docs/02-vta/runtime-service-management.md`
   (walkthrough section).
+
+### Provision a DID into a specific hosting domain
+- **What**: When the registered DID-hosting backplane serves
+  several tenant domains, point a new (or being-promoted) DID at
+  a specific one rather than the server's system default. Used
+  by tenant-isolated multi-tenant deployments.
+- **Wire**: Per-DID `domain: Option<String>` on every outbound
+  webvh op (`request_uri`, `register_did_atomic`, `publish_did`,
+  `delete_did`, `check_path`). The remote `did-hosting-control`
+  resolves: explicit → caller's ACL default on the host →
+  system default → reject with `did-management:unknown_domain`.
+  Wire types `CreateDidWebvhBody/Request/Params` and
+  `RegisterDidWithServerBody/Params` carry the field; v0.7
+  callers and hosts that don't yet understand it serialise
+  cleanly (`skip_serializing_if = "Option::is_none"`).
+- **CLI**: `pnm did-mgmt dids create --domain <name>` and
+  `pnm did-mgmt dids register --domain <name>`. Optional. Omit
+  to use the server's resolution chain. Interactive TTY
+  invocations targeting a multi-domain server *without*
+  `--domain` get prompted to pick.
+- **Discovery**: `pnm did-mgmt dids list-domains --server <id>`
+  walks the server's `/api/me/domains` (proxied through the VTA
+  with VTA credentials) and prints the caller-scoped subset.
+  Use this to find legitimate `--domain` values for the same
+  server before the first create / register.
+- **Code**: `vta-service/src/webvh_didcomm.rs`,
+  `vta-service/src/webvh_client.rs`,
+  `vta-service/src/operations/did_webvh/{mod,servers,auth_cache,register_server}.rs`,
+  `vta-service/src/routes/did_webvh.rs::list_server_domains_handler`,
+  `vta_sdk::client::VtaClient::list_webvh_server_domains`,
+  `pnm-cli/src/commands/webvh.rs` (interactive prompt +
+  list-domains dispatch).
+- **Docs**: `docs/02-vta/runtime-service-management.md`
+  (walkthrough "provision into a specific hosting domain").
 
 ### DID template management
 - **Offline**: `pnm did-templates init <kind>`, `validate`, `list-builtins`.
