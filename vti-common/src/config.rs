@@ -25,7 +25,7 @@ pub struct StoreConfig {
     pub data_dir: PathBuf,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct AuthConfig {
     #[serde(default = "default_access_token_expiry")]
     pub access_token_expiry: u64,
@@ -37,6 +37,27 @@ pub struct AuthConfig {
     pub session_cleanup_interval: u64,
     /// Base64url-no-pad encoded 32-byte Ed25519 private key for JWT signing.
     pub jwt_signing_key: Option<String>,
+}
+
+// Manual Debug so a `tracing::debug!(?config, ...)`, panic-with-debug,
+// or `format!("{:?}", app_config)` in a downstream crate cannot dump
+// the JWT signing key into logs (which in enclave mode are forwarded
+// over vsock to the host). Non-secret fields stay visible for
+// diagnostics; `Serialize` is intentionally untouched since these
+// structs round-trip to the on-disk config file.
+impl std::fmt::Debug for AuthConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthConfig")
+            .field("access_token_expiry", &self.access_token_expiry)
+            .field("refresh_token_expiry", &self.refresh_token_expiry)
+            .field("challenge_ttl", &self.challenge_ttl)
+            .field("session_cleanup_interval", &self.session_cleanup_interval)
+            .field(
+                "jwt_signing_key",
+                &self.jwt_signing_key.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -53,7 +74,7 @@ pub struct MessagingConfig {
     pub mediator_host: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct SecretsConfig {
     /// Hex-encoded key material (seed for VTA, secret for VTC).
     /// Uses serde aliases so both `seed` and `secret` are accepted in config files.
@@ -74,6 +95,27 @@ pub struct SecretsConfig {
     /// OS keyring service name (keyring feature).
     /// No default — each service provides its own ("vta" or "vtc").
     pub keyring_service: String,
+}
+
+// Manual Debug — see `AuthConfig` impl for rationale. `inline_secret`
+// is the master seed (VTA) or HMAC secret (VTC); leaking it via a
+// stray `{:?}` would compromise every key derived from it.
+impl std::fmt::Debug for SecretsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecretsConfig")
+            .field(
+                "inline_secret",
+                &self.inline_secret.as_ref().map(|_| "<redacted>"),
+            )
+            .field("aws_secret_name", &self.aws_secret_name)
+            .field("aws_region", &self.aws_region)
+            .field("gcp_project", &self.gcp_project)
+            .field("gcp_secret_name", &self.gcp_secret_name)
+            .field("azure_vault_url", &self.azure_vault_url)
+            .field("azure_secret_name", &self.azure_secret_name)
+            .field("keyring_service", &self.keyring_service)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,5 +187,99 @@ impl Default for LogConfig {
             level: default_log_level(),
             format: LogFormat::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `AuthConfig`'s Debug impl MUST NOT print the JWT signing key —
+    /// it's the Ed25519 private key used to sign every access token. A
+    /// stray `tracing::debug!(?config, ...)` or panic-with-debug
+    /// formatter would otherwise dump it into logs.
+    #[test]
+    fn auth_config_debug_redacts_jwt_signing_key() {
+        let cfg = AuthConfig {
+            access_token_expiry: 900,
+            refresh_token_expiry: 86400,
+            challenge_ttl: 300,
+            session_cleanup_interval: 600,
+            jwt_signing_key: Some("SUPER_SECRET_KEY_MATERIAL_MUST_NOT_LEAK".into()),
+        };
+        let dbg = format!("{cfg:?}");
+        assert!(
+            !dbg.contains("SUPER_SECRET_KEY_MATERIAL"),
+            "AuthConfig Debug leaked jwt_signing_key contents: {dbg}"
+        );
+        assert!(
+            dbg.contains("<redacted>"),
+            "expected redaction marker in Debug, got: {dbg}"
+        );
+        // Non-secret fields must remain visible for diagnostics.
+        assert!(
+            dbg.contains("900"),
+            "access_token_expiry must still be visible: {dbg}"
+        );
+    }
+
+    #[test]
+    fn auth_config_debug_none_signing_key_renders_none() {
+        let cfg = AuthConfig::default();
+        let dbg = format!("{cfg:?}");
+        // `Option<&str>` Debug prints `None` for the absent case.
+        assert!(dbg.contains("jwt_signing_key: None"), "got: {dbg}");
+    }
+
+    /// `SecretsConfig.inline_secret` is the master seed (VTA) or HMAC
+    /// secret (VTC). Same redaction discipline as `AuthConfig`.
+    #[test]
+    fn secrets_config_debug_redacts_inline_secret() {
+        let cfg = SecretsConfig {
+            inline_secret: Some("MASTER_SEED_HEX_MUST_NOT_LEAK".into()),
+            aws_secret_name: None,
+            aws_region: None,
+            gcp_project: None,
+            gcp_secret_name: None,
+            azure_vault_url: None,
+            azure_secret_name: None,
+            keyring_service: "vta".into(),
+        };
+        let dbg = format!("{cfg:?}");
+        assert!(
+            !dbg.contains("MASTER_SEED_HEX"),
+            "SecretsConfig Debug leaked inline_secret contents: {dbg}"
+        );
+        assert!(
+            dbg.contains("<redacted>"),
+            "expected redaction marker in Debug, got: {dbg}"
+        );
+        // Non-secret routing fields stay visible so the operator can
+        // tell which backend is configured.
+        assert!(
+            dbg.contains("vta"),
+            "keyring_service must be visible: {dbg}"
+        );
+    }
+
+    /// Serialize must remain unaffected — these structs round-trip to
+    /// the config file, and redacting them on serialize would break
+    /// persistence. Use JSON here since serde_json is already a
+    /// dev-dep; the wire format (TOML on disk) shares the same serde
+    /// derive so this is sufficient to prove non-redaction.
+    #[test]
+    fn auth_config_serialize_still_carries_jwt_signing_key() {
+        let cfg = AuthConfig {
+            access_token_expiry: 900,
+            refresh_token_expiry: 86400,
+            challenge_ttl: 300,
+            session_cleanup_interval: 600,
+            jwt_signing_key: Some("key-material".into()),
+        };
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        assert!(
+            json.contains("key-material"),
+            "Serialize must not redact — config persistence relies on round-trip: {json}"
+        );
     }
 }

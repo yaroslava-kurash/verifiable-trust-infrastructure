@@ -10,6 +10,15 @@ pub struct CreateDidWebvhBody {
     pub url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// Optional explicit hosting domain on the target server. When
+    /// the server hosts multiple tenant domains, the caller may
+    /// supply this to direct the new DID at a specific one;
+    /// otherwise the server resolves via caller's ACL default →
+    /// system default. An unknown domain on the server is rejected
+    /// with `did-management:unknown_domain`. Ignored in serverless
+    /// mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -58,7 +67,7 @@ pub struct CreateDidWebvhBody {
     pub template_vars: Option<std::collections::HashMap<String, serde_json::Value>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CreateDidWebvhResultBody {
     pub did: String,
     pub context_id: String,
@@ -76,4 +85,27 @@ pub struct CreateDidWebvhResultBody {
     pub did_document: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_entry: Option<String>,
+}
+
+// Manual Debug — `mnemonic` is a 24-word BIP-39 phrase that recovers
+// the entire key hierarchy under the DID. Logging it via `{:?}` is a
+// total compromise. Serialize is unchanged so the wire shape and
+// sealed-transfer payload still round-trip.
+impl std::fmt::Debug for CreateDidWebvhResultBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CreateDidWebvhResultBody")
+            .field("did", &self.did)
+            .field("context_id", &self.context_id)
+            .field("server_id", &self.server_id)
+            .field("mnemonic", &self.mnemonic.as_ref().map(|_| "<redacted>"))
+            .field("scid", &self.scid)
+            .field("portable", &self.portable)
+            .field("signing_key_id", &self.signing_key_id)
+            .field("ka_key_id", &self.ka_key_id)
+            .field("pre_rotation_key_count", &self.pre_rotation_key_count)
+            .field("created_at", &self.created_at)
+            .field("did_document", &self.did_document)
+            .field("log_entry", &self.log_entry)
+            .finish()
+    }
 }

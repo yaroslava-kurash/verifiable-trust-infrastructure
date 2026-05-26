@@ -123,7 +123,7 @@ REST URL updated.
   Effective at:   2026-05-11T20:30:00Z
 
   This VTA's DID is self-hosted. Fetch the updated log:
-    pnm webvh did-log did:webvh:abc:host:vta --out did.jsonl
+    pnm did-mgmt dids get-log did:webvh:abc:host:vta --out did.jsonl
   then redeploy did.jsonl to your host. Until you do,
   resolvers will keep returning the prior version.
 ```
@@ -135,7 +135,7 @@ pushed the new LogEntry to the host as part of the operation
 
 If you later want a serverless DID promoted to server-managed
 (so future updates auto-publish), use
-`pnm webvh register-did --did <did> --server <id>`. See
+`pnm did-mgmt dids register --did <did> --server <id>`. See
 [Walkthrough: register a serverless DID with a webvh
 host](#walkthrough-register-a-serverless-did-with-a-webvh-host)
 below.
@@ -346,17 +346,17 @@ re-issuing the DID identifier.
 # 1. Register the host with the VTA. This validates the host's DID
 #    resolves and advertises a `WebVHHostingService` or
 #    `DIDCommMessaging` endpoint.
-pnm webvh add-server \
+pnm did-mgmt servers add \
   --id primary \
   --did did:web:webvh.example.com \
   --label "primary host"
 
 # 2. Promote the VTA's DID. Pushes the local did.jsonl to the host
 #    and flips `server_id` from "serverless" to "primary".
-pnm webvh register-did \
+pnm did-mgmt dids register \
   --did did:webvh:abcd1234:webvh.example.com:vta \
   --server primary
-# DID registered with WebVH server.
+# DID registered with DID-hosting server.
 #   DID:        did:webvh:abcd1234:webvh.example.com:vta
 #   Server:     primary
 #   Log entries: 4
@@ -379,15 +379,94 @@ teardown on the old host) and is out of scope for this command.
 operation is available on the local binary:
 
 ```bash
-vta webvh register-did \
+vta did-mgmt dids register \
   --did did:webvh:abcd1234:webvh.example.com:vta \
   --server primary
 ```
 
 The fjall lock applies — fails fast if the daemon is running. TEE
-deployments must use `pnm webvh register-did` against the running
+deployments must use `pnm did-mgmt dids register` against the running
 enclave (the offline path can't reach the vsock store on the
 parent host).
+
+## Walkthrough: provision into a specific hosting domain
+
+Use case: the registered DID-hosting backplane serves several
+tenant domains and you want this DID to land on a specific one
+(e.g. `client-a.example.com` rather than the server's system
+default).
+
+### Discover what's available
+
+```bash
+pnm did-mgmt dids list-domains --server primary
+# Hosting domains on `primary`: (system default: client-a.example.com)
+#   - client-a.example.com (default)
+#   - client-b.example.com — Tenant B
+#   - retired-tenant.example.com [disabled]
+```
+
+The list is the *caller-scoped subset* — domains the VTA's own
+ACL entry on that host is allowed to provision into. Domains the
+admin disabled appear with `[disabled]` and refuse new
+registrations; existing DIDs on them stay readable until purge.
+
+### Create a DID on a chosen domain
+
+Pass `--domain` and the new DID lands there directly:
+
+```bash
+pnm did-mgmt dids create \
+  --context tenant-b \
+  --server primary \
+  --domain client-b.example.com \
+  --label "Tenant B integration"
+```
+
+Omitting `--domain` is the common case — the host resolves via
+the standard chain: caller's ACL default → system default. When
+the host serves more than one domain *and* you didn't pass
+`--domain`, the CLI fetches the list and prompts:
+
+```text
+Available hosting domains on `primary`:
+  [1] client-a.example.com (default)
+  [2] client-b.example.com
+  [0] use server default
+Pick a domain (1..=2, or 0 for default): 2
+```
+
+Non-TTY invocations (CI, `pnm … < input.txt`, scripted pipelines)
+skip the prompt and proceed with the server's default. Use
+`--domain` explicitly when the script needs a deterministic
+target.
+
+### Promote an existing serverless DID into a domain
+
+`pnm did-mgmt dids register --domain <name>` lets the same domain
+selection apply on the promote path:
+
+```bash
+pnm did-mgmt dids register \
+  --did did:webvh:abcd1234:legacy.example.com:vta \
+  --server primary \
+  --domain client-b.example.com
+```
+
+The host validates the request the same way `create` does. If the
+DID's existing identifier embeds a host segment incompatible with
+the requested domain, the host rejects with
+`did-management:host_mismatch` — you'd need to mint a new DID
+under the right domain instead.
+
+### Error contract
+
+`--domain <name>` against an unknown / inactive domain returns
+the framework-spec error code `did-management:unknown_domain`.
+The CLI surfaces the code unchanged so an operator can correlate
+against the [`did-management/_shared/0.1/CONVENTIONS.md`](https://github.com/trustoverip/dtgwg-trust-tasks-tf/blob/draft-did-management-category/specs/did-management/_shared/0.1/CONVENTIONS.md)
+spec. `list-domains` against the same server tells you which
+values are currently legitimate.
 
 ## Walkthrough: edit an existing DID document
 
@@ -398,7 +477,7 @@ document, then publish the change as a new LogEntry.
 ### Interactive (the common case)
 
 ```bash
-pnm webvh edit-did --did did:webvh:abcd1234:vta.example.com:vta
+pnm did-mgmt dids edit --did did:webvh:abcd1234:vta.example.com:vta
 ```
 
 What happens:
@@ -428,19 +507,19 @@ What happens:
 the publish is rejected with `DidIdChanged` and the
 operation aborts. The DID identifier is a permanent commitment
 from the first LogEntry; mutating it would break every existing
-reference. To mint a new DID instead, use `pnm webvh create-did`.
+reference. To mint a new DID instead, use `pnm did-mgmt dids create`.
 
 ### Non-interactive (scripted)
 
 ```bash
 # Just publish a new document, no parameter changes:
-pnm webvh edit-did \
+pnm did-mgmt dids edit \
   --did did:webvh:abcd:vta.example.com:vta \
   --document new-doc.json \
   --no-confirm
 
 # Document + parameter overrides:
-pnm webvh edit-did \
+pnm did-mgmt dids edit \
   --did did:webvh:abcd:vta.example.com:vta \
   --document new-doc.json \
   --pre-rotation 2 \
@@ -450,7 +529,7 @@ pnm webvh edit-did \
   --no-confirm
 
 # Disable watchers entirely:
-pnm webvh edit-did \
+pnm did-mgmt dids edit \
   --did did:webvh:abcd:vta.example.com:vta \
   --no-watchers \
   --no-confirm
@@ -470,7 +549,7 @@ is friendlier.
 
 ```bash
 # VTA daemon must be stopped — fjall lock applies.
-vta webvh edit-did --did did:webvh:abcd:vta.example.com:vta
+vta did-mgmt dids edit --did did:webvh:abcd:vta.example.com:vta
 ```
 
 Same flag surface and same security boundary as the other

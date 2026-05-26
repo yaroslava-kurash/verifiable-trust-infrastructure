@@ -2,6 +2,293 @@
 
 ## Unreleased
 
+### Version bumps
+
+Only the two crates external repos (did-hosting-common,
+webvh-witness, rp-sdk, …) consume are bumped:
+
+- `vta-sdk` 0.7.0 → 0.8.0
+- `vti-common` 0.7.0 → 0.8.0
+
+Minor bump (not patch) is required by the additive public API + the
+const-value change on `BUILTIN_WEBVH_*_TEMPLATE` (now resolves to
+`"did-hosting-control"` etc.) + the manual `Debug` redaction on
+secret-bearing wire types + the REST `import_key` hardening. Each
+of those is detailed in its own section below. Consumer repos pull
+the changes by updating their pin from `"0.7"` to `"0.8"`.
+
+The other workspace crates (`vta-service`, `vta-enclave`,
+`vta-cli-common`, `pnm-cli`, `cnm-cli`, `vtc-service`,
+`didcomm-test`) stay at their current versions — they're
+binaries / CLI tools, not libraries consumed externally, so their
+Cargo.toml version is cosmetic for the install-the-binary use case.
+Their internal `vta-sdk` / `vti-common` dep pinnings are updated
+`"0.7"` → `"0.8"` to point at the bumped crates.
+
+### Built-in DID templates renamed `webvh-*` → `did-hosting-*`
+
+Aligns the SDK's built-in template names with the broader OpenVTC
+service-role terminology already in `auth-architecture.md` and
+`trust-task-uri-registry.md`.
+
+- **Renames**: `webvh-control` → `did-hosting-control`,
+  `webvh-daemon` → `did-hosting-daemon`,
+  `webvh-server` → `did-hosting-server`. The on-disk JSON files,
+  `name` + `kind` fields, builtin-loader constants, and curated
+  `ProvisionAsk` builders (`did_hosting_control` / `did_hosting_daemon`
+  / `did_hosting_server`) all flip to the new names.
+- **Back-compat alias for one release.**
+  `load_embedded("webvh-control")` still resolves to
+  `did-hosting-control` (same for daemon and server); the returned
+  `DidTemplate.name` carries the canonical name. The
+  `BUILTIN_WEBVH_*_TEMPLATE` constants and `ProvisionAsk::webvh_*`
+  builders are marked `#[deprecated(since = "0.8.0")]` and forward
+  to the new names. Operator configs should switch to
+  `did-hosting-*` before the alias is dropped in the next minor.
+- **Doc cross-refs.** Tracker mentions of `webvh-witness` (a service
+  role in the webvh-service repo) follow the same rename to
+  `did-hosting-witness`. Protocol URIs and module names that refer
+  to the `did:webvh` DID-method itself are unchanged.
+
+### CLI restructure: `pnm webvh` / `vta webvh` → `did-mgmt {servers,dids}`
+
+The operator CLI surface restructured to match the SDK umbrella
+module `vta_sdk::protocols::did_management`. Two intermediate verbs
+split the noun:
+
+- `pnm webvh add-server` → `pnm did-mgmt servers add`
+- `pnm webvh list-servers` → `pnm did-mgmt servers list`
+- `pnm webvh update-server <id>` → `pnm did-mgmt servers update <id>`
+- `pnm webvh remove-server <id>` → `pnm did-mgmt servers remove <id>`
+- `pnm webvh create-did` → `pnm did-mgmt dids create`
+- `pnm webvh edit-did` → `pnm did-mgmt dids edit`
+- `pnm webvh register-did` → `pnm did-mgmt dids register`
+- `pnm webvh list-dids` → `pnm did-mgmt dids list`
+- `pnm webvh get-did` → `pnm did-mgmt dids get`
+- `pnm webvh delete-did` → `pnm did-mgmt dids delete`
+- `pnm webvh did-log` → `pnm did-mgmt dids get-log`
+
+Same rename applies to the offline `vta` binary (no `get-did`
+variant). The `webvh` cargo feature is **not** renamed — it gates
+`didwebvh-rs`, which refers to the DID *method*, not the operator
+UX.
+
+**Back-compat alias for one release.** The old `pnm webvh …` /
+`vta webvh …` paths still dispatch through the same handlers
+(`Webvh` variant is `#[command(hide = true)]` — absent from `--help`
+but invocable). Each call prints a yellow stderr deprecation note
+pointing at the new path; alias removed in the next minor.
+
+Operator-facing docs (`docs/02-vta/{cold-start,
+runtime-service-management,provision-integration,did-templates,
+did-webvh-update}.md`, `docs/03-vtc/getting-started.md`,
+`docs/04-reference/cli-style.md`, `CLAUDE.md`) updated to the new
+command shapes. Prose mentions of "WebVH server" are now
+"DID-hosting server" where they refer to the hosting role;
+references to `did:webvh` the DID method itself are intentionally
+unchanged.
+
+Rationale: `did-management` is the right umbrella because half the
+surface isn't hosting at all (DID lifecycle: create/edit/delete/
+get/get-log/register) and the SDK module of the same name already
+groups both halves. `did-hosting` is reserved by
+`trust-task-uri-registry.md` for the host-side trust-task namespace
+(`spec/did-hosting/*`), a distinct concern.
+
+### Adopt `did-management/0.1` Trust-Task surface + per-DID domain selection
+
+Pairs with [`affinidi/affinidi-webvh-service` PR #15](https://github.com/affinidi/affinidi-webvh-service/pull/15)
+and the draft spec category in
+[`trustoverip/dtgwg-trust-tasks-tf` PR #40](https://github.com/trustoverip/dtgwg-trust-tasks-tf/pull/40).
+The VTA's webvh client now speaks the v0.1 `did-management/...`
+surface and lets operators direct DID provisioning at a specific
+hosting domain when the remote backplane serves multiple tenants.
+
+#### Outbound Trust-Task URIs migrated to v0.1
+
+- **`vta-service/src/webvh_didcomm.rs`** stops emitting the legacy
+  `https://affinidi.com/webvh/1.0/did/...` constants. Every outbound
+  DIDComm message now carries a v0.1 `did-management/...` type URI:
+  `did/check-name/0.1` (with `reserve: true`) replaces
+  `did/request/1.0` for slot reservations; `did/register/0.1`,
+  `did/publish/0.1`, and `did/delete/0.1` replace their 1.0
+  siblings. Response sides use the framework's `#response`
+  fragment rather than a paired URI.
+- **`vta-service/src/webvh_client.rs`** (REST) sends the same v0.1
+  payload shape on `POST /api/dids` and `POST /api/dids/register`:
+  `method` discriminator + `didData` field (replacing the legacy
+  `did_log`). The remote `did-hosting-control` accepts both
+  shapes through its alias map during the v0.7 deprecation window,
+  but moving outbound traffic to the canonical surface keeps the
+  VTA off the runtime deprecation warn lines those hosts now
+  emit (`legacy_task=... successor=... sunset=v0.8.0`).
+- **`POST /api/dids/check`** payload gains a `reserve: bool` flag.
+  When set + path available, the host atomically commits a
+  reservation under the caller and returns `{ available, reserved,
+  mnemonic, didUrl }` in one round-trip — absorbs the legacy
+  request_uri call for the common "check, then claim" flow.
+
+#### Per-DID domain selection threaded through the stack
+
+A VTA managing slots across multiple tenant domains on one shared
+`did-hosting-control` backplane can now name the target domain on
+every relevant call. Every layer carries the field optionally;
+omitted means "let the server resolve via the caller's ACL
+default → its system default."
+
+- **Data model**:
+  `CreateDidWebvhBody` / `CreateDidWebvhRequest` /
+  `CreateDidWebvhParams` gain `domain: Option<String>`.
+  `RegisterDidWithServerBody` / `RegisterDidWithServerParams` ditto.
+  All five wire shapes serialise with `skip_serializing_if =
+  "Option::is_none"` so v0.7 callers and hosts that don't yet
+  understand the field are unaffected.
+- **Outbound calls**:
+  `WebvhClient::{request_uri, register_did_atomic, publish_did,
+  delete_did, check_path}` and the parallel `WebvhDIDCommClient`
+  all take `Option<&str>` domain. The transport enum and the
+  `_authenticated` wrappers thread it through.
+- **End-to-end**: explicit `--domain` (CLI) → `CreateDidWebvhRequest`
+  body → vta-service handler → `WebvhTransport` → DIDComm/REST
+  payload → did-hosting-control resolves it. An unknown domain on
+  the remote comes back as the spec-level error
+  `did-management:unknown_domain` (per the category conventions in
+  the trust-tasks PR), which the CLI surfaces unchanged so
+  operators can correlate.
+
+#### Operator CLI gains domain UX
+
+- **`pnm did-mgmt dids create --domain <name>`** and
+  **`pnm did-mgmt dids register --domain <name>`** are new optional
+  flags. When omitted the server resolves through the standard
+  chain.
+- **Interactive prompt** when stdin is a TTY, the operator targeted
+  a specific hosting server, and `--domain` was omitted: the CLI
+  fetches the server's available domains (caller-scoped view) and
+  asks the operator to pick — single-domain servers, non-TTY
+  invocations (CI / scripts), and servers that fail the
+  domain-list call all skip the prompt and let the server resolve.
+- **`pnm did-mgmt dids list-domains --server <id>`** is a new
+  top-level subcommand. Walks the server's `/api/me/domains`
+  (proxied through the VTA, authenticated with the VTA's
+  credentials) and prints the caller-scoped subset, flagging the
+  system default. Use this to discover legitimate `--domain`
+  values before the first call.
+
+#### Supporting plumbing
+
+- New SDK protocol message id
+  `https://firstperson.network/protocols/did-management/1.0/list-webvh-server-domains`
+  + result variant. `VtaClient::list_webvh_server_domains()`
+  exposes it.
+- New `vta-service` REST route `GET /webvh/servers/:id/domains`
+  authenticates the VTA to the named hosting server through the
+  existing `WebvhTransport` / `auth_cache` machinery and forwards
+  the response. DIDComm-only servers return an empty list (the
+  v0.1 `me/domains` task is REST-only on the hosting-control
+  side); the CLI then falls back to the server-side resolution
+  chain rather than blocking the operator.
+- All call sites updated: `operations/did_webvh/mod.rs`,
+  `update/orchestrator.rs`, `provision_integration/mod.rs`,
+  `setup/{from_toml,interactive}.rs`, `webvh_cli.rs`,
+  `messaging/handlers.rs`, `routes/{did_webvh,trust_tasks/webvh}.rs`,
+  and the SDK tests under `vta-sdk/tests/client_rest.rs`.
+
+Out of scope for this change — to land separately:
+
+- The DID-method extension shape
+  (`ext.vnd.trusttasks.did-method-webvh.*` carrying SCID, witness
+  URLs, update-key multibase) is sketched in the trust-tasks PR
+  but the VTA's outbound payloads don't emit it yet. The
+  framework's ignore-unknown rule keeps current hosts accepting
+  our absence and our consumers accepting hosts that include
+  theirs.
+
+### Security review follow-ups (external patches 02, 03, 04, 05, 07, 08, 09, 10)
+
+Eight findings from the April 2026 external security review.
+Patches 01 + 06 (DIDComm sender-DID binding on `/auth/refresh`) were
+already closed by the prior auth-handler consolidation. Each fix
+below ships with a focused regression test. Tracker file at
+`~/Downloads/patches/verifiable-trust-infrastructure/REVIEW_2026-04_TRACKER.md`
+maps each patch to the commit that addressed it.
+
+- **#4 (Critical) — BIP-32 `allocate_path` race.**
+  `vta-service/src/keys/paths.rs`: the read-increment-write of the
+  per-base path counter was a TOCTOU race. Two concurrent
+  `allocate_path` calls could be handed identical derivation paths,
+  producing two `KeyRecord`s that share a private key. Serialised
+  with a process-wide `tokio::sync::Mutex`. Regression test launches
+  64 concurrent allocations against one base and asserts all paths
+  are distinct.
+- **#10 (High) — `delete_did_webvh` cross-context.**
+  `vta-service/src/operations/did_webvh/mod.rs`: only checked
+  `require_admin`, never `require_context(record.context_id)`, so a
+  context-scoped admin could trigger remote deletion (via the stored
+  mnemonic) and local key cleanup of did:webvh records owned by
+  other contexts on the same VTA. Now mirrors the scoping that
+  create / get / get_log / list already enforce.
+- **#7 (High) — `AuthConfig` / `SecretsConfig` Debug leak.**
+  `vti-common/src/config.rs`: replace `#[derive(Debug)]` with manual
+  impls that print `<redacted>` for `jwt_signing_key` (Ed25519
+  access-token signer) and `inline_secret` (master seed / HMAC).
+  Serialize is intact — config files still round-trip. Enclave-mode
+  logs forward over vsock to the host, where a stray `{:?}` would
+  otherwise be a near-total compromise.
+- **#8 (High) — vta-sdk protocol message Debug leaks.**
+  Manual `Debug` impls across `vta-sdk/src/protocols/{auth,
+  backup_management/types, did_management/create, key_management/
+  {create,secret}, seed_management/rotate}.rs`. Mnemonics, seeds,
+  private keys, access / refresh tokens, backup passwords no longer
+  appear in `{:?}` output. Wire formats and sealed-transfer payloads
+  unchanged. Note the original audit named `AuthenticateData` — that
+  type was replaced by `TokenBundle` during the auth consolidation;
+  the fix applies to the current shape.
+- **#9 (High) — REST `POST /keys/import` no longer accepts plaintext
+  `private_key_multibase`.** Posting raw key material over a
+  session-bearer-authenticated REST call relies entirely on TLS for
+  confidentiality — on Nitro Enclave the TLS terminator is on the
+  host, which means the host network stack reads plaintext private
+  keys out of memory. The handler now uses
+  `#[serde(deny_unknown_fields)]` so any client posting the legacy
+  field gets a specific `unknown field private_key_multibase` 422
+  pointing them at the migration path. Use one of:
+  - `private_key_sealed` — armored sealed-transfer bundle. Fetch
+    the ephemeral wrapping pubkey via
+    `GET /keys/import/wrapping-key`, then seal locally and POST.
+  - `private_key_jwe` — legacy ECDH-ES + A256GCM compact JWE,
+    wrapped against the same ephemeral key.
+
+  The DIDComm transport (no server-side handler yet) keeps the
+  multibase field on its SDK shape because authcrypt already
+  provides end-to-end confidentiality. **Operator-facing side
+  effect**: the `pnm/cnm import-key` CLI's fall-back-to-multibase
+  branch (active when the wrapping-key fetch failed) is removed —
+  the CLI now surfaces the wrapping-key-fetch error directly with a
+  clear message ("the VTA must support sealed-transfer key import —
+  `vta-sdk ≥ 0.8`"). The mediator-setup and did-hosting-setup flows
+  are **not** affected: they use `provision-integration` (the VTA
+  mints keys via BIP-32 from the master seed and returns a sealed
+  bundle to the consumer), never `POST /keys/import`.
+- **#3 (Medium) — `delete_acl` role floor.**
+  `vta-service/src/operations/acl.rs`: an Initiator whose
+  `allowed_contexts` overlapped an Admin entry could delete that
+  Admin. `update_acl` was already protected by an admin-only floor;
+  the delete path now also calls `validate_role_assignment(auth,
+  &entry.role)` after the visibility check.
+- **#5 (Medium) — `get_key` / `list_keys` Reader-role floor.**
+  `vta-service/src/operations/keys.rs`: `Monitor`-role principals
+  (intended for metrics/health only) could read key records when
+  context scope happened to overlap. Both operations now call
+  `auth.require_read()` at the top so the floor fires before any
+  per-record filter and covers REST + DIDComm equally.
+- **#2 (Medium DoS) — backup nonce/salt length validation.**
+  `vta-service/src/operations/backup/mod.rs`: `Nonce::from_slice`
+  panics on wrong-length input, so a crafted backup envelope with a
+  non-12-byte nonce (or non-32-byte salt) would take the import
+  handler down. The KDF-parameter bounds half of the patch was
+  already in; the length checks complete the fix.
+
 ### Auth-architecture consolidation (S1+S2+S3)
 
 A cross-repo consolidation of the `/auth/*` surface. Five

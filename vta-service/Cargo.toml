@@ -68,8 +68,8 @@ path = "src/main.rs"
 required-features = ["cli-synthesis"]
 
 [dependencies]
-vti-common = { path = "../vti-common", version = "0.7", features = ["encryption", "passkey"] }
-vta-sdk = { path = "../vta-sdk", version = "0.7", features = ["didcomm", "sealed-transfer", "provision-integration"] }
+vti-common = { path = "../vti-common", version = "0.8", features = ["encryption", "passkey"] }
+vta-sdk = { path = "../vta-sdk", version = "0.8", features = ["didcomm", "sealed-transfer", "provision-integration"] }
 # DID-VM-resolved WebAuthn assertion verifier — drives the new
 # `vta/auth/passkey-login-{start,finish}/1.0` trust-task handlers.
 # Distinct from `webauthn-rs` (which drives the passkey *enrolment*
@@ -196,7 +196,7 @@ urlencoding = "2"
 # without each having to copy ~140 LoC of AppState-wiring boilerplate.
 # Production builds remain unaffected — this is dev-deps only.
 vta-service = { path = ".", features = ["test-support"] }
-# Mock HTTP server for the webvh-daemon REST auth flow tests. Each
+# Mock HTTP server for the did-hosting-daemon REST auth flow tests. Each
 # test spins up a real local server bound to a random port, validates
 # the JWS-signed request bodies the daemon would see, and serves
 # canned responses — same wire protocol as production, but no daemon

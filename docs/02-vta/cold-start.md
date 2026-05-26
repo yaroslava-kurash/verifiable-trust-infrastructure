@@ -110,7 +110,7 @@ VTA DID:
   > Create a new did:webvh DID
 ```
 
-Point it at wherever you plan to host the `did.jsonl` (a WebVH server,
+Point it at wherever you plan to host the `did.jsonl` (a DID-hosting server,
 static host, or a `did:web`-style URL). Choose **Simple** mode.
 
 If you skip this, the VTA will use `did:key` as its identity; clients
@@ -228,7 +228,7 @@ vta import-did --did did:key:z6Mk... --role admin
 This writes a single `AclEntry` directly to the fjall store. No
 network call, no server required. The VTA stays unsealed — the
 offline CLI remains usable for any further provisioning work
-(mediator, webvh-daemon, etc.) before you start the daemon. See
+(mediator, did-hosting-daemon, etc.) before you start the daemon. See
 [`seal-and-unseal.md`](seal-and-unseal.md) for when (and whether) to
 seal explicitly with `vta bootstrap-admin`.
 
@@ -413,8 +413,8 @@ The VTA exposes the provisioning-time `did.jsonl` log publicly (webvh
 logs are world-readable by design):
 
 ```
-pnm webvh did-log <did:webvh:...>
-vta webvh did-log <did:webvh:...>              # offline from the VTA host
+pnm did-mgmt dids get-log <did:webvh:...>
+vta did-mgmt dids get-log <did:webvh:...>              # offline from the VTA host
 GET /did/{did}/log                             # HTTP, unauthenticated
 ```
 
@@ -430,7 +430,7 @@ fallback, or debugging resolution issues.
 
 For services that need a full identity (DID + signing key + KA key +
 VTA DID/URL) *before* they can contact the VTA — typically mediators
-and webvh servers — the VTA admin uses the sealed-transfer flow:
+and DID-hosting servers — the VTA admin uses the sealed-transfer flow:
 
 **On the client's host** (1-time):
 
@@ -545,4 +545,4 @@ cargo run --package vta-service \
 - [`../02-vta/provision-integration.md`](../02-vta/provision-integration.md) —
   operator walkthrough for the three-phase provision flow
   (generate VP request → provision → open+install), covering mediator
-  and webvh-daemon greenfield setup.
+  and did-hosting-daemon greenfield setup.

@@ -30,7 +30,10 @@ pub use register_server::{
     RegisterDidWithServerError, RegisterDidWithServerParams, RegisterDidWithServerResult,
     register_did_with_server,
 };
-pub use servers::{add_webvh_server, list_webvh_servers, remove_webvh_server, update_webvh_server};
+pub use servers::{
+    add_webvh_server, list_webvh_server_domains, list_webvh_servers, remove_webvh_server,
+    update_webvh_server,
+};
 pub use update::{
     RotateDidWebvhKeysOptions, UpdateDidWebvhError, UpdateDidWebvhOptions, UpdateDidWebvhResult,
     rotate_did_webvh_keys, state_from_jsonl_pub, update_did_webvh,
@@ -129,6 +132,15 @@ pub struct CreateDidWebvhParams {
     pub server_id: Option<String>,
     pub url: Option<String>,
     pub path: Option<String>,
+    /// Optional explicit hosting domain on the target server.
+    /// Honored only for server-managed DIDs (when `server_id` is set);
+    /// ignored in serverless mode. Resolution chain on the remote:
+    /// explicit → caller's ACL default on the server → server's
+    /// system default → reject with `did-management:unknown_domain`.
+    /// Enables a VTA managing slots across multiple tenant domains
+    /// on one shared `did-hosting-control` backplane to direct
+    /// provisioning at the right tenant.
+    pub domain: Option<String>,
     pub label: Option<String>,
     pub portable: bool,
     pub add_mediator_service: bool,
@@ -172,6 +184,7 @@ impl From<CreateDidWebvhBody> for CreateDidWebvhParams {
             server_id: body.server_id,
             url: body.url,
             path: body.path,
+            domain: body.domain,
             label: body.label,
             portable: body.portable.unwrap_or(true),
             add_mediator_service: body.add_mediator_service.unwrap_or(false),
@@ -393,7 +406,10 @@ pub async fn create_did_webvh(
             let transport =
                 WebvhTransport::from_server(&server, did_resolver, didcomm_bridge).await?;
             // Final mode has no mnemonic from a server request — use the SCID as identifier
-            transport.publish_did(&scid, did_log).await?;
+            // Background publish (final-mode rotation push): no
+            // domain override; the remote uses the slot's recorded
+            // domain on lookup.
+            transport.publish_did(&scid, did_log, None).await?;
         }
 
         // Optionally set as primary DID
@@ -607,7 +623,12 @@ pub async fn create_did_webvh(
             .ok_or_else(|| AppError::NotFound(format!("webvh server not found: {server_id}")))?;
 
         let transport = WebvhTransport::from_server(&server, did_resolver, didcomm_bridge).await?;
-        let uri_response = transport.request_uri(params.path.as_deref()).await?;
+        // Domain selection: `params.domain` is the explicit caller-
+        // supplied override (pnm CLI `--domain`). When omitted, the
+        // remote resolves via caller's ACL default → system default.
+        let uri_response = transport
+            .request_uri(params.path.as_deref(), params.domain.as_deref())
+            .await?;
 
         // Validate the URL
         let parsed_url = Url::parse(&uri_response.did_url)
@@ -960,7 +981,14 @@ pub async fn create_did_webvh(
             .ok_or_else(|| AppError::NotFound(format!("webvh server not found: {server_id}")))?;
 
         let transport = WebvhTransport::from_server(&server, did_resolver, didcomm_bridge).await?;
-        transport.publish_did(mnemonic, &log_content).await?;
+        // Reuse the same `params.domain` selection the request_uri
+        // call above used. The remote already knows the slot's domain
+        // from the reservation, so this is a redundant override —
+        // sending it explicitly catches a misconfigured caller before
+        // the log lands on the wrong domain.
+        transport
+            .publish_did(mnemonic, &log_content, params.domain.as_deref())
+            .await?;
 
         // Store DID record and log
         let did_record = WebvhDidRecord {
@@ -1024,6 +1052,12 @@ pub async fn delete_did_webvh(
     let record = webvh_store::get_did(webvh_ks, did)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("webvh DID not found: {did}")))?;
+    // Mirror the context-scoping that create/get/get_log/list already
+    // enforce on this record. Without this check, any context-scoped
+    // admin could trigger remote deletion (via record.mnemonic) and
+    // local key cleanup of DIDs owned by other contexts on the same
+    // VTA.
+    auth.require_context(&record.context_id)?;
 
     // Resolve server for remote deletion. Track the outcome so the
     // operator can act on a daemon-side orphan rather than seeing
@@ -1046,6 +1080,7 @@ pub async fn delete_did_webvh(
                     vta_did_value,
                     &server,
                     &record.mnemonic,
+                    None,
                 )
                 .await
                 {
@@ -1053,7 +1088,7 @@ pub async fn delete_did_webvh(
                         did = %did,
                         server_id = %server.id,
                         error = %e,
-                        "webvh-daemon delete_did failed; continuing local cleanup but DID is now orphaned on the daemon"
+                        "did-hosting-daemon delete_did failed; continuing local cleanup but DID is now orphaned on the daemon"
                     );
                     daemon_cleanup_error = Some(format!(
                         "daemon `{}` rejected delete: {e} — DID is orphaned on the daemon and \
@@ -1162,12 +1197,16 @@ impl<'a> WebvhTransport<'a> {
         }
     }
 
-    async fn request_uri(&self, path: Option<&str>) -> Result<RequestUriResponse, AppError> {
+    async fn request_uri(
+        &self,
+        path: Option<&str>,
+        domain: Option<&str>,
+    ) -> Result<RequestUriResponse, AppError> {
         match self {
-            Self::Rest(c) => c.request_uri(path).await,
+            Self::Rest(c) => c.request_uri(path, domain).await,
             Self::DIDComm { bridge, server_did } => {
                 WebvhDIDCommClient::new(bridge, server_did)
-                    .request_uri(path)
+                    .request_uri(path, domain)
                     .await
             }
         }
@@ -1177,12 +1216,13 @@ impl<'a> WebvhTransport<'a> {
         &self,
         mnemonic: &str,
         log_content: &str,
+        domain: Option<&str>,
     ) -> Result<(), AppError> {
         match self {
-            Self::Rest(c) => c.publish_did(mnemonic, log_content).await,
+            Self::Rest(c) => c.publish_did(mnemonic, log_content, domain).await,
             Self::DIDComm { bridge, server_did } => {
                 WebvhDIDCommClient::new(bridge, server_did)
-                    .publish_did(mnemonic, log_content)
+                    .publish_did(mnemonic, log_content, domain)
                     .await
             }
         }
@@ -1237,11 +1277,12 @@ impl<'a> WebvhTransport<'a> {
         &mut self,
         mnemonic: &str,
         log_content: &str,
+        domain: Option<&str>,
         auth_ctx: &auth_cache::AuthContext<'_>,
         server: &WebvhServerRecord,
     ) -> Result<(), AppError> {
         match self {
-            Self::Rest(c) => match c.publish_did(mnemonic, log_content).await {
+            Self::Rest(c) => match c.publish_did(mnemonic, log_content, domain).await {
                 Ok(()) => Ok(()),
                 Err(AppError::Unauthorized(_)) => {
                     info!(
@@ -1250,13 +1291,13 @@ impl<'a> WebvhTransport<'a> {
                     );
                     auth_cache::invalidate_cached_token(auth_ctx.webvh_ks, &server.id).await?;
                     auth_cache::ensure_fresh_access_token(auth_ctx, server, c).await?;
-                    c.publish_did(mnemonic, log_content).await
+                    c.publish_did(mnemonic, log_content, domain).await
                 }
                 Err(e) => Err(e),
             },
             Self::DIDComm { bridge, server_did } => {
                 WebvhDIDCommClient::new(bridge, server_did)
-                    .publish_did(mnemonic, log_content)
+                    .publish_did(mnemonic, log_content, domain)
                     .await
             }
         }
@@ -1266,11 +1307,12 @@ impl<'a> WebvhTransport<'a> {
     pub(super) async fn delete_did_authenticated(
         &mut self,
         mnemonic: &str,
+        domain: Option<&str>,
         auth_ctx: &auth_cache::AuthContext<'_>,
         server: &WebvhServerRecord,
     ) -> Result<(), AppError> {
         match self {
-            Self::Rest(c) => match c.delete_did(mnemonic).await {
+            Self::Rest(c) => match c.delete_did(mnemonic, domain).await {
                 Ok(()) => Ok(()),
                 Err(AppError::Unauthorized(_)) => {
                     info!(
@@ -1279,13 +1321,13 @@ impl<'a> WebvhTransport<'a> {
                     );
                     auth_cache::invalidate_cached_token(auth_ctx.webvh_ks, &server.id).await?;
                     auth_cache::ensure_fresh_access_token(auth_ctx, server, c).await?;
-                    c.delete_did(mnemonic).await
+                    c.delete_did(mnemonic, domain).await
                 }
                 Err(e) => Err(e),
             },
             Self::DIDComm { bridge, server_did } => {
                 WebvhDIDCommClient::new(bridge, server_did)
-                    .delete_did(mnemonic)
+                    .delete_did(mnemonic, domain)
                     .await
             }
         }
@@ -1297,11 +1339,12 @@ impl<'a> WebvhTransport<'a> {
         path: &str,
         did_log: &str,
         force: bool,
+        domain: Option<&str>,
         auth_ctx: &auth_cache::AuthContext<'_>,
         server: &WebvhServerRecord,
     ) -> Result<RequestUriResponse, AppError> {
         match self {
-            Self::Rest(c) => match c.register_did_atomic(path, did_log, force).await {
+            Self::Rest(c) => match c.register_did_atomic(path, did_log, force, domain).await {
                 Ok(r) => Ok(r),
                 Err(AppError::Unauthorized(_)) => {
                     info!(
@@ -1310,13 +1353,13 @@ impl<'a> WebvhTransport<'a> {
                     );
                     auth_cache::invalidate_cached_token(auth_ctx.webvh_ks, &server.id).await?;
                     auth_cache::ensure_fresh_access_token(auth_ctx, server, c).await?;
-                    c.register_did_atomic(path, did_log, force).await
+                    c.register_did_atomic(path, did_log, force, domain).await
                 }
                 Err(e) => Err(e),
             },
             Self::DIDComm { bridge, server_did } => {
                 WebvhDIDCommClient::new(bridge, server_did)
-                    .register_did_atomic(path, did_log, force)
+                    .register_did_atomic(path, did_log, force, domain)
                     .await
             }
         }
@@ -1373,4 +1416,91 @@ pub(crate) async fn derive_pre_rotation_keys(
     }
 
     Ok((hashes, key_data))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::Store;
+    use crate::webvh_store;
+    use tempfile::TempDir;
+    use vti_common::acl::Role;
+    use vti_common::config::StoreConfig as VtiStoreConfig;
+
+    /// Pin the post-fetch context-scoping invariant that `delete_did_webvh`
+    /// enforces. A context-A admin must not be able to delete a DID record
+    /// owned by context B, even when the record exists and the caller has
+    /// `Role::Admin`. The full function is heavyweight (DIDComm bridge,
+    /// resolver, seed store) so this exercises the invariant against a
+    /// realistic planted record using the same `webvh_store::get_did` +
+    /// `auth.require_context(&record.context_id)` sequence the operation
+    /// runs first.
+    #[tokio::test]
+    async fn delete_did_webvh_blocks_cross_context_admin() {
+        let dir = TempDir::new().expect("tempdir");
+        let store = Store::open(&VtiStoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .expect("open store");
+        let webvh_ks = store.keyspace("webvh").expect("keyspace");
+
+        let now = Utc::now();
+        let did = "did:webvh:QmTest:example.com:abc";
+        webvh_store::store_did(
+            &webvh_ks,
+            &WebvhDidRecord {
+                did: did.to_string(),
+                server_id: "prod".to_string(),
+                mnemonic: "fixture-mnemonic".to_string(),
+                scid: "QmTest".to_string(),
+                context_id: "ctx-b".to_string(),
+                portable: false,
+                log_entry_count: 1,
+                pre_rotation_count: 0,
+                next_fragment_id: 1,
+                created_at: now,
+                updated_at: now,
+            },
+        )
+        .await
+        .expect("plant did record");
+
+        let auth_a = AuthClaims {
+            did: "did:key:z6MkCtxAAdmin".to_string(),
+            role: Role::Admin,
+            allowed_contexts: vec!["ctx-a".to_string()],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
+            amr: Vec::new(),
+            acr: String::new(),
+        };
+
+        // Mirror the prelude `delete_did_webvh` runs before any I/O.
+        auth_a.require_admin().expect("admin floor passes");
+        let record = webvh_store::get_did(&webvh_ks, did)
+            .await
+            .expect("get_did ok")
+            .expect("record present");
+        let err = auth_a
+            .require_context(&record.context_id)
+            .expect_err("context-A admin must not pass require_context for ctx-b");
+        assert!(
+            matches!(err, AppError::Forbidden(_)),
+            "expected Forbidden, got: {err:?}"
+        );
+
+        // Sanity check: same call from a ctx-B admin passes.
+        let auth_b = AuthClaims {
+            did: "did:key:z6MkCtxBAdmin".to_string(),
+            role: Role::Admin,
+            allowed_contexts: vec!["ctx-b".to_string()],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
+            amr: Vec::new(),
+            acr: String::new(),
+        };
+        auth_b
+            .require_context(&record.context_id)
+            .expect("ctx-B admin passes require_context for ctx-b");
+    }
 }

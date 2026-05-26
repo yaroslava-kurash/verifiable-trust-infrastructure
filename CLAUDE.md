@@ -80,8 +80,11 @@ The workspace has a **DID templates feature** (`docs/02-vta/did-templates.md`,
 template is a JSON file describing the **shape** of a DID document with
 `{TOKEN}` placeholders; the VTA renders them server-side, filling in keys it
 just minted + caller-supplied variables. Built-ins ship with the service
-(`didcomm-mediator`, `vta-admin`, `webvh-control`, `webvh-daemon`,
-`webvh-server`); operators can upload more.
+(`didcomm-mediator`, `vta-admin`, `did-hosting-control`,
+`did-hosting-daemon`, `did-hosting-server`); operators can upload more.
+The previous `webvh-*` template names still resolve via the loader's
+alias table for one release — update operator configs to the canonical
+`did-hosting-*` names before the alias is removed.
 
 **Before inventing a new mint-a-DID path, reach for templates first.**
 
@@ -106,7 +109,7 @@ DID shape for every consumer, no redeploy.
 The noun for "a thing a template provisions" is **integration** (not
 "agent" — that word collides with VTA = Verifiable Trust *Agent*). CLI
 reads "provision-integration"; docs talk about "integration kinds"
-(mediator, webvh-control, webvh-daemon, webvh-server, app, etc.); each
+(mediator, did-hosting-control, did-hosting-daemon, did-hosting-server, app, etc.); each
 template declares its kind in the `kind` field.
 
 ## Authorization claims between VTA and integrations use VC/VP format
@@ -450,24 +453,60 @@ new flow, update both this section and the relevant `docs/*.md`.
 - **Refused if** the DID is already server-managed (re-pointing
   a hosted DID at a different host needs coordinated teardown on
   the old host and is out of scope for this op).
-- **CLI**: `pnm webvh register-did --did <did> --server <id>`
-  (online, REST). `vta webvh register-did …` (offline; daemon
-  must be stopped, fjall lock; not available in TEE).
+- **CLI**: `pnm did-mgmt dids register --did <did> --server <id>
+  [--domain <name>]` (online, REST). `vta did-mgmt dids register …`
+  (offline; daemon must be stopped, fjall lock; not available in TEE).
 - **Code**: `vta-service/src/operations/did_webvh/register_server.rs`,
   `vta-service/src/routes/did_webvh.rs::register_did_with_server_handler`,
   `vta_sdk::client::VtaClient::register_did_with_server`.
 - **Docs**: `docs/02-vta/runtime-service-management.md`
   (walkthrough section).
 
+### Provision a DID into a specific hosting domain
+- **What**: When the registered DID-hosting backplane serves
+  several tenant domains, point a new (or being-promoted) DID at
+  a specific one rather than the server's system default. Used
+  by tenant-isolated multi-tenant deployments.
+- **Wire**: Per-DID `domain: Option<String>` on every outbound
+  webvh op (`request_uri`, `register_did_atomic`, `publish_did`,
+  `delete_did`, `check_path`). The remote `did-hosting-control`
+  resolves: explicit → caller's ACL default on the host →
+  system default → reject with `did-management:unknown_domain`.
+  Wire types `CreateDidWebvhBody/Request/Params` and
+  `RegisterDidWithServerBody/Params` carry the field; v0.7
+  callers and hosts that don't yet understand it serialise
+  cleanly (`skip_serializing_if = "Option::is_none"`).
+- **CLI**: `pnm did-mgmt dids create --domain <name>` and
+  `pnm did-mgmt dids register --domain <name>`. Optional. Omit
+  to use the server's resolution chain. Interactive TTY
+  invocations targeting a multi-domain server *without*
+  `--domain` get prompted to pick.
+- **Discovery**: `pnm did-mgmt dids list-domains --server <id>`
+  walks the server's `/api/me/domains` (proxied through the VTA
+  with VTA credentials) and prints the caller-scoped subset.
+  Use this to find legitimate `--domain` values for the same
+  server before the first create / register.
+- **Code**: `vta-service/src/webvh_didcomm.rs`,
+  `vta-service/src/webvh_client.rs`,
+  `vta-service/src/operations/did_webvh/{mod,servers,auth_cache,register_server}.rs`,
+  `vta-service/src/routes/did_webvh.rs::list_server_domains_handler`,
+  `vta_sdk::client::VtaClient::list_webvh_server_domains`,
+  `pnm-cli/src/commands/webvh.rs` (interactive prompt +
+  list-domains dispatch).
+- **Docs**: `docs/02-vta/runtime-service-management.md`
+  (walkthrough "provision into a specific hosting domain").
+
 ### DID template management
 - **Offline**: `pnm did-templates init <kind>`, `validate`, `list-builtins`.
 - **Online**: `pnm did-templates list/show/create/update/delete` →
   REST `/did-templates` (global) or `/contexts/{id}/did-templates` (scoped).
-- **Built-ins**: `didcomm-mediator`, `vta-admin`, `webvh-control`,
-  `webvh-daemon`, `webvh-server` (shipped with the SDK, always available).
-  Three webvh templates by deployment role: `webvh-control` (hosting +
-  DIDComm), `webvh-daemon` (hosting only), `webvh-server` (DIDComm only,
-  for witness/watcher).
+- **Built-ins**: `didcomm-mediator`, `vta-admin`, `did-hosting-control`,
+  `did-hosting-daemon`, `did-hosting-server` (shipped with the SDK,
+  always available). Three did-hosting templates by deployment role:
+  `did-hosting-control` (hosting + DIDComm), `did-hosting-daemon`
+  (hosting only), `did-hosting-server` (DIDComm only, for
+  witness/watcher). Legacy `webvh-*` names resolve via the loader's
+  alias table for one release.
 - **Code**: `vta-sdk/src/did_templates/`,
   `vta-service/src/routes/did_templates.rs`, `vta-service/src/operations/did_templates.rs`.
 - **Docs**: `docs/02-vta/did-templates.md`.

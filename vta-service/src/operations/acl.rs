@@ -308,6 +308,16 @@ pub async fn delete_acl(
         )));
     }
 
+    // Caller must be at least as privileged as the entry they are
+    // deleting; otherwise an Initiator whose `allowed_contexts`
+    // overlaps an Admin entry could remove that Admin. `update_acl`
+    // is already protected by `require_admin()` at its top so this
+    // shape concern is exclusive to the delete path. Visibility
+    // alone is not sufficient — a context-admin / Initiator may
+    // legitimately *see* an Admin ACL entry without being allowed
+    // to mutate it.
+    validate_role_assignment(auth, &entry.role)?;
+
     delete_acl_entry(acl_ks, did).await?;
 
     info!(channel, caller = %auth.did, did = %did, "ACL entry deleted");
@@ -699,6 +709,56 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(body.allowed_contexts, vec!["ctx-real".to_string()]);
+    }
+
+    /// Regression test: an Initiator whose `allowed_contexts` overlaps
+    /// an Admin ACL entry must not be able to delete that entry. Pre-fix
+    /// `delete_acl` only checked `require_manage` (admits Initiator) and
+    /// visibility — both of which the Initiator satisfies on a shared
+    /// context — leaving the deletion unguarded. The new
+    /// `validate_role_assignment(auth, &entry.role)` check rejects this.
+    #[tokio::test]
+    async fn delete_acl_rejects_initiator_deleting_admin() {
+        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-shared"]).await;
+
+        let admin_target = "did:key:zAdminTarget";
+        seed_target(&acl_ks, admin_target, &["ctx-shared"]).await;
+
+        let caller = AuthClaims {
+            did: "did:key:zInitiator".into(),
+            role: Role::Initiator,
+            allowed_contexts: vec!["ctx-shared".into()],
+            session_id: "test-session".into(),
+            access_expires_at: 0,
+            amr: Vec::new(),
+            acr: String::new(),
+        };
+        let err = delete_acl(&acl_ks, &audit_ks, &caller, admin_target, "test")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AppError::Forbidden(_)),
+            "expected Forbidden, got {err:?}"
+        );
+    }
+
+    /// Sanity check: an Admin caller can still delete an Admin entry —
+    /// the new role-floor check refuses lower-priv callers, not peers.
+    #[tokio::test]
+    async fn delete_acl_admin_can_delete_admin_entry() {
+        let (_store, acl_ks, audit_ks, contexts_ks, _dir) = fresh_store().await;
+        seed_contexts(&contexts_ks, &["ctx-shared"]).await;
+
+        let admin_target = "did:key:zAdminTarget2";
+        seed_target(&acl_ks, admin_target, &["ctx-shared"]).await;
+
+        let caller = ctx_admin("did:key:zCallerAdmin", &["ctx-shared"]);
+        let body = delete_acl(&acl_ks, &audit_ks, &caller, admin_target, "test")
+            .await
+            .expect("admin-on-admin delete succeeds");
+        assert_eq!(body.did, admin_target);
+        assert!(body.deleted);
     }
 
     /// Updating an ACL entry to add a context that doesn't exist
