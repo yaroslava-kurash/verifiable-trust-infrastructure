@@ -49,6 +49,129 @@ pub async fn authenticate(
     Ok(Json(authenticate_and_mint(&state, &body).await?))
 }
 
+/// Clock skew tolerance for SIOP `id_token` freshness checks, matching
+/// did-hosting-control so a wallet token minted against either service
+/// validates identically.
+const SIOP_CLOCK_SKEW_SECS: u64 = 60;
+
+/// The VTA-wallet SIOP login envelope: `{ type, payload }` where the
+/// payload carries a self-issued `id_token`. Field names are snake_case
+/// on the wire (no `rename_all`), matching what the wallet extension and
+/// did-hosting-control's `AuthenticatePayload` use.
+#[derive(Debug, Deserialize)]
+struct SiopAuthEnvelope {
+    #[serde(rename = "type")]
+    typ: String,
+    payload: SiopAuthPayload,
+}
+
+#[derive(Debug, Deserialize)]
+struct SiopAuthPayload {
+    /// Self-issued SIOPv2 id_token (compact EdDSA JWS). Required — its
+    /// presence is what distinguishes this from a DIDComm-packed body.
+    id_token: String,
+    session_id: String,
+    #[serde(default)]
+    session_pubkey_b58btc: Option<String>,
+}
+
+/// Try to authenticate a VTA-wallet SIOP `id_token`.
+///
+/// Returns `Ok(None)` when `body` is not a SIOP envelope (no
+/// `payload.id_token`), so the caller falls through to the DIDComm
+/// path. Returns `Ok(Some(_))` on a successfully verified token, or an
+/// `Err` when the body *is* a SIOP envelope but verification fails.
+///
+/// The wallet does the SIOP round-trip internally: it fetched a
+/// challenge from `/auth/challenge`, the holder self-issued an
+/// `id_token` with `nonce = challenge` and `aud = <this VTC's DID>`,
+/// and posted it here. We verify the signature (via the shared
+/// `vti_common` verifier), bind `aud` to our own DID and check
+/// freshness, then hand the holder DID + nonce to the same canonical
+/// `handle_authenticate` the DIDComm path uses — `nonce` becomes the
+/// `challenge` the session is matched against.
+async fn authenticate_siop(
+    state: &AppState,
+    body: &str,
+) -> Result<Option<AuthenticateResponse>, AppError> {
+    // Not a SIOP envelope → fall through to the DIDComm path.
+    let Ok(env) = serde_json::from_str::<SiopAuthEnvelope>(body) else {
+        return Ok(None);
+    };
+    if !matches!(
+        env.typ.as_str(),
+        "https://affinidi.com/atm/1.0/authenticate"
+            | "https://trusttasks.org/spec/auth/authenticate/0.1"
+    ) || env.payload.id_token.is_empty()
+    {
+        return Ok(None);
+    }
+
+    let resolver = state.did_resolver.as_ref().ok_or_else(|| {
+        AppError::Authentication("DID resolver not configured; cannot verify id_token".into())
+    })?;
+
+    // Cryptographic verification (signature + self-issuance + key
+    // binding). Policy checks (aud, nonce, freshness) are ours below.
+    let verified = vti_common::auth::verify_siop_id_token(&env.payload.id_token, resolver)
+        .await
+        .map_err(|e| AppError::Authentication(format!("id_token verification failed: {e}")))?;
+
+    // Audience binding: the token must be addressed to *this* VTC's DID.
+    let vtc_did = {
+        let cfg = state.config.read().await;
+        cfg.vtc_did.clone()
+    }
+    .ok_or_else(|| AppError::Authentication("VTC DID not configured".into()))?;
+    if verified.audience != vtc_did {
+        return Err(AppError::Authentication(
+            "id_token `aud` does not match this service".into(),
+        ));
+    }
+
+    // Freshness window (mirrors did-hosting-control).
+    let now = now_epoch();
+    if verified.expires_at <= now {
+        return Err(AppError::Authentication("id_token has expired".into()));
+    }
+    if verified.issued_at > now.saturating_add(SIOP_CLOCK_SKEW_SECS) {
+        return Err(AppError::Authentication(
+            "id_token `iat` is in the future".into(),
+        ));
+    }
+    if verified.issued_at > verified.expires_at {
+        return Err(AppError::Authentication(
+            "id_token `iat` is after `exp`".into(),
+        ));
+    }
+
+    // Optional session-bound pubkey must be an Ed25519 multikey.
+    if let Some(pk) = env.payload.session_pubkey_b58btc.as_deref()
+        && !pk.starts_with("z6Mk")
+    {
+        return Err(AppError::Authentication(
+            "session_pubkey_b58btc must be an Ed25519 multikey (z6Mk… prefix)".into(),
+        ));
+    }
+
+    let backend = crate::auth::VtcAuthBackend::from_state(state).await?;
+    let resp = vti_common::auth::handlers::handle_authenticate(
+        &backend,
+        vti_common::auth::AuthenticateInput {
+            session_id: env.payload.session_id,
+            // The SIOP `nonce` is the challenge the session was issued.
+            challenge: verified.nonce,
+            // The holder DID, proven by the verified signature.
+            signer_did: verified.issuer,
+            // REST path — no DIDComm `created_time` to thread.
+            created_time: None,
+            session_pubkey_b58btc: env.payload.session_pubkey_b58btc,
+        },
+    )
+    .await?;
+    Ok(Some(resp))
+}
+
 /// Core authenticate + mint logic shared by `POST /v1/auth/` and
 /// `POST /v1/auth/admin-login`. Both endpoints accept the same
 /// DIDComm-packed authentication message; `admin-login`
@@ -58,6 +181,13 @@ async fn authenticate_and_mint(
     state: &AppState,
     body: &str,
 ) -> Result<AuthenticateResponse, AppError> {
+    // VTA-wallet SIOP login: a `{ type, payload: { id_token, … } }`
+    // envelope. Returns `None` for a DIDComm-packed body, so that path
+    // below is left untouched.
+    if let Some(resp) = authenticate_siop(state, body).await? {
+        return Ok(resp);
+    }
+
     let atm = state
         .atm
         .as_ref()
@@ -178,6 +308,77 @@ pub async fn admin_login(
     headers.append(SET_COOKIE, session_cookie_hv);
     headers.append(SET_COOKIE, csrf_cookie_hv);
 
+    Ok(response)
+}
+
+// ---------- POST /auth/admin-session ----------
+
+/// Request body for [`admin_session`].
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminSessionRequest {
+    /// A valid VTC access token the caller already holds — e.g. from the
+    /// VTA-wallet SIOP login, which returns it in `tokens.accessToken`.
+    pub access_token: String,
+}
+
+/// `POST /v1/auth/admin-session` — exchange a bearer access token for the
+/// admin SPA's cookie session.
+///
+/// The VTA-wallet login path returns a bearer token in the response body
+/// (the wallet extension posts the SIOP `id_token` to `/wallet/auth/` and
+/// reads `tokens.accessToken`), but the admin SPA drives the API with the
+/// `vtc_admin_session` cookie + `csrf` double-submit, not an
+/// `Authorization` header. This endpoint bridges the two: it validates the
+/// presented token (signature + VTC audience + expiry) and, on success,
+/// sets the same `Set-Cookie` pair as [`admin_login`].
+///
+/// No privilege escalation — the caller must already possess a valid VTC
+/// access token, which it could use directly as a bearer; this only mirrors
+/// it into the cookie the browser SPA expects. Browser-only by nature: the
+/// CSRF layer's same-origin check carries the (cookie-less) first call.
+pub async fn admin_session(
+    State(state): State<AppState>,
+    Json(req): Json<AdminSessionRequest>,
+) -> Result<axum::response::Response, AppError> {
+    use axum::http::HeaderValue;
+    use axum::http::header::SET_COOKIE;
+    use axum::response::IntoResponse;
+    use rand::RngExt;
+
+    let jwt_keys = state
+        .jwt_keys
+        .as_ref()
+        .ok_or_else(|| AppError::Internal("JWT keys not configured".into()))?;
+
+    // Validate the token: signature, VTC audience (audience isolation — a
+    // foreign-audience token is rejected here exactly as on every other
+    // surface), and expiry. A bad token never sets a cookie.
+    let claims = jwt_keys
+        .decode(&req.access_token)
+        .map_err(|_| AppError::Authentication("invalid or expired access token".into()))?;
+
+    let max_age = claims.exp.saturating_sub(now_epoch()).max(1);
+
+    let mut csrf_bytes = [0u8; 32];
+    rand::rng().fill(&mut csrf_bytes);
+    let csrf = hex::encode(csrf_bytes);
+
+    let session_cookie = build_session_cookie(&req.access_token, max_age);
+    let csrf_cookie = build_csrf_cookie(&csrf, max_age);
+
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    let headers = response.headers_mut();
+    headers.append(
+        SET_COOKIE,
+        HeaderValue::try_from(session_cookie)
+            .map_err(|e| AppError::Internal(format!("invalid session cookie value: {e}")))?,
+    );
+    headers.append(
+        SET_COOKIE,
+        HeaderValue::try_from(csrf_cookie)
+            .map_err(|e| AppError::Internal(format!("invalid csrf cookie value: {e}")))?,
+    );
     Ok(response)
 }
 
