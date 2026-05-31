@@ -59,6 +59,7 @@ mod passkey_vms;
 #[cfg(feature = "webvh")]
 mod provision_integration;
 mod seeds;
+mod step_up;
 mod vault;
 #[cfg(feature = "webvh")]
 mod webvh;
@@ -188,6 +189,7 @@ fn aggregate_dispatched_uris() -> Vec<&'static str> {
     v.extend(keys::DISPATCHED_URIS);
     v.extend(management::DISPATCHED_URIS);
     v.extend(seeds::DISPATCHED_URIS);
+    v.extend(step_up::DISPATCHED_URIS);
     v.extend(vault::DISPATCHED_URIS);
     // Feature-gated slices add their `v.extend(slice::DISPATCHED_URIS)`
     // here under `#[cfg(feature = "...")]`. The corresponding URIs
@@ -317,6 +319,9 @@ async fn dispatch_typed(state: &AppState, auth: &AuthClaims, doc: TrustTask<Valu
         // ─── Auth slice (authenticated operations) ───────────────────
         vta_sdk::trust_tasks::TASK_AUTH_REVOKE_SESSION_0_1 => {
             auth::handle_revoke_session(state, auth, doc).await
+        }
+        vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1 => {
+            step_up::handle_approve_response(state, auth, doc).await
         }
         // ─── ACL slice ────────────────────────────────────────────────
         vta_sdk::trust_tasks::TASK_ACL_LIST_1_0 => acl::handle_list(state, auth, doc).await,
