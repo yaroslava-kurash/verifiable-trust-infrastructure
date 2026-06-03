@@ -15,8 +15,9 @@
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
 
-import { postJson } from "@/lib/api";
+import { getJson, postJson } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { formatIso } from "@/lib/format";
 import {
@@ -40,16 +41,38 @@ import {
 } from "@/lib/rule-ir";
 import { EnglishView, RuleEditor } from "@/plugins/RuleEditor";
 import {
-  type CeremonyKey,
   type CeremonyManifest,
   type FieldDef,
   type FieldValues,
-  CEREMONIES,
   defaultValues,
+  evalShowWhen,
+  fetchCeremonies,
+  materializeFacts,
   natureColor,
 } from "@/lib/ceremony-manifest";
 
 const TRUST_TASK_TEST = "https://trusttasks.org/openvtc/vtc/policies/test/1.0";
+const TRUST_TASK_JOIN_REQUESTS =
+  "https://trusttasks.org/openvtc/vtc/join-requests/submit/1.0";
+
+// Queues a refer verdict can route to that map to an actionable admin
+// surface. The moderator queue is the join-requests inbox.
+const QUEUE_LINKS: Record<string, { label: string; to: string }> = {
+  moderator: { label: "Join requests", to: "/join-requests" },
+};
+
+interface JoinRequestsPage {
+  items: unknown[];
+  total_estimate?: number;
+}
+
+async function fetchPendingCount(): Promise<number> {
+  const page = await getJson<JoinRequestsPage>(
+    "/v1/join-requests?status=pending&limit=50",
+    { trustTask: TRUST_TASK_JOIN_REQUESTS },
+  );
+  return page.total_estimate ?? page.items.length;
+}
 
 type Effect = "allow" | "deny" | "refer" | "request_more";
 
@@ -155,8 +178,17 @@ function satisfyNeed(facts: Facts, need: string): Facts {
 // ---------------------------------------------------------------------------
 
 export function Ceremonies() {
-  const [active, setActive] = useState<CeremonyKey | "other">("directory");
-  const ceremony = CEREMONIES.find((c) => c.key === active);
+  // The daemon is the source of truth for the ceremony registry.
+  const query = useQuery({ queryKey: ["ceremonies"], queryFn: fetchCeremonies });
+  const ceremonies = query.data ?? [];
+  const [active, setActive] = useState<string>("");
+
+  // Default to the first ceremony once the registry loads.
+  useEffect(() => {
+    if (!active && ceremonies[0]) setActive(ceremonies[0].purpose);
+  }, [ceremonies, active]);
+
+  const ceremony = ceremonies.find((c) => c.purpose === active) ?? null;
 
   return (
     <div style={{ maxWidth: 1180 }}>
@@ -171,14 +203,21 @@ export function Ceremonies() {
         live verdict the daemon would reach.
       </p>
 
+      {query.isLoading && <p className="cer-sub">Loading the registry…</p>}
+      {query.error && (
+        <p className="cer-sub" style={{ color: "var(--vd-deny)" }}>
+          {(query.error as Error).message}
+        </p>
+      )}
+
       <div className="cer-tabs" role="tablist">
-        {CEREMONIES.map((c) => (
+        {ceremonies.map((c) => (
           <button
-            key={c.key}
+            key={c.purpose}
             role="tab"
-            aria-selected={c.key === active}
-            className={`cer-tab${c.key === active ? " on" : ""}`}
-            onClick={() => setActive(c.key)}
+            aria-selected={c.purpose === active}
+            className={`cer-tab${c.purpose === active ? " on" : ""}`}
+            onClick={() => setActive(c.purpose)}
           >
             <span
               className="nature"
@@ -205,7 +244,11 @@ export function Ceremonies() {
         </button>
       </div>
 
-      {ceremony ? <CeremonyPanel ceremony={ceremony} /> : <OtherPolicies />}
+      {active === "other" ? (
+        <OtherPolicies />
+      ) : ceremony ? (
+        <CeremonyPanel key={ceremony.purpose} ceremony={ceremony} />
+      ) : null}
     </div>
   );
 }
@@ -221,11 +264,14 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
   const [satisfied, setSatisfied] = useState<string[]>([]);
   // The facts that produced the current verdict — fed to the trace.
   const [lastFacts, setLastFacts] = useState<ExplainFacts | null>(null);
+  // Advanced: edit the verified-Facts JSON directly, overriding the
+  // field-driven template (for facts the declared toggles don't cover).
+  const [rawMode, setRawMode] = useState(false);
+  const [rawText, setRawText] = useState("");
 
   const policyQuery = useQuery({
     queryKey: ["active-policy", ceremony.purpose],
     queryFn: () => fetchActivePolicy(ceremony.purpose as Purpose),
-    enabled: ceremony.purpose !== null,
   });
 
   // Reset the form + verdict whenever the ceremony changes.
@@ -237,7 +283,11 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
     setAuthoring(false);
     setSatisfied([]);
     setLastFacts(null);
+    setRawMode(false);
   }, [ceremony]);
+
+  const seedRaw = () =>
+    JSON.stringify(materializeFacts(ceremony.factsTemplate, form), null, 2);
 
   // The active policy's IR, when it was authored visually — enables the
   // local decision trace.
@@ -260,9 +310,26 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
   async function run() {
     const policy = policyQuery.data;
     if (!policy) return;
+
+    // Build the facts up front so a raw-JSON parse error fails fast,
+    // before the animation starts.
+    let facts: Record<string, unknown>;
+    if (rawMode) {
+      try {
+        facts = JSON.parse(rawText) as Record<string, unknown>;
+      } catch {
+        setError("Raw facts are not valid JSON.");
+        return;
+      }
+    } else {
+      facts = materializeFacts(ceremony.factsTemplate, form);
+    }
+    for (const need of satisfied) facts = satisfyNeed(facts, need);
+
     setRunning(true);
     setVerdict(null);
     setError(null);
+    setLastFacts(facts as ExplainFacts);
 
     // Animate the token across the stages while the request is in flight.
     for (let i = 0; i < STAGES.length; i++) {
@@ -270,9 +337,6 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
     }
 
     try {
-      let facts = ceremony.buildFacts(form);
-      for (const need of satisfied) facts = satisfyNeed(facts, need);
-      setLastFacts(facts as ExplainFacts);
       const resp = await postJson<TestResponse>(
         `/v1/policies/${policy.id}/test`,
         { query: `data.${ceremony.pkg}.decision`, input: facts },
@@ -308,7 +372,7 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
 
       <div className="cer-meta-row">
         <span className="cer-chip">
-          purpose <b>{ceremony.purpose ?? "—"}</b>
+          purpose <b>{ceremony.purpose}</b>
         </span>
         <span className="cer-chip">
           package <b>{ceremony.pkg}</b>
@@ -373,11 +437,32 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
             </p>
           ) : (
             <>
-              <SimFields
-                fields={ceremony.fields}
-                values={form}
-                onChange={onFieldsChange}
-              />
+              {rawMode ? (
+                <RawFactsEditor
+                  value={rawText}
+                  onChange={setRawText}
+                  onReset={() => setRawText(seedRaw())}
+                  onUseFields={() => setRawMode(false)}
+                />
+              ) : (
+                <>
+                  <SimFields
+                    fields={ceremony.fields}
+                    values={form}
+                    onChange={onFieldsChange}
+                  />
+                  <button
+                    type="button"
+                    className="cer-raw-toggle"
+                    onClick={() => {
+                      setRawText(seedRaw());
+                      setRawMode(true);
+                    }}
+                  >
+                    Advanced: edit raw facts ▸
+                  </button>
+                </>
+              )}
 
               <button
                 className="cer-run"
@@ -418,6 +503,10 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
                       running={running}
                     />
                   )}
+                  {verdict.effect === "refer" &&
+                    typeof verdict.with?.queue === "string" && (
+                      <ReferQueue queue={verdict.with.queue as string} />
+                    )}
                   {activeIR && lastFacts && (
                     <DecisionTrace
                       ir={activeIR}
@@ -436,15 +525,11 @@ function CeremonyPanel({ ceremony }: { ceremony: CeremonyManifest }) {
           <div className="cer-panel-title">
             Decision policy <span className="ln" />
           </div>
-          {ceremony.purpose === null ? (
-            <p className="cer-sub">No policy purpose for this ceremony yet.</p>
-          ) : (
-            <PolicyManager
-              key={ceremony.purpose}
-              purpose={ceremony.purpose as Purpose}
-              onEditingChange={setAuthoring}
-            />
-          )}
+          <PolicyManager
+            key={ceremony.purpose}
+            purpose={ceremony.purpose as Purpose}
+            onEditingChange={setAuthoring}
+          />
         </div>
       </div>
     </>
@@ -892,7 +977,7 @@ function SimFields({
   return (
     <>
       {fields
-        .filter((f) => !f.showWhen || f.showWhen(values))
+        .filter((f) => evalShowWhen(f.showWhen, values))
         .map((f) => (
           <div className="cer-field" key={f.key}>
             <label>
@@ -924,6 +1009,32 @@ function SimFields({
           </div>
         ))}
     </>
+  );
+}
+
+// A refer verdict routes to a queue. When that queue maps to an admin
+// surface (the moderator queue → the join-requests inbox), link to it
+// and show how many items are waiting — closing the loop from "this
+// would be referred" to "go act on it".
+function ReferQueue({ queue }: { queue: string }) {
+  const link = QUEUE_LINKS[queue];
+  const pending = useQuery({
+    queryKey: ["pending-count", queue],
+    queryFn: fetchPendingCount,
+    enabled: !!link,
+  });
+  return (
+    <div className="cer-refer">
+      <span className="cer-refer-q">
+        → routes to the <b>{queue}</b> queue
+      </span>
+      {link && (
+        <Link to={link.to} className="cer-refer-link">
+          {link.label}
+          {pending.data !== undefined ? ` · ${pending.data} pending` : ""} ▸
+        </Link>
+      )}
+    </div>
   );
 }
 
@@ -1031,6 +1142,57 @@ function DecisionTrace({
           have been hand-edited away from its visual form.
         </p>
       )}
+    </div>
+  );
+}
+
+// Advanced simulator input: the verified-Facts JSON, edited directly.
+// Overrides the field-driven template, for evidence the declared
+// toggles don't model (extra credentials, custom claims, edge shapes).
+function RawFactsEditor({
+  value,
+  onChange,
+  onReset,
+  onUseFields,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onReset: () => void;
+  onUseFields: () => void;
+}) {
+  let invalid = false;
+  try {
+    JSON.parse(value);
+  } catch {
+    invalid = true;
+  }
+  return (
+    <div className="cer-raw">
+      <p className="cer-sub" style={{ fontSize: "var(--text-xs)" }}>
+        This JSON is sent to the policy verbatim — the field toggles are
+        ignored. Seeded from the current fields.
+      </p>
+      <textarea
+        className="cer-rego-input"
+        rows={14}
+        spellCheck={false}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-invalid={invalid}
+      />
+      {invalid && (
+        <p className="cer-sub" style={{ color: "var(--vd-deny)" }}>
+          Not valid JSON.
+        </p>
+      )}
+      <div className="rule-actions">
+        <button type="button" className="rule-cancel" onClick={onReset}>
+          Reset to fields
+        </button>
+        <button type="button" className="rule-cancel" onClick={onUseFields}>
+          Use fields ▸
+        </button>
+      </div>
     </div>
   );
 }
