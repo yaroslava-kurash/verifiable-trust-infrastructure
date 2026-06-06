@@ -67,6 +67,7 @@ pub(crate) use step_up::{
 mod vault;
 #[cfg(feature = "webvh")]
 mod webvh;
+mod wire_v0_2;
 
 use helpers::{body_parse_error_response, method_not_found, reject_with};
 #[cfg(feature = "didcomm")]
@@ -81,7 +82,9 @@ use trust_tasks_rs::RejectReason;
 /// arm. The corresponding handlers live in `routes::auth` (passkey
 /// login, legacy challenge/authenticate/refresh) and
 /// `routes::attestation` (TEE status / report).
-#[allow(dead_code)] // consumed by the dispatcher's test-only parity harness
+// `#[allow(deprecated)]`: this intentionally names the deprecated passkey-login
+// 0.1 URIs — they remain REST-routed and dual-accepted during the migration.
+#[allow(dead_code, deprecated)] // consumed by the dispatcher's test-only parity harness
 const REST_ROUTED: &[&str] = &[
     // Auth (pre-login — no session, can't pass AuthClaims)
     vta_sdk::trust_tasks::TASK_AUTH_CHALLENGE_0_1,
@@ -89,6 +92,14 @@ const REST_ROUTED: &[&str] = &[
     vta_sdk::trust_tasks::TASK_AUTH_REFRESH_0_1,
     vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_START_0_1,
     vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_FINISH_0_1,
+    // Passkey-login 0.2: the only 0.1→0.2 delta in the spec is the `purpose`
+    // enum value (`step-up`→`stepUp`), and the VTA's flat-JSON request/response
+    // types (`PasskeyLoginStart/FinishRequest`, `…StartResponse`) don't carry
+    // `purpose` at all — so a 0.2 client sends structurally identical JSON to
+    // the same `/auth/passkey-login/*` handlers. Dual-accept is purely
+    // declarative here; no edge transform needed.
+    vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_START_0_2,
+    vta_sdk::trust_tasks::TASK_AUTH_PASSKEY_LOGIN_FINISH_0_2,
     // Attestation (unauth — TEE proofs are publicly verifiable by design)
     vta_sdk::trust_tasks::TASK_ATTESTATION_STATUS_1_0,
     vta_sdk::trust_tasks::TASK_ATTESTATION_REPORT_1_0,
@@ -283,6 +294,22 @@ pub(crate) async fn dispatch_trust_task_core(
     let _ = auth;
 
     // 4. Dispatch by type URI.
+    //
+    // 0.2 dual-accept: bearer-authed specs whose only 0.1→0.2 delta is
+    // enum-value casing are down-converted to their canonical 0.1 form,
+    // dispatched through the existing 0.1 handler, and the response
+    // up-converted back to 0.2 (see `wire_v0_2`). Signed-payload specs are NOT
+    // routed here — they have typed 0.2 arms in `dispatch_typed`.
+    let type_uri = doc.type_uri.to_string();
+    if let Some(spec) = wire_v0_2::lookup_0_2(&type_uri) {
+        let mut doc = doc;
+        wire_v0_2::downconvert_request(&mut doc.payload, spec);
+        if let Ok(uri_0_1) = spec.uri_0_1.parse() {
+            doc.type_uri = uri_0_1;
+        }
+        let resp = dispatch_typed(state, auth, doc).await;
+        return wire_v0_2::upconvert_response(resp, spec).await;
+    }
     dispatch_typed(state, auth, doc).await
 }
 
@@ -311,6 +338,12 @@ pub(crate) fn reject_trust_task(body: &[u8], reason: RejectReason) -> Response {
 ///
 /// Unknown URIs fall through to `method_not_found` which returns
 /// `unsupported_type` per the framework's status table.
+///
+/// `#[allow(deprecated)]`: the device / vault / step-up / passkey arms match on
+/// the deprecated `*_0_1` URI constants on purpose — the VTA keeps serving 0.1
+/// during the migration. The 0.2 counterparts arrive pre-down-converted (see
+/// `wire_v0_2`) so they match the same arms.
+#[allow(deprecated)]
 async fn dispatch_typed(state: &AppState, auth: &AuthClaims, doc: TrustTask<Value>) -> Response {
     let type_uri = doc.type_uri.to_string();
 
@@ -329,7 +362,12 @@ async fn dispatch_typed(state: &AppState, auth: &AuthClaims, doc: TrustTask<Valu
         vta_sdk::trust_tasks::TASK_AUTH_SESSIONS_LIST_0_1 => {
             auth::handle_sessions_list(state, auth, doc).await
         }
-        vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1 => {
+        // Dual-accept: both versions route to the same typed handler, which
+        // normalises the `evidence.kind` discriminator on a copy (the signed
+        // document is never mutated). Not edge-transformed in `wire_v0_2`
+        // because the payload carries the approver's signature.
+        vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_1
+        | vta_sdk::trust_tasks::TASK_AUTH_STEP_UP_APPROVE_RESPONSE_0_2 => {
             step_up::handle_approve_response(state, auth, doc).await
         }
         // ─── ACL slice ────────────────────────────────────────────────
@@ -620,6 +658,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // names the dual-accepted passkey-login 0.1 URIs on purpose
     fn phase_2_uri_registry_present() {
         // Compile-time check: every URI we route in `dispatch_typed`
         // is declared in `vta-sdk::trust_tasks`. If a URI gets renamed
@@ -660,13 +699,18 @@ mod tests {
             let in_dispatched = dispatched.contains(declared);
             let in_rest_routed = REST_ROUTED.contains(declared);
             let in_feature_gated = KNOWN_FEATURE_GATED_URIS.contains(declared);
+            // 0.2 dual-accept URIs are served via the `wire_v0_2` edge
+            // transform (down-convert → 0.1 handler → up-convert), not a
+            // dedicated `dispatch_typed` arm, so they're tracked here.
+            let in_wire_v0_2 = wire_v0_2::WIRE_V0_2_URIS.contains(declared);
 
             assert!(
-                in_dispatched || in_rest_routed || in_feature_gated,
+                in_dispatched || in_rest_routed || in_feature_gated || in_wire_v0_2,
                 "vta-sdk declares URI `{declared}` but it is not tracked in this dispatcher — \
                  either (a) add it to a slice's `DISPATCHED_URIS` const and wire a match arm, \
-                 (b) add it to `REST_ROUTED` if it lives on a dedicated REST route, or \
-                 (c) add it to `KNOWN_FEATURE_GATED_URIS` with a comment explaining the gating"
+                 (b) add it to `REST_ROUTED` if it lives on a dedicated REST route, \
+                 (c) add it to `KNOWN_FEATURE_GATED_URIS` with a comment explaining the gating, or \
+                 (d) register it in `wire_v0_2::WIRE_V0_2_URIS` if it's an edge-transformed 0.2 URI"
             );
         }
     }
