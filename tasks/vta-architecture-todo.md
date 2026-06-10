@@ -12,7 +12,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
 
 ## Phase 0 — Security & correctness fixes (parallelizable, land any time)
 
-- `[~]` **P0.1** (M) AAD binding (`keyspace||key`) for keyspace encryption;
+- `[x]` **P0.1** (M) AAD binding (`keyspace||key`) for keyspace encryption;
   encrypt `sealed_nonces` + `cache` — branch `fix/p0.1-keyspace-aad`.
   AES-GCM AAD = len-prefixed keyspace ‖ store-key, 4-byte magic `VAE1`, NO
   legacy read-fallback (downgrade-safe) → clear error on stale data.
@@ -21,17 +21,17 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   AppState construction sites. Breaking on-disk change for encrypted stores
   only (default/plaintext unaffected) — documented in CHANGELOG. Tests:
   cross-key/cross-keyspace paste rejected (unit + through the real handle),
-  wrong-key, legacy-format clear error, passthrough unchanged — PR: #346 (in review)
+  wrong-key, legacy-format clear error, passthrough unchanged — PR: #346 (merged)
 - `[ ]` **P0.2** (XL) Enclave-side anti-rollback anchor for carve-out sentinel /
   JWT fingerprint / ACL — design note first — deps: P0.1 — PR: ____
-- `[~]` **P0.3** (S) `create_key`/`import_key`: existence check + identifier
+- `[x]` **P0.3** (S) `create_key`/`import_key`: existence check + identifier
   validation (closes `#key-0` overwrite) — branch `fix/p0.3-key-overwrite`.
   Scope grew during root-cause analysis: the store's multi-op "atomic"
   closures (take_raw/swap) were NOT actually atomic — added a shared
   per-keyspace write lock in LocalStore + `insert_if_absent` primitive +
   concurrency regression tests; also validated `rename_key`'s new id
-  (wire-facing bypass) — PR: #341 (in review)
-- `[~]` **P0.4** (S) Shared locked counter allocator; fix
+  (wire-facing bypass) — PR: #341 (merged)
+- `[x]` **P0.4** (S) Shared locked counter allocator; fix
   `allocate_context_index` race (same-subtree key derivation) —
   implemented on branch `fix/p0.4-counter-races`. Delivered:
   `vti-common/src/store/counter.rs` (app-level lock so the vsock backend
@@ -39,10 +39,10 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   `insert_raw_if_absent` closes the KEK salt race; ROTATE_LOCK serialises
   seed rotation; create_context claims its record atomically at both
   layers; concurrency regression tests for all four —
-  PR: #342 (stacked on #341)
+  PR: #342 (merged)
 - `[ ]` **P0.5** (L) Backup/restore: export counters (no BIP-32 path reuse),
   full `AclEntry` round-trip, import-in-progress sentinel — PR: ____
-- `[~]` **P0.6** (S) TEE seed rotation: reject or persist (no silent key loss) —
+- `[x]` **P0.6** (S) TEE seed rotation: reject or persist (no silent key loss) —
   branch `fix/p0.6-tee-seed-rotation`. Chose REJECT (the plan's safe minimum;
   in-place re-encryption is a follow-up). New `SeedStore::set_persists_across_restart()`
   (default true; `KmsTeeSeedStore` → false, fixed its misleading set() comment).
@@ -50,11 +50,11 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   too) + a typed `AppError::Conflict` with operator guidance at
   `operations::seeds::rotate_seed` (runtime REST/DIDComm/TT path). Tests:
   refusal+no-mutation (tee), trait flag, existing non-TEE rotation unaffected
-  — PR: #344 (in review). Follow-up: in-place re-encryption so TEE rotation
+  — PR: #344 (merged). Follow-up: in-place re-encryption so TEE rotation
   works rather than refuses (needs runtime KMS access on KmsTeeSeedStore).
 - `[ ]` **P0.7** (M) `Zeroizing` seed bytes end-to-end; encrypt retired-seed
   archive; fix "secure deletion" claim — PR: ____
-- `[~]` **P0.8** (S) Atomic + persisted carve-out close — branch
+- `[x]` **P0.8** (S) Atomic + persisted carve-out close — branch
   `fix/p0.8-carveout-durability`. Added `KeyspaceHandle::persist()` (local
   fsync + vsock OP_PERSIST passthrough). `mint_mode_b` now: seal first
   (fail-fast, no carve-out writes) → ACL → sentinel-via-`insert_raw_if_absent`
@@ -63,7 +63,7 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   barrier: no reopen-after-delivery). ACL-before-sentinel journal order so a
   torn fsync favours a recoverable reopen over a brick. Counter allocator
   also now fsyncs (path-counter loss = key reuse). Tests: persist-survives-
-  reopen, carve-out-admits-one — PR: #343 (in review)
+  reopen, carve-out-admits-one — PR: #343 (merged)
 - `[ ]` **P0.9** (M) Boot-time `config::validate()`; `deny_unknown_fields`;
   hard-fail missing identity unless `--allow-degraded`; explicit opt-in for
   plaintext seed store — PR: ____
@@ -75,8 +75,13 @@ Sizes: S ≤ ½ day · M 1–2 days · L 3–5 days · XL needs a design note fi
   approve/deny/list surface — PR: ____
 - `[ ]` **P0.13** (S) Decide + enforce/document cross-transport step-up policy
   (DIDComm `swap_acl`; ignored vault `step_up_proof`) — PR: ____
-- `[ ]` **P0.14** (S) Tolerant list iteration (skip+log poisoned rows); backup
-  export fails loudly — PR: ____
+- `[~]` **P0.14** (S) Tolerant list iteration (skip+log poisoned rows); backup
+  export fails loudly — branch `fix/p0.14-tolerant-list-iteration`.
+  list_acl_entries / list_contexts / list_keys skip+warn (one corrupt row
+  no longer aborts the whole listing); backup export (seed/key/context/ACL
+  collections) now errors loudly on a corrupt row (incomplete backup is
+  worse than none). ACL field-fidelity stays for P0.5. Tests: ACL list
+  skips garbage row, export aborts on corrupt key row — PR: #347 (in review)
 
 **Checkpoint 0:** `[ ]` all P0 merged or deferred-with-issue; CI green;
 tee-architecture.md updated.
