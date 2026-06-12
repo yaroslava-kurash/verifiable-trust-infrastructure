@@ -140,11 +140,14 @@ impl VtaClient {
             Ok(resp.json::<T>().await?)
         } else {
             let status = resp.status();
-            let body = resp
-                .json::<ErrorResponse>()
-                .await
-                .map(|e| e.error)
-                .unwrap_or_else(|_| "unknown error".to_string());
+            let text = resp.text().await?;
+            // For 409 Conflict, preserve the full JSON body so callers can
+            // extract structured details (e.g. EnableDidcommConflictBody).
+            // Other error codes only need the `error` field string.
+            if status == reqwest::StatusCode::CONFLICT {
+                return Err(VtaError::Conflict(text));
+            }
+            let body = Self::extract_error_message(&text);
             Err(VtaError::from_http(status, body))
         }
     }
@@ -154,13 +157,37 @@ impl VtaClient {
             Ok(())
         } else {
             let status = resp.status();
-            let body = resp
-                .json::<ErrorResponse>()
-                .await
-                .map(|e| e.error)
-                .unwrap_or_else(|_| "unknown error".to_string());
+            let text = resp.text().await?;
+            if status == reqwest::StatusCode::CONFLICT {
+                return Err(VtaError::Conflict(text));
+            }
+            let body = Self::extract_error_message(&text);
             Err(VtaError::from_http(status, body))
         }
+    }
+
+    /// Extract the `error` field from a JSON response body, or fall back to
+    /// "unknown error" with the raw text appended for diagnostics. The raw text
+    /// is truncated so a large non-JSON body (e.g. a 1 MB proxy error page)
+    /// can't bloat the error string that propagates into CLI output and logs.
+    fn extract_error_message(text: &str) -> String {
+        /// Max characters of raw body to surface in the fallback message.
+        const MAX_RAW_LEN: usize = 256;
+        serde_json::from_str::<ErrorResponse>(text)
+            .map(|e| e.error)
+            .unwrap_or_else(|_| {
+                if text.is_empty() {
+                    "unknown error".to_string()
+                } else {
+                    let truncated: String = text.chars().take(MAX_RAW_LEN).collect();
+                    let ellipsis = if truncated.len() < text.len() {
+                        "…"
+                    } else {
+                        ""
+                    };
+                    format!("unknown error: {truncated}{ellipsis}")
+                }
+            })
     }
 }
 

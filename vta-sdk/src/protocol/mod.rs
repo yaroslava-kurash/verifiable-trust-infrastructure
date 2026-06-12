@@ -77,6 +77,25 @@ pub struct EnableDidcommResponse {
     pub serverless: bool,
 }
 
+/// Response body for `GET /services/didcomm`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DidcommStatusResponse {
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mediator_did: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub websocket_status: Option<String>,
+}
+
+/// Body returned by the server on `409 Conflict` from
+/// `POST /services/didcomm/enable` when DIDComm is already active.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EnableDidcommConflictBody {
+    pub error: String,
+    #[serde(default)]
+    pub mediator_did: Option<String>,
+}
+
 /// Request body for `POST /services/didcomm/disable`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DisableDidcommRequest {
@@ -130,19 +149,49 @@ impl VtaClient {
         &self,
         req: EnableDidcommRequest,
     ) -> Result<EnableDidcommResponse, VtaError> {
-        // REST-only by nature. Calling this over DIDComm transport
-        // will surface as a 404 from the upstream message router,
-        // which the rpc() layer turns into a `VtaError::Protocol`.
-        // That's the right behaviour — the operation is logically
-        // not available over DIDComm transport.
-        self.rpc(
-            "services-management/1.0/enable-not-available-via-didcomm",
-            serde_json::to_value(&req)?,
-            "services-management/1.0/enable-not-available-via-didcomm-result",
-            30,
-            |c, url| c.post(format!("{url}/services/didcomm/enable")).json(&req),
-        )
-        .await
+        match &self.transport {
+            crate::client::Transport::Rest {
+                client,
+                base_url,
+                auth,
+            } => {
+                Self::ensure_token_valid(client, base_url, auth).await?;
+                let token = auth.lock().await.token.clone();
+                let req = client
+                    .post(format!("{base_url}/services/didcomm/enable"))
+                    .json(&req);
+                let resp = Self::with_auth_token(req, &token).send().await?;
+                Self::handle_response(resp).await
+            }
+            #[cfg(feature = "session")]
+            crate::client::Transport::DIDComm { .. } => Err(VtaError::UnsupportedTransport(
+                "enable_didcomm is REST-only".into(),
+            )),
+        }
+    }
+
+    /// Read the current DIDComm runtime status. Auth: super-admin (parity with
+    /// `GET /services` / `list_services`, which exposes the same `mediator_did`).
+    pub async fn didcomm_status(&self) -> Result<DidcommStatusResponse, VtaError> {
+        match &self.transport {
+            crate::client::Transport::Rest {
+                client,
+                base_url,
+                auth,
+            } => {
+                crate::client::VtaClient::ensure_token_valid(client, base_url, auth).await?;
+                let token = auth.lock().await.token.clone();
+                let req = client.get(format!("{base_url}/services/didcomm"));
+                let resp = crate::client::VtaClient::with_auth_token(req, &token)
+                    .send()
+                    .await?;
+                crate::client::VtaClient::handle_response(resp).await
+            }
+            #[cfg(feature = "session")]
+            crate::client::Transport::DIDComm { .. } => Err(VtaError::UnsupportedTransport(
+                "didcomm status is REST-only in the SDK".into(),
+            )),
+        }
     }
 
     /// Disable DIDComm. Refuses if REST is also disabled

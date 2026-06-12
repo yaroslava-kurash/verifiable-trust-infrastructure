@@ -565,7 +565,7 @@ async fn connect_with_url_override_uses_rest_and_attaches_token() {
     let (vta_did, _) = did_key_from_seed(0x20);
     s.store_direct("k", &did, &pk, &vta_did).unwrap();
 
-    let client = s.connect("k", Some(&server.uri())).await.unwrap();
+    let client = s.connect("k", Some(&server.uri()), None).await.unwrap();
     // Round-trip an authenticated call to prove the token was attached.
     client.get_config().await.unwrap();
 }
@@ -635,11 +635,12 @@ async fn resolve_vta_endpoint_unparseable_did_errors() {
 }
 
 #[tokio::test]
-async fn connect_url_override_skips_resolution() {
-    // SessionStore::connect with a URL override goes straight to the
-    // REST path — never calls resolve_vta_endpoint. Verifies that even
-    // a session bound to an unresolvable did:key VTA still connects
-    // when the operator passes `--url`.
+async fn connect_url_override_falls_back_to_rest() {
+    // A session bound to an unresolvable did:key VTA still connects over
+    // REST when the operator passes `--url`. Resolution (priority 2) yields
+    // nothing usable for a did:key, and the authenticated DIDComm-status
+    // discovery (priority 3) finds no live mediator (the status endpoint
+    // isn't mounted → errors → None), so connect falls back to REST-only.
     let server = MockServer::start().await;
     mount_challenge(&server).await;
     mount_authenticate(&server, now_secs() + 3600).await;
@@ -660,7 +661,7 @@ async fn connect_url_override_skips_resolution() {
         .await;
 
     let client = s
-        .connect("k", Some(&server.uri()))
+        .connect("k", Some(&server.uri()), None)
         .await
         .expect("connect with url override");
     client.get_config().await.unwrap();
@@ -671,7 +672,7 @@ async fn connect_url_override_skips_resolution() {
 #[tokio::test]
 async fn connect_errors_when_no_session() {
     let s = store();
-    let err = match s.connect("missing", Some("http://localhost")).await {
+    let err = match s.connect("missing", Some("http://localhost"), None).await {
         Ok(_) => panic!("expected connect to fail with no session"),
         Err(e) => e,
     };
