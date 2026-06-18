@@ -2942,7 +2942,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.118",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -9453,9 +9453,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.2.4"
+version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a85927618441eae15a2ef20da38cc939c940bc05ac6089b2f0e32de54b3ab82"
+checksum = "70c4de0c2a4edf0014d6a87ffe85392bdb7a8ace6828a012b8ea05e028a02c7f"
 dependencies = [
  "async-trait",
  "chrono",
@@ -10200,7 +10200,7 @@ dependencies = [
 
 [[package]]
 name = "vtc-service"
-version = "0.9.9"
+version = "0.10.0"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
@@ -10260,6 +10260,8 @@ dependencies = [
  "tower_governor",
  "tracing",
  "tracing-subscriber",
+ "trust-tasks-https",
+ "trust-tasks-rs",
  "unicode-normalization",
  "url",
  "utoipa",
