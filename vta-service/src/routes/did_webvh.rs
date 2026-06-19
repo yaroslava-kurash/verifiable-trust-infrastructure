@@ -21,6 +21,7 @@ use crate::operations::did_webvh::{
     UpdateDidWebvhOptions, UpdateDidWebvhResult, register_did_with_server,
 };
 use crate::server::AppState;
+use didwebvh_rs::url::WebVHURL;
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct AddServerRequest {
@@ -318,6 +319,107 @@ pub async fn get_did_log_public_handler(
     Ok((StatusCode::OK, [("content-type", "application/jsonl")], log))
 }
 
+/// `GET /.well-known/did.jsonl` — public, unauthenticated.
+///
+/// Serves the VTA's own `did:webvh` log at the standard resolver path. A
+/// resolver reconstructing the fetch URL from `did:webvh:SCID:domain`
+/// derives `https://domain/.well-known/did.jsonl` — this endpoint answers
+/// that request. Only meaningful when the VTA was set up with
+/// `[vta_did] kind = "create_webvh"` and `url = "https://domain"` (no
+/// subpath); returns 404 if the VTA has no webvh identity or no log stored.
+/// Rate-limited via `unauth_layer` at the router.
+#[utoipa::path(
+    get, path = "/.well-known/did.jsonl", tag = "did-webvh",
+    responses(
+        (status = 200, description = "VTA did.jsonl log", content_type = "application/jsonl"),
+        (status = 404, description = "VTA has no self-hosted did:webvh identity or log not found"),
+    ),
+)]
+pub async fn get_vta_well_known_did_log_handler(
+    State(state): State<AppState>,
+) -> Result<
+    (
+        axum::http::StatusCode,
+        [(&'static str, &'static str); 1],
+        String,
+    ),
+    AppError,
+> {
+    use axum::http::StatusCode;
+    let vta_did = configured_vta_webvh_did(&state).await?;
+    let expected_path = canonical_did_log_path(&vta_did)?;
+    if expected_path != "/.well-known/did.jsonl" {
+        return Err(AppError::NotFound(
+            "VTA DID resolves to a pathful did.jsonl endpoint, not /.well-known/did.jsonl".into(),
+        ));
+    }
+    let log = load_vta_did_log(&state, &vta_did).await?;
+    Ok((StatusCode::OK, [("content-type", "application/jsonl")], log))
+}
+
+/// `GET /{*did_log_path}` — public, unauthenticated.
+///
+/// Catch-all route used only for canonical `did:webvh` retrieval when the
+/// configured VTA DID has path segments (for example `/tenant/vta/did.jsonl`).
+/// Returns 404 for every non-canonical path so it is safe to mount as a
+/// fallback on the unauth branch.
+pub async fn get_vta_canonical_did_log_handler(
+    State(state): State<AppState>,
+    Path(did_log_path): Path<String>,
+) -> Result<
+    (
+        axum::http::StatusCode,
+        [(&'static str, &'static str); 1],
+        String,
+    ),
+    AppError,
+> {
+    use axum::http::StatusCode;
+
+    let request_path = format!("/{}", did_log_path.trim_start_matches('/'));
+    if !request_path.ends_with("/did.jsonl") {
+        return Err(AppError::NotFound("Not Found".into()));
+    }
+
+    let vta_did = configured_vta_webvh_did(&state).await?;
+    let expected_path = canonical_did_log_path(&vta_did)?;
+    if request_path != expected_path {
+        return Err(AppError::NotFound("Not Found".into()));
+    }
+
+    let log = load_vta_did_log(&state, &vta_did).await?;
+    Ok((StatusCode::OK, [("content-type", "application/jsonl")], log))
+}
+
+async fn configured_vta_webvh_did(state: &AppState) -> Result<String, AppError> {
+    let vta_did = state
+        .config
+        .read()
+        .await
+        .vta_did
+        .clone()
+        .ok_or_else(|| AppError::NotFound("VTA has no configured DID".into()))?;
+    if !vta_did.starts_with("did:webvh:") {
+        return Err(AppError::NotFound(
+            "VTA DID is not a did:webvh identity".into(),
+        ));
+    }
+    Ok(vta_did)
+}
+
+fn canonical_did_log_path(vta_did: &str) -> Result<String, AppError> {
+    let parsed = WebVHURL::parse_did_url(vta_did).map_err(|e| {
+        AppError::NotFound(format!("VTA DID cannot be transformed into a webvh URL: {e}"))
+    })?;
+    let path = parsed.path.trim_end_matches('/');
+    Ok(format!("{path}/did.jsonl"))
+}
+
+async fn load_vta_did_log(state: &AppState, vta_did: &str) -> Result<String, AppError> {
+    let log = crate::webvh_store::get_did_log(&state.webvh_ks, vta_did).await?;
+    log.ok_or_else(|| AppError::NotFound(format!("did.jsonl log not found for VTA DID: {vta_did}")))
+}
+
 /// DELETE /webvh/dids/{did} — delete a webvh DID. Auth: admin.
 #[utoipa::path(
     delete, path = "/webvh/dids/{did}", tag = "did-webvh",
@@ -501,5 +603,88 @@ fn map_register_err(e: RegisterDidWithServerError) -> AppError {
         E::Transport(msg) | E::Publish(msg) => AppError::Internal(format!("publish: {msg}")),
         E::DidUrlParse { .. } => AppError::Validation(e.to_string()),
         E::Storage(msg) => AppError::Internal(msg),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    #[cfg(feature = "webvh")]
+    async fn seed_log(ctx: &crate::test_support::TestAppContext, did: &str, log: &str) {
+        crate::webvh_store::store_did_log(&ctx.webvh_ks, did, log)
+            .await
+            .expect("seed did log");
+    }
+
+    async fn set_vta_did(ctx: &crate::test_support::TestAppContext, did: Option<String>) {
+        ctx.config.write().await.vta_did = did;
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "webvh")]
+    async fn well_known_returns_log_for_root_webvh_vta_did() {
+        let (app, ctx) = crate::test_support::build_test_app().await;
+        let webvh_did = "did:webvh:QmSCID:example.com";
+        let log_content = r#"{"versionId":"1-abc","versionTime":"2025-01-01T00:00:00Z"}"#;
+
+        set_vta_did(&ctx, Some(webvh_did.to_string())).await;
+        seed_log(&ctx, webvh_did, log_content).await;
+
+        let req = Request::builder()
+            .uri("/.well-known/did.jsonl")
+            .method("GET")
+            .header("x-forwarded-for", "192.0.2.1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), log_content.as_bytes());
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "webvh")]
+    async fn well_known_returns_404_for_pathful_webvh_vta_did() {
+        let (app, ctx) = crate::test_support::build_test_app().await;
+        let webvh_did = "did:webvh:QmSCID:example.com:tenant:vta";
+        set_vta_did(&ctx, Some(webvh_did.to_string())).await;
+        seed_log(&ctx, webvh_did, "{}\n").await;
+
+        let req = Request::builder()
+            .uri("/.well-known/did.jsonl")
+            .method("GET")
+            .header("x-forwarded-for", "192.0.2.1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "webvh")]
+    async fn canonical_path_returns_log_for_pathful_webvh_vta_did() {
+        let (app, ctx) = crate::test_support::build_test_app().await;
+        let webvh_did = "did:webvh:QmSCID:example.com:tenant:vta";
+        let log_content = "{\"versionId\":\"1-abc\"}\n";
+        set_vta_did(&ctx, Some(webvh_did.to_string())).await;
+        seed_log(&ctx, webvh_did, log_content).await;
+
+        let req = Request::builder()
+            .uri("/tenant/vta/did.jsonl")
+            .method("GET")
+            .header("x-forwarded-for", "192.0.2.1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), log_content.as_bytes());
     }
 }

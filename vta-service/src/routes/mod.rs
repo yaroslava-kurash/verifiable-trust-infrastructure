@@ -308,7 +308,15 @@ fn build_api_router(trust_xff: bool) -> OpenApiRouter<AppState> {
         // log model, security is cryptographic not access-gated. Rate-
         // limited via the same governor layer as the other unauth
         // endpoints.
-        .routes(routes!(did_webvh::get_did_log_public_handler));
+        .routes(routes!(did_webvh::get_did_log_public_handler))
+        .routes(routes!(did_webvh::get_vta_well_known_did_log_handler))
+        // Catch-all canonical did:webvh retrieval for pathful DIDs:
+        // `/<encoded_path>/did.jsonl`. Returns 404 for non-canonical
+        // paths, so this is safe as an unauth fallback-style route.
+        .route(
+            "/{*did_log_path}",
+            get(did_webvh::get_vta_canonical_did_log_handler),
+        );
     // Tighter body cap on unauth endpoints — see UNAUTH_BODY_SIZE.
     // Applied after ALL unauth routes (including the cfg-gated ones) are
     // registered so every POST on this branch (auth, attestation report)
@@ -711,6 +719,7 @@ mod cors_tests {
             "/webvh/dids",
             "/webvh/servers",
             "/did/verification-methods/passkey",
+            "/.well-known/did.jsonl",
         ] {
             assert!(paths.contains_key(p), "spec missing documented path {p}");
         }
