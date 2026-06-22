@@ -298,7 +298,7 @@ pub async fn get_did_log_handler(
     get, path = "/did/{did}/log", tag = "did-webvh",
     params(("did" = String, Path, description = "DID identifier")),
     responses(
-        (status = 200, description = "did.jsonl log", content_type = "application/jsonl"),
+        (status = 200, description = "did.jsonl log", content_type = "text/jsonl"),
         (status = 404, description = "DID not found"),
     ),
 )]
@@ -316,7 +316,7 @@ pub async fn get_did_log_public_handler(
     use axum::http::StatusCode;
     let log = crate::webvh_store::get_did_log(&state.webvh_ks, &did).await?;
     let log = log.ok_or_else(|| AppError::NotFound(format!("webvh DID log not found: {did}")))?;
-    Ok((StatusCode::OK, [("content-type", "application/jsonl")], log))
+    Ok((StatusCode::OK, [("content-type", "text/jsonl")], log))
 }
 
 /// `GET /.well-known/did.jsonl` — public, unauthenticated.
@@ -331,7 +331,7 @@ pub async fn get_did_log_public_handler(
 #[utoipa::path(
     get, path = "/.well-known/did.jsonl", tag = "did-webvh",
     responses(
-        (status = 200, description = "VTA did.jsonl log", content_type = "application/jsonl"),
+        (status = 200, description = "VTA did.jsonl log", content_type = "text/jsonl"),
         (status = 404, description = "VTA has no self-hosted did:webvh identity or log not found"),
     ),
 )]
@@ -354,7 +354,7 @@ pub async fn get_vta_well_known_did_log_handler(
         ));
     }
     let log = load_vta_did_log(&state, &vta_did).await?;
-    Ok((StatusCode::OK, [("content-type", "application/jsonl")], log))
+    Ok((StatusCode::OK, [("content-type", "text/jsonl")], log))
 }
 
 /// `GET /{*did_log_path}` — public, unauthenticated.
@@ -388,7 +388,7 @@ pub async fn get_vta_canonical_did_log_handler(
     }
 
     let log = load_vta_did_log(&state, &vta_did).await?;
-    Ok((StatusCode::OK, [("content-type", "application/jsonl")], log))
+    Ok((StatusCode::OK, [("content-type", "text/jsonl")], log))
 }
 
 async fn configured_vta_webvh_did(state: &AppState) -> Result<String, AppError> {
