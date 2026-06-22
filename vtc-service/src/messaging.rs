@@ -28,6 +28,9 @@ use vta_sdk::protocols::join_requests::{
     MEMBER_SELF_REMOVE_RECEIPT_TYPE, MEMBER_SELF_REMOVE_TYPE, SelfRemoveBody,
     SelfRemoveReceiptBody,
 };
+use vta_sdk::protocols::members::{
+    MEMBER_VMC_RESPONSE_TYPE, MEMBER_VMC_TYPE, MemberVmcBody, MemberVmcReceiptBody,
+};
 use vta_sdk::protocols::{PROBLEM_REPORT_TYPE, problem_report_codes as codes};
 
 use crate::ceremony::remove_inner;
@@ -36,6 +39,11 @@ use crate::join::JoinTransport;
 use crate::members::Disposition;
 use crate::server::AppState;
 use crate::trust_tasks::{JoinAuthCtx, TrustTaskOutcome, dispatch_trust_task_core};
+
+/// Id of the VTC's single inbound DIDComm listener. Used both to register the
+/// listener and, via [`AppState::send_to_member`](crate::server::AppState::send_to_member),
+/// to send outbound over that same connection.
+pub const VTC_LISTENER_ID: &str = "vtc-main";
 
 /// Start the DIDComm service and block until shutdown.
 ///
@@ -53,6 +61,10 @@ pub async fn run_didcomm_service(
     state: AppState,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) {
+    // The slot every outbound `AppState::send_to_member` reads — published
+    // below once the service starts, so all `AppState` clones share the one
+    // listener connection. Captured before `state` moves into the router.
+    let didcomm_slot = state.didcomm.clone();
     let mediator_did = match &config.messaging {
         Some(m) => &m.mediator_did,
         None => {
@@ -81,7 +93,7 @@ pub async fn run_didcomm_service(
 
     let service_config = DIDCommServiceConfig {
         listeners: vec![ListenerConfig {
-            id: "vtc-main".into(),
+            id: VTC_LISTENER_ID.into(),
             profile,
             restart_policy: RestartPolicy::Always {
                 backoff: RetryConfig {
@@ -130,6 +142,7 @@ pub async fn run_didcomm_service(
                 handler_fn(member_self_remove_handler),
             )
         })
+        .and_then(|r| r.route(MEMBER_VMC_TYPE, handler_fn(member_vmc_handler)))
         .and_then(|r| {
             r.route(
                 CREDENTIAL_REQUEST_TYPE,
@@ -170,7 +183,7 @@ pub async fn run_didcomm_service(
     let shutdown_token = CancellationToken::new();
     let service = match DIDCommService::start(service_config, router, shutdown_token.clone()).await
     {
-        Ok(s) => s,
+        Ok(s) => Arc::new(s),
         Err(e) => {
             warn!("failed to start DIDComm service: {e}");
             let _ = shutdown_rx.changed().await;
@@ -178,13 +191,20 @@ pub async fn run_didcomm_service(
         }
     };
 
+    // Publish the service so any VTC component can send to a member over this
+    // one connection (`AppState::send_to_member`) instead of opening its own
+    // websocket. Set-once; the service object persists across reconnects.
+    if didcomm_slot.set(service.clone()).is_err() {
+        warn!("DIDComm service handle was already published — outbound sends use the existing one");
+    }
+
     // Wait for the mediator connection
     match service
-        .wait_connected("vtc-main", Duration::from_secs(30))
+        .wait_connected(VTC_LISTENER_ID, Duration::from_secs(30))
         .await
     {
         Ok(()) => info!(
-            listener = "vtc-main",
+            listener = VTC_LISTENER_ID,
             "DIDComm listener connected to mediator — inbound messages will be processed"
         ),
         Err(e) => warn!(
@@ -289,6 +309,33 @@ fn problem_report_body(code: &str, comment: impl Into<String>) -> serde_json::Va
     json!({ "code": code, "comment": comment.into() })
 }
 
+/// Pull the human-facing detail out of an inbound DIDComm v2 problem-report
+/// body — `code`, `comment` (which may carry `{1}`/`{2}` placeholders), and the
+/// `args` that fill them — as display strings for logging the *cause* a peer
+/// reported. Missing fields read as `<none>` so the log is explicit about what
+/// the peer omitted rather than silently blank.
+fn problem_report_details(body: &serde_json::Value) -> (String, String, String) {
+    let field = |k: &str| {
+        body.get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("<none>")
+            .to_string()
+    };
+    let args = match body.get("args").and_then(|v| v.as_array()) {
+        Some(a) if !a.is_empty() => a
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| v.to_string())
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+        _ => "<none>".to_string(),
+    };
+    (field("code"), field("comment"), args)
+}
+
 /// The problem-report `code` for a business-logic [`AppError`],
 /// preserving the 4xx-equivalent distinction (forbidden / unauthorized
 /// / not-found / conflict / bad-request) the same way the REST boundary
@@ -324,11 +371,35 @@ fn app_error_report(thid: String, err: &AppError) -> DIDCommResponse {
 /// unexpected/unsupported message type — e.g. a protocol-version drift between
 /// the client and this VTC — looks like the message "just disappeared". We log
 /// it at `warn!` (visible at the default level) with the type + sender, and
-/// still return a threaded problem-report so the sender isn't left hanging.
+/// (for a genuine unsupported request) return a threaded problem-report so the
+/// sender isn't left hanging.
+///
+/// **Never reply to a problem-report.** Replying to one with our own
+/// (unsupported-type) problem-report makes the peer reply to *that*, and so on —
+/// an unbounded problem-report ping-pong (observed against the mediator). A
+/// problem-report is a terminal notification: log it and stop. Mirrors the VTA's
+/// `handle_unknown` (`vta-service` `messaging::handlers`).
 async fn unhandled_message_handler(
     message: Message,
     _meta: UnpackMetadata,
 ) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
+    if message.typ.contains("problem-report") {
+        let (code, comment, args) = problem_report_details(&message.body);
+        warn!(
+            from = message.from.as_deref().unwrap_or("<anon>"),
+            thid = message.thid.as_deref().unwrap_or("<none>"),
+            code = %code,
+            comment = %comment,
+            args = %args,
+            // The full body too: we don't always know which fields a peer's
+            // problem-report carries, so log the raw JSON so the *cause* is never
+            // lost to a field-name mismatch.
+            body = %message.body,
+            id = %message.id,
+            "received unhandled problem-report — not replying (a reply would loop)"
+        );
+        return Ok(None);
+    }
     warn!(
         message_type = %message.typ,
         from = message.from.as_deref().unwrap_or("<anon>"),
@@ -366,6 +437,30 @@ fn inbound_doc_bytes(message: &Message) -> Result<Vec<u8>, DIDCommServiceError> 
         .map_err(|e| DIDCommServiceError::Internal(format!("serialise inbound document: {e}")))
 }
 
+/// Pull the framework reject `code` + human-readable `message` out of a
+/// serialised `trust-task-error` document, for logging. The *reason* a Trust
+/// Task was refused lives in the error document's `payload` (not the HTTP
+/// status), so surfacing it at the dispatch boundary is what makes a refusal
+/// diagnosable. #539 made join refusals loud; #541 moved the reason into the
+/// document body without teaching the log to read it back out — this restores
+/// that visibility. Returns `("<unparseable>", None)` if the bytes aren't a
+/// recognisable error document.
+fn error_doc_summary(body: &[u8]) -> (String, Option<String>) {
+    let Ok(doc) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return ("<unparseable error document>".to_string(), None);
+    };
+    let code = doc
+        .pointer("/payload/code")
+        .and_then(|c| c.as_str())
+        .unwrap_or("<unknown>")
+        .to_string();
+    let message = doc
+        .pointer("/payload/message")
+        .and_then(|m| m.as_str())
+        .map(str::to_string);
+    (code, message)
+}
+
 /// `join-requests/submit/1.0` over DIDComm — the ceremony `request` verb.
 ///
 /// The message body is the Trust Task document; the authcrypt sender is the
@@ -398,14 +493,19 @@ async fn join_request_submit_handler(
     // Outcome observability (preserved from #539): a refused join must be loud —
     // it replies with a `trust-task-error` and stores nothing, so without this
     // it would look like it "silently went nowhere"; a processed one logs at
-    // info. The reply document carries the typed reject code.
+    // info. The reply document carries the typed reject code + reason, which we
+    // unpack so the *why* (expired / malformed / invalid VIC / duplicate) is in
+    // the log, not just the status.
     if outcome.status.is_success() {
         info!(applicant = %applicant_log, thid = %thid, "join-request processed");
     } else {
+        let (code, reason) = error_doc_summary(&outcome.body);
         warn!(
             applicant = %applicant_log,
             thid = %thid,
             status = outcome.status.as_u16(),
+            code = %code,
+            reason = reason.as_deref().unwrap_or("<none>"),
             "join-request refused — trust-task-error returned, no member or pending request created"
         );
     }
@@ -516,6 +616,52 @@ async fn member_self_remove_handler(
         .map_err(|e| DIDCommServiceError::Internal(format!("receipt serialise: {e}")))?;
     Ok(Some(
         DIDCommResponse::new(MEMBER_SELF_REMOVE_RECEIPT_TYPE, body).thid(message.id),
+    ))
+}
+
+/// `members/vmc/1.0` over DIDComm — a member submits their reciprocal VMC
+/// (member → community half of the membership pair), prompted or unprompted.
+///
+/// The authcrypt sender is the proven member; the body carries the member-issued
+/// VMC. [`receive_member_vmc_inner`](crate::members::inbound_vmc::receive_member_vmc_inner)
+/// verifies the issuer / subject binding + the DI proof and stores it on the
+/// member row. Replies with a receipt, or a threaded problem-report on failure.
+async fn member_vmc_handler(
+    message: Message,
+    meta: UnpackMetadata,
+    Extension(state): Extension<AppState>,
+) -> Result<Option<DIDCommResponse>, DIDCommServiceError> {
+    let thid = message.id.clone();
+    let member_did = authenticated_sender_did(&message, &meta)?;
+
+    let body: MemberVmcBody = match serde_json::from_value(message.body.clone()) {
+        Ok(b) => b,
+        Err(e) => {
+            return Ok(Some(problem_report(
+                thid,
+                codes::BAD_REQUEST,
+                format!("malformed member-vmc body: {e}"),
+            )));
+        }
+    };
+
+    let outcome =
+        match crate::members::inbound_vmc::receive_member_vmc_inner(&state, member_did, body.vc)
+            .await
+        {
+            Ok(o) => o,
+            Err(e) => return Ok(Some(app_error_report(thid, &e))),
+        };
+
+    let receipt = MemberVmcReceiptBody {
+        member_did: outcome.member_did,
+        vmc_id: outcome.vmc_id,
+        status: "stored".to_string(),
+    };
+    let body = serde_json::to_value(&receipt)
+        .map_err(|e| DIDCommServiceError::Internal(format!("receipt serialise: {e}")))?;
+    Ok(Some(
+        DIDCommResponse::new(MEMBER_VMC_RESPONSE_TYPE, body).thid(message.id),
     ))
 }
 
@@ -726,6 +872,26 @@ mod tests {
 
     const ALICE: &str = "did:key:z6MkAlice";
     const ALICE_SKID: &str = "did:key:z6MkAlice#z6MkAlice";
+
+    #[test]
+    fn problem_report_details_extracts_code_comment_and_args() {
+        let (code, comment, args) = problem_report_details(&json!({
+            "code": "e.p.xfer.cant-use-endpoint",
+            "comment": "Unable to use the {1} endpoint for {2}.",
+            "args": ["https://x.example/finance", "did:example:1234"],
+        }));
+        assert_eq!(code, "e.p.xfer.cant-use-endpoint");
+        assert_eq!(comment, "Unable to use the {1} endpoint for {2}.");
+        assert_eq!(args, "https://x.example/finance, did:example:1234");
+    }
+
+    #[test]
+    fn problem_report_details_marks_missing_fields() {
+        let (code, comment, args) = problem_report_details(&json!({}));
+        assert_eq!(code, "<none>");
+        assert_eq!(comment, "<none>");
+        assert_eq!(args, "<none>");
+    }
 
     #[test]
     fn app_error_maps_to_typed_problem_report_codes() {
