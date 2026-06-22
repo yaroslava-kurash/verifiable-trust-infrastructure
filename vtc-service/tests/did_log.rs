@@ -92,7 +92,7 @@ async fn serverless_dotted_host_did_resolves_as_jsonl() {
     let (status, body, ct) = get(&fix.router, "/.well-known/did.jsonl").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, log.as_bytes());
-    assert_eq!(ct.as_deref(), Some("application/jsonl"));
+    assert_eq!(ct.as_deref(), Some("text/jsonl"));
 }
 
 #[tokio::test]

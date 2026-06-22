@@ -20,6 +20,8 @@ pub mod keys;
 mod passkey_vms;
 #[cfg(feature = "webvh")]
 mod protocol;
+#[cfg(feature = "webvh")]
+mod self_hosted_did;
 mod step_up;
 mod vta;
 
@@ -309,13 +311,20 @@ fn build_api_router(trust_xff: bool) -> OpenApiRouter<AppState> {
         // limited via the same governor layer as the other unauth
         // endpoints.
         .routes(routes!(did_webvh::get_did_log_public_handler))
-        .routes(routes!(did_webvh::get_vta_well_known_did_log_handler))
+        // The VTA's own self-hosted did.jsonl at the canonical resolver
+        // paths (see `routes::self_hosted_did` for the security model).
+        .routes(routes!(self_hosted_did::get_vta_well_known_did_log_handler))
         // Catch-all canonical did:webvh retrieval for pathful DIDs:
-        // `/<encoded_path>/did.jsonl`. Returns 404 for non-canonical
-        // paths, so this is safe as an unauth fallback-style route.
+        // `/<path>/did.jsonl`. Returns a bare 404 for every non-canonical
+        // path, so it is safe as an unauth fallback-style route.
+        //
+        // INVARIANT: this must stay the ONLY root-level wildcard route — a
+        // second `/{*...}` or an overlapping root `nest()` would conflict in
+        // axum's matcher. Static routes keep precedence, so real endpoints
+        // are never shadowed.
         .route(
             "/{*did_log_path}",
-            get(did_webvh::get_vta_canonical_did_log_handler),
+            get(self_hosted_did::get_vta_canonical_did_log_handler),
         );
     // Tighter body cap on unauth endpoints — see UNAUTH_BODY_SIZE.
     // Applied after ALL unauth routes (including the cfg-gated ones) are

@@ -8,7 +8,7 @@
 //!
 //! ## Wire shape
 //!
-//! `GET /.well-known/did.jsonl` → `200 application/jsonl` with the
+//! `GET /.well-known/did.jsonl` → `200 text/jsonl` with the
 //! log content.
 //!
 //! This path is **not** arbitrary: a serverless VTC's DID is
@@ -100,7 +100,9 @@ pub async fn did_log(State(state): State<AppState>) -> impl IntoResponse {
         [
             (
                 header::CONTENT_TYPE,
-                HeaderValue::from_static("application/jsonl"),
+                // did:webvh v1.0 SHOULDs text/jsonl for the log file
+                // (DID-to-HTTPS Transformation §6).
+                HeaderValue::from_static("text/jsonl"),
             ),
             // The log is served at the parent root, outside the
             // website sub-router's security-headers middleware, so set
