@@ -297,7 +297,7 @@ pub async fn get_did_log_handler(
     get, path = "/did/{did}/log", tag = "did-webvh",
     params(("did" = String, Path, description = "DID identifier")),
     responses(
-        (status = 200, description = "did.jsonl log", content_type = "application/jsonl"),
+        (status = 200, description = "did.jsonl log", content_type = "text/jsonl"),
         (status = 404, description = "DID not found"),
     ),
 )]
@@ -315,7 +315,7 @@ pub async fn get_did_log_public_handler(
     use axum::http::StatusCode;
     let log = crate::webvh_store::get_did_log(&state.webvh_ks, &did).await?;
     let log = log.ok_or_else(|| AppError::NotFound(format!("webvh DID log not found: {did}")))?;
-    Ok((StatusCode::OK, [("content-type", "application/jsonl")], log))
+    Ok((StatusCode::OK, [("content-type", "text/jsonl")], log))
 }
 
 /// DELETE /webvh/dids/{did} — delete a webvh DID. Auth: admin.
