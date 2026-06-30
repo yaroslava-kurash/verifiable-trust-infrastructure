@@ -327,7 +327,16 @@ pub async fn build_app_state(
     let snapshot_ks =
         apply_encryption(store.keyspace(crate::operations::protocol::snapshot::KEYSPACE_NAME)?);
 
-    let auth = init_auth(&config, &*seed_store, &keys_ks).await;
+    let auth = init_auth(
+        &config,
+        &*seed_store,
+        &keys_ks,
+        #[cfg(feature = "webvh")]
+        Some(&webvh_ks),
+        #[cfg(not(feature = "webvh"))]
+        None,
+    )
+    .await;
 
     // Telemetry sink: reuse the run-path's live sink when injected, else a
     // fresh ring buffer for non-axum front-ends.
@@ -1434,6 +1443,8 @@ async fn init_auth(
     config: &AppConfig,
     seed_store: &dyn SeedStore,
     keys_ks: &KeyspaceHandle,
+    #[cfg(feature = "webvh")] webvh_ks: Option<&KeyspaceHandle>,
+    #[cfg(not(feature = "webvh"))] _webvh_ks: Option<&KeyspaceHandle>,
 ) -> AuthInit {
     let vta_did = match &config.vta_did {
         Some(did) => did.clone(),
@@ -1482,13 +1493,23 @@ async fn init_auth(
         }
         builder.build()
     };
-    let did_resolver = match DIDCacheClient::new(resolver_config).await {
+    let mut did_resolver = match DIDCacheClient::new(resolver_config).await {
         Ok(r) => r,
         Err(e) => {
             warn!("failed to create DID resolver: {e} — auth endpoints will not work");
             return AuthInit::empty();
         }
     };
+
+    // 1.2. Preload the VTA's DID document into the resolver so that DIDComm consumers
+    // can resolve it without a network round-trip.
+    preload_self_did_document(
+        &mut did_resolver,
+        &vta_did,
+        #[cfg(feature = "webvh")]
+        webvh_ks,
+    )
+    .await;
 
     // 2. Secrets resolver with VTA's Ed25519 + X25519 secrets
     let (secrets_resolver, _handle) = ThreadedSecretsResolver::new(None).await;
@@ -1733,6 +1754,65 @@ async fn init_auth(
     }
 }
 
+/// Seed the resolver with this VTA's own DID document so it can pack/unpack DIDComm
+/// messages without hitting the network (did:web/did:webvh self-resolution
+/// needs HTTPS, which may be unreachable from the VTA's own network).
+///
+/// If local state is missing or malformed we warn and fall back to normal
+/// resolver behaviour.
+async fn preload_self_did_document(
+    did_resolver: &mut DIDCacheClient,
+    vta_did: &str,
+    #[cfg(feature = "webvh")] webvh_ks: Option<&KeyspaceHandle>,
+) {
+    #[cfg(feature = "webvh")]
+    {
+        if !vta_did.starts_with("did:webvh:") {
+            return;
+        }
+
+        let Some(webvh_ks) = webvh_ks else {
+            warn!(
+                did = %vta_did,
+                "webvh keyspace not available; self DID preload skipped"
+            );
+            return;
+        };
+
+        let Some(did_log) = (match crate::webvh_store::get_did_log(webvh_ks, vta_did).await {
+            Ok(log) => log,
+            Err(e) => {
+                warn!(did = %vta_did, error = %e, "failed to read local did.jsonl for resolver preload");
+                return;
+            }
+        }) else {
+            warn!(did = %vta_did, "no local did.jsonl found for resolver preload");
+            return;
+        };
+
+        let doc_value = match crate::operations::protocol::document::current_document_from_log(
+            &did_log,
+        ) {
+            Ok(doc) => doc,
+            Err(e) => {
+                warn!(did = %vta_did, error = %e, "failed to parse local did.jsonl for resolver preload");
+                return;
+            }
+        };
+
+        let doc = match serde_json::from_value(doc_value) {
+            Ok(doc) => doc,
+            Err(e) => {
+                warn!(did = %vta_did, error = %e, "failed to decode DID document for resolver preload");
+                return;
+            }
+        };
+
+        did_resolver.add_did_document(vta_did, doc).await;
+        info!(did = %vta_did, "preloaded VTA DID into resolver cache from local did.jsonl");
+    }
+}
+
 /// Look up VTA signing and key-agreement derivation paths from stored key records.
 ///
 /// `did:webvh` (and other methods with independently-derived X25519) stores
@@ -1856,6 +1936,9 @@ mod tests {
     use super::*;
     use crate::keys::{KeyType, save_key_record};
     use crate::store::Store;
+    #[cfg(feature = "webvh")]
+    use crate::webvh_store;
+    use affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder;
     use vti_common::config::StoreConfig;
 
     fn temp_keys_ks() -> (Store, KeyspaceHandle, tempfile::TempDir) {
@@ -1868,6 +1951,19 @@ mod tests {
             .keyspace(crate::keyspaces::KEYS)
             .expect("keys keyspace");
         (store, keys_ks, dir)
+    }
+
+    #[cfg(feature = "webvh")]
+    fn temp_webvh_ks() -> (Store, KeyspaceHandle, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::open(&StoreConfig {
+            data_dir: dir.path().to_path_buf(),
+        })
+        .expect("store open");
+        let webvh_ks = store
+            .keyspace(crate::keyspaces::WEBVH)
+            .expect("webvh keyspace");
+        (store, webvh_ks, dir)
     }
 
     /// `did:key` VTAs only store the Ed25519 signing record at `#key-0`;
@@ -2005,5 +2101,67 @@ mod tests {
         assert!(msg.contains("could not be loaded"), "{msg}");
         assert!(msg.contains("did:key:z6MkTest"), "{msg}");
         assert!(msg.contains("--allow-degraded"), "{msg}");
+    }
+
+    /// once we seed the resolver from local did.jsonl,
+    /// resolving the VTA DID is cache-only and does not
+    /// require network reachability to its own public domain.
+    #[cfg(feature = "webvh")]
+    #[tokio::test]
+    async fn preload_self_did_document_makes_vta_did_resolvable_from_cache() {
+        let (_store, webvh_ks, _dir) = temp_webvh_ks();
+        let did = "did:webvh:QmScid:vta.example.com:vta";
+
+        let log_line = serde_json::json!({
+            "versionId": "1-test",
+            "versionTime": "2026-05-06T00:00:00Z",
+            "parameters": {},
+            "state": {
+                "@context": ["https://www.w3.org/ns/did/v1"],
+                "id": did,
+            },
+        });
+        let log = serde_json::to_string(&log_line).expect("serialize log line");
+        webvh_store::store_did_log(&webvh_ks, did, &log)
+            .await
+            .expect("store did log");
+
+        let mut resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .expect("resolver init");
+
+        preload_self_did_document(&mut resolver, did, Some(&webvh_ks)).await;
+
+        let resolved = resolver.resolve(did).await.expect("resolve preloaded did");
+        assert!(
+            resolved.cache_hit,
+            "preloaded DID was not served from cache"
+        );
+        assert_eq!(resolved.doc.id, did);
+    }
+
+    /// Malformed local did.jsonl must be a safe no-op: preload logs a warning
+    /// and leaves resolver behavior unchanged (no poisoned cache entry).
+    #[cfg(feature = "webvh")]
+    #[tokio::test]
+    async fn preload_self_did_document_ignores_malformed_local_log() {
+        let (_store, webvh_ks, _dir) = temp_webvh_ks();
+        let did = "did:webvh:QmBadScid:vta.example.com:vta";
+
+        webvh_store::store_did_log(&webvh_ks, did, "not-json")
+            .await
+            .expect("store malformed did log");
+
+        let mut resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .expect("resolver init");
+
+        preload_self_did_document(&mut resolver, did, Some(&webvh_ks)).await;
+
+        let result = resolver.resolve(did).await;
+        assert!(
+            result.is_err(),
+            "malformed preload input should not seed resolver cache"
+        );
     }
 }
