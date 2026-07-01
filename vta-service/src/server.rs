@@ -2137,7 +2137,16 @@ mod tests {
             resolved.cache_hit,
             "preloaded DID was not served from cache"
         );
-        assert_eq!(resolved.doc.id, did);
+
+        let expected_value = crate::operations::protocol::document::current_document_from_log(&log)
+            .expect("extract current DID document from did.jsonl");
+        let expected_doc =
+            serde_json::from_value(expected_value).expect("deserialize expected DID document");
+
+        assert_eq!(
+            resolved.doc, expected_doc,
+            "resolved DID document should match local did.jsonl current state"
+        );
     }
 
     /// Malformed local did.jsonl must be a safe no-op: preload logs a warning
