@@ -1443,8 +1443,10 @@ async fn init_auth(
     config: &AppConfig,
     seed_store: &dyn SeedStore,
     keys_ks: &KeyspaceHandle,
-    #[cfg(feature = "webvh")] webvh_ks: Option<&KeyspaceHandle>,
-    #[cfg(not(feature = "webvh"))] _webvh_ks: Option<&KeyspaceHandle>,
+    // Local `did.jsonl` source for the self-DID resolver preload (webvh only).
+    // Always present in the signature; the caller passes `None` when the
+    // `webvh` feature is off. Keeps the signature identical across feature sets.
+    webvh_ks: Option<&KeyspaceHandle>,
 ) -> AuthInit {
     let vta_did = match &config.vta_did {
         Some(did) => did.clone(),
@@ -1503,13 +1505,7 @@ async fn init_auth(
 
     // 1.2. Preload the VTA's DID document into the resolver so that DIDComm consumers
     // can resolve it without a network round-trip.
-    preload_self_did_document(
-        &mut did_resolver,
-        &vta_did,
-        #[cfg(feature = "webvh")]
-        webvh_ks,
-    )
-    .await;
+    preload_self_did_document(&mut did_resolver, &vta_did, webvh_ks).await;
 
     // 2. Secrets resolver with VTA's Ed25519 + X25519 secrets
     let (secrets_resolver, _handle) = ThreadedSecretsResolver::new(None).await;
@@ -1754,17 +1750,41 @@ async fn init_auth(
     }
 }
 
-/// Seed the resolver with this VTA's own DID document so it can pack/unpack DIDComm
-/// messages without hitting the network (did:web/did:webvh self-resolution
-/// needs HTTPS, which may be unreachable from the VTA's own network).
+/// Seed the resolver with this VTA's own `did:webvh` document so it can
+/// pack/unpack DIDComm messages without a network round-trip. `did:webvh`
+/// self-resolution normally needs HTTPS to the VTA's own public domain, which
+/// may be unreachable from inside the VTA's network (e.g. VPC-internal); the
+/// locally stored `did.jsonl` (WEBVH keyspace) is the authoritative source, so
+/// we seed the cache from it instead.
 ///
-/// If local state is missing or malformed we warn and fall back to normal
-/// resolver behaviour.
+/// Scope: **`did:webvh` only** — the preload reads the local webvh log.
+/// `did:web` and other network-resolved methods have no local log to seed from,
+/// so they are left to normal resolver behaviour.
+///
+/// Staleness: this runs once at init. Runtime `services {…}` operations mutate
+/// the VTA's own DID document (and republish `did.jsonl`), which this seeded
+/// entry does **not** track. That is bounded and safe for the intended purpose:
+/// per the runtime-service-management invariant, `verificationMethod` stays
+/// byte-identical across those mutations, so the keys DIDComm pack/unpack needs
+/// are never stale — only advertised `service` entries could drift in the VTA's
+/// *self*-view. Re-seeding on DID-document mutation is a possible follow-up (the
+/// service-management ops already hold the fresh log).
+///
+/// Best-effort: if local state is missing or malformed we warn and fall back to
+/// normal resolver behaviour (never a poisoned cache).
 async fn preload_self_did_document(
     did_resolver: &mut DIDCacheClient,
     vta_did: &str,
-    #[cfg(feature = "webvh")] webvh_ks: Option<&KeyspaceHandle>,
+    webvh_ks: Option<&KeyspaceHandle>,
 ) {
+    #[cfg(not(feature = "webvh"))]
+    {
+        // Without the `webvh` feature there is no local webvh log to seed from;
+        // nothing to preload. Consume the params so the non-webvh build is
+        // warning-clean under `-D warnings`.
+        let _ = (&did_resolver, vta_did, webvh_ks);
+    }
+
     #[cfg(feature = "webvh")]
     {
         if !vta_did.starts_with("did:webvh:") {
