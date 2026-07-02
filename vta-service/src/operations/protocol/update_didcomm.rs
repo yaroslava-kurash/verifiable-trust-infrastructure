@@ -45,7 +45,9 @@ use crate::operations::did_webvh::{UpdateDidWebvhError, UpdateDidWebvhOptions, u
 use crate::operations::protocol::document::{
     DocumentPatchError, current_didcomm_service, with_didcomm_service,
 };
-use crate::operations::protocol::{OpContext, PROTOCOL_LOCK, ServiceOpDeps};
+use crate::operations::protocol::{
+    OpContext, PROTOCOL_LOCK, ServiceOpDeps, refresh_self_did_resolver_after_service_mutation,
+};
 use crate::store::KeyspaceHandle;
 
 /// Distinguish a forward migrate from a rollback in telemetry. The
@@ -244,6 +246,8 @@ pub async fn update_didcomm(
         channel,
     )
     .await?;
+
+    refresh_self_did_resolver_after_service_mutation(deps, &vta_did, channel).await;
 
     // Persist config: messaging.mediator_did = new.
     persist_new_mediator(deps.config, &resolved.mediator_did, &resolved.endpoint).await?;

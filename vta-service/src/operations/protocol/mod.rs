@@ -34,6 +34,8 @@ pub mod update_rest;
 pub mod update_tsp;
 pub mod update_webauthn;
 
+use tracing::warn;
+
 /// Process-wide lock serializing every service-management mutation
 /// (enable / update / disable / rollback / drain-cancel). Modeled
 /// on `MODE_B_LOCK` in `routes/bootstrap.rs`. Held across the entire
@@ -132,6 +134,48 @@ impl OpContext {
         match self {
             OpContext::Direct => None,
             OpContext::Rollback => Some("rollback"),
+        }
+    }
+}
+
+/// Best-effort resolver cache refresh for the VTA's self DID after a protocol
+/// service mutation publishes a new DID log entry.
+///
+/// Service-management ops already publish through `update_did_webvh`; this
+/// helper makes the post-mutation cache reseed explicit at the protocol layer
+/// too, so transport-service updates keep auth/listener self-resolution in sync
+/// even if lower-layer internals change.
+pub(crate) async fn refresh_self_did_resolver_after_service_mutation(
+    deps: &ServiceOpDeps<'_>,
+    vta_did: &str,
+    channel: &str,
+) {
+    match crate::webvh_store::get_did_log(deps.webvh_ks, vta_did).await {
+        Ok(Some(did_log)) => {
+            crate::operations::did_webvh::refresh_resolver_doc_from_log(
+                deps.did_resolver,
+                vta_did,
+                &did_log,
+                channel,
+            )
+            .await;
+        }
+        Ok(None) => {
+            let _ = deps.did_resolver.remove(vta_did).await;
+            warn!(
+                channel,
+                did = %vta_did,
+                "resolver refresh skipped after service mutation: did log missing; cache entry evicted"
+            );
+        }
+        Err(e) => {
+            let _ = deps.did_resolver.remove(vta_did).await;
+            warn!(
+                channel,
+                did = %vta_did,
+                error = %e,
+                "resolver refresh skipped after service mutation: failed to load did log; cache entry evicted"
+            );
         }
     }
 }
@@ -263,9 +307,23 @@ impl<'a> ServiceOpDeps<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::PROTOCOL_LOCK;
+    use super::{PROTOCOL_LOCK, refresh_self_did_resolver_after_service_mutation};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+    use didwebvh_rs::create::{CreateDIDConfig, create_did};
+    use serde_json::json;
+    use tokio::sync::RwLock;
+
+    use crate::config::AppConfig;
+    use crate::didcomm_bridge::DIDCommBridge;
+    use crate::keys::seed_store::{PlaintextSeedStore, SeedStore};
+    use crate::messaging::drain_sweeper::{DrainSweeper, teardown_channel};
+    use crate::messaging::registry::MediatorListenerRegistry;
+    use crate::operations::did_webvh::WebvhAuthLocks;
+    use crate::test_support::{TestStore, open_test_store, test_app_config};
+    use vti_common::telemetry::{RingBufferTelemetry, SharedTelemetrySink};
 
     /// Two tasks contending for `PROTOCOL_LOCK` execute serially: the
     /// second cannot enter its critical section until the first has
@@ -294,6 +352,188 @@ mod tests {
             max_observed.load(Ordering::SeqCst),
             1,
             "PROTOCOL_LOCK must serialize: at most one task in the critical section at a time"
+        );
+    }
+
+    struct TestEnv {
+        ts: TestStore,
+        config: Arc<RwLock<AppConfig>>,
+        seed_store: Arc<dyn SeedStore>,
+        resolver: DIDCacheClient,
+        bridge: Arc<DIDCommBridge>,
+        telemetry: SharedTelemetrySink,
+        registry: Arc<MediatorListenerRegistry>,
+        sweeper: Arc<DrainSweeper>,
+        locks: WebvhAuthLocks,
+    }
+
+    impl TestEnv {
+        async fn new() -> Self {
+            let ts = open_test_store().await;
+            let config = Arc::new(RwLock::new(test_app_config(ts.data_dir.clone())));
+            let seed_store: Arc<dyn SeedStore> = Arc::new(PlaintextSeedStore::new(&ts.data_dir));
+            let resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+                .await
+                .expect("resolver");
+            let bridge = Arc::new(DIDCommBridge::placeholder());
+            let telemetry_box: Box<dyn vti_common::telemetry::TelemetrySink> =
+                Box::new(RingBufferTelemetry::with_capacity(32));
+            let telemetry: SharedTelemetrySink = Arc::from(telemetry_box);
+            let registry = Arc::new(MediatorListenerRegistry::new(Arc::clone(&telemetry)));
+            let (tx, _rx) = teardown_channel(8);
+            let sweeper = Arc::new(DrainSweeper::new(Arc::clone(&registry), ts.drains_ks.clone(), tx));
+
+            Self {
+                ts,
+                config,
+                seed_store,
+                resolver,
+                bridge,
+                telemetry,
+                registry,
+                sweeper,
+                locks: WebvhAuthLocks::new(),
+            }
+        }
+
+        fn deps(&self) -> super::ServiceOpDeps<'_> {
+            super::ServiceOpDeps {
+                config: &self.config,
+                keys_ks: &self.ts.keys_ks,
+                imported_ks: &self.ts.imported_ks,
+                contexts_ks: &self.ts.contexts_ks,
+                webvh_ks: &self.ts.webvh_ks,
+                audit_ks: &self.ts.audit_ks,
+                snapshot_ks: &self.ts.snapshot_ks,
+                service_state_ks: &self.ts.service_state_ks,
+                drains_ks: &self.ts.drains_ks,
+                seed_store: &*self.seed_store,
+                did_resolver: &self.resolver,
+                didcomm_bridge: &self.bridge,
+                telemetry: &self.telemetry,
+                webvh_auth_locks: &self.locks,
+                registry: &self.registry,
+                sweeper: &self.sweeper,
+            }
+        }
+    }
+
+    async fn sample_did_log() -> (String, String, serde_json::Value) {
+        use affinidi_tdk::secrets_resolver::secrets::Secret;
+        use didwebvh_rs::parameters::Parameters as WebVHParameters;
+
+        let mut signing = Secret::generate_ed25519(None, None);
+        let pub_mb = signing
+            .get_public_keymultibase()
+            .expect("public key multibase");
+        signing.id = format!("did:key:{pub_mb}#{pub_mb}");
+
+        let did_document = json!({
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            "id": "{DID}",
+            "verificationMethod": [{
+                "id": "{DID}#key-0",
+                "type": "Multikey",
+                "controller": "{DID}",
+                "publicKeyMultibase": pub_mb,
+            }],
+            "authentication": ["{DID}#key-0"],
+            "assertionMethod": ["{DID}#key-0"],
+        });
+
+        let parameters = WebVHParameters {
+            update_keys: Some(Arc::new(vec![pub_mb.clone().into()])),
+            ..Default::default()
+        };
+
+        let cfg = CreateDIDConfig::builder()
+            .address("https://example.invalid/.well-known/did/did.jsonl")
+            .authorization_key(signing)
+            .did_document(did_document)
+            .parameters(parameters)
+            .build()
+            .expect("create config");
+
+        let result = create_did(cfg).await.expect("create did");
+        let did = result.did().to_string();
+        let did_log = serde_json::to_string(result.log_entry()).expect("serialize log entry");
+        let expected_doc = crate::operations::protocol::document::current_document_from_log(&did_log)
+            .expect("current document from log");
+
+        (did, did_log, expected_doc)
+    }
+
+    #[tokio::test]
+    async fn helper_refreshes_cache_from_stored_did_log() {
+        let env = TestEnv::new().await;
+        let (did, did_log, expected_doc_value) = sample_did_log().await;
+        crate::webvh_store::store_did_log(&env.ts.webvh_ks, &did, &did_log)
+            .await
+            .expect("store did log");
+
+        refresh_self_did_resolver_after_service_mutation(&env.deps(), &did, "test").await;
+
+        let resolved = env
+            .resolver
+            .resolve(&did)
+            .await
+            .expect("resolve from refreshed cache");
+        assert!(resolved.cache_hit, "expected cache hit after helper refresh");
+
+        let expected_doc = serde_json::from_value(expected_doc_value)
+            .expect("deserialize expected did document");
+        assert_eq!(resolved.doc, expected_doc);
+    }
+
+    #[tokio::test]
+    async fn helper_evicts_cache_when_log_missing() {
+        let env = TestEnv::new().await;
+        let mut signing = affinidi_tdk::secrets_resolver::secrets::Secret::generate_ed25519(None, None);
+        let pub_mb = signing
+            .get_public_keymultibase()
+            .expect("public key multibase");
+        signing.id = format!("did:key:{pub_mb}#{pub_mb}");
+        let did = format!("did:key:{pub_mb}");
+
+        let did_log = serde_json::to_string(&json!({
+            "versionId": "1-test",
+            "versionTime": "2026-01-01T00:00:00Z",
+            "parameters": {},
+            "state": {
+                "@context": ["https://www.w3.org/ns/did/v1"],
+                "id": did,
+            }
+        }))
+        .expect("serialize did log");
+
+        crate::webvh_store::store_did_log(&env.ts.webvh_ks, &did, &did_log)
+            .await
+            .expect("store did log");
+
+        refresh_self_did_resolver_after_service_mutation(&env.deps(), &did, "test").await;
+        let seeded = env
+            .resolver
+            .resolve(&did)
+            .await
+            .expect("resolve seeded DID from cache");
+        assert!(seeded.cache_hit, "sanity: DID should be served from cache before eviction");
+
+        env.ts
+            .webvh_ks
+            .remove(format!("log:{did}"))
+            .await
+            .expect("remove did log");
+
+        refresh_self_did_resolver_after_service_mutation(&env.deps(), &did, "test").await;
+
+        let after = env
+            .resolver
+            .resolve(&did)
+            .await
+            .expect("did:key should still resolve after cache eviction");
+        assert!(
+            !after.cache_hit,
+            "missing did log should evict cached entry; resolve must be a cache miss"
         );
     }
 }

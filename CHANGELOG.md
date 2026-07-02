@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### vta-service (0.10.22) — self DID resolver refresh after runtime DID-log mutations
+
+`vta-service` now keeps its in-process resolver cache for the VTA's own DID in
+sync after runtime DID-log mutations, including protocol `services {…}`
+operations and did-webvh create/update paths.
+
+Highlights:
+- Added explicit protocol-layer post-mutation refresh for service-management
+  mutations (REST/WebAuthn/TSP shared lifecycle + DIDComm enable/update/disable).
+- Hardened refresh behavior to fail closed: on did-log read/parse/decode
+  failures, stale cache entries are evicted best-effort.
+- Kept startup preload + listener resolver reuse behavior aligned with runtime
+  refresh semantics.
+- Added unit coverage for refresh success and eviction paths in both
+  `operations::protocol` and `operations::did_webvh`.
+
 ### vta-sdk (0.18.15) — didcomm-mediator template: make the TSPTransport service opt-in
 
 The `didcomm-mediator` built-in template previously advertised a `#tsp`

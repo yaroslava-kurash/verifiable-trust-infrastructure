@@ -47,7 +47,7 @@ use didwebvh_rs::create::{CreateDIDConfig, create_did};
 use didwebvh_rs::log_entry::{LogEntry, LogEntryMethods};
 use didwebvh_rs::parameters::Parameters as WebVHParameters;
 use didwebvh_rs::url::WebVHURL;
-use tracing::info;
+use tracing::{info, warn};
 use url::Url;
 
 use affinidi_tdk::secrets_resolver::secrets::Secret;
@@ -226,6 +226,52 @@ impl<'a> CreateDidWebvhDeps<'a> {
             auth_locks: &s.webvh_auth_locks,
         }
     }
+}
+
+/// Refresh the resolver cache for `did` from the provided did.jsonl content.
+///
+/// This runs after local did-log mutations so subsequent in-process resolves
+/// observe the newest DID document without waiting for process restart.
+/// On parse/deserialize failure, the current cache entry for `did` is evicted
+/// (best-effort) to avoid serving a stale in-process document after mutation.
+/// Failures are still non-fatal: the mutation already committed, and normal
+/// resolver network fallback remains available.
+pub(crate) async fn refresh_resolver_doc_from_log(
+    did_resolver: &DIDCacheClient,
+    did: &str,
+    did_log: &str,
+    channel: &str,
+) {
+    let doc_value = match crate::operations::protocol::document::current_document_from_log(did_log) {
+        Ok(doc) => doc,
+        Err(e) => {
+            let _ = did_resolver.remove(did).await;
+            warn!(
+                channel,
+                did = %did,
+                error = %e,
+                "resolver refresh failed: evicted cache entry and skipped refresh (parse current DID document from did.jsonl failed)"
+            );
+            return;
+        }
+    };
+
+    let doc = match serde_json::from_value(doc_value) {
+        Ok(doc) => doc,
+        Err(e) => {
+            let _ = did_resolver.remove(did).await;
+            warn!(
+                channel,
+                did = %did,
+                error = %e,
+                "resolver refresh failed: evicted cache entry and skipped refresh (deserialize DID document failed)"
+            );
+            return;
+        }
+    };
+
+    let mut cache = did_resolver.clone();
+    cache.add_did_document(did, doc).await;
 }
 
 /// Resolve a DID template by name for use in a create-DID flow.
@@ -691,6 +737,7 @@ pub async fn create_did_webvh(
         };
         webvh_store::store_did(webvh_ks, &did_record).await?;
         webvh_store::store_did_log(webvh_ks, &final_did, did_log).await?;
+        refresh_resolver_doc_from_log(did_resolver, &final_did, did_log, channel).await;
 
         info!(
             channel,
@@ -1209,6 +1256,7 @@ pub async fn create_did_webvh(
         };
         webvh_store::store_did(webvh_ks, &did_record).await?;
         webvh_store::store_did_log(webvh_ks, &final_did, &log_content).await?;
+        refresh_resolver_doc_from_log(did_resolver, &final_did, &log_content, channel).await;
 
         info!(
             channel,
@@ -1278,6 +1326,7 @@ pub async fn create_did_webvh(
         };
         webvh_store::store_did(webvh_ks, &did_record).await?;
         webvh_store::store_did_log(webvh_ks, &final_did, &log_content).await?;
+        refresh_resolver_doc_from_log(did_resolver, &final_did, &log_content, channel).await;
 
         info!(
             channel,
@@ -1671,7 +1720,12 @@ pub(crate) async fn derive_pre_rotation_keys(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+    use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+    use didwebvh_rs::create::{CreateDIDConfig, create_did};
+    use serde_json::json;
     use crate::store::Store;
     use crate::webvh_store;
     use tempfile::TempDir;
@@ -1793,5 +1847,112 @@ mod tests {
         auth_b
             .require_context(&record.context_id)
             .expect("ctx-B admin passes require_context for ctx-b");
+    }
+
+    async fn sample_did_log_for_refresh() -> (String, String, serde_json::Value) {
+        use didwebvh_rs::parameters::Parameters as WebVHParameters;
+
+        let mut signing = affinidi_tdk::secrets_resolver::secrets::Secret::generate_ed25519(None, None);
+        let pub_mb = signing
+            .get_public_keymultibase()
+            .expect("public key multibase");
+        signing.id = format!("did:key:{pub_mb}#{pub_mb}");
+
+        let did_document = json!({
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            "id": "{DID}",
+            "verificationMethod": [{
+                "id": "{DID}#key-0",
+                "type": "Multikey",
+                "controller": "{DID}",
+                "publicKeyMultibase": pub_mb,
+            }],
+            "authentication": ["{DID}#key-0"],
+            "assertionMethod": ["{DID}#key-0"],
+        });
+
+        let parameters = WebVHParameters {
+            update_keys: Some(Arc::new(vec![pub_mb.clone().into()])),
+            ..Default::default()
+        };
+
+        let cfg = CreateDIDConfig::builder()
+            .address("https://example.invalid/.well-known/did/did.jsonl")
+            .authorization_key(signing)
+            .did_document(did_document)
+            .parameters(parameters)
+            .build()
+            .expect("create did config");
+
+        let result = create_did(cfg).await.expect("create did");
+        let did = result.did().to_string();
+        let did_log = serde_json::to_string(result.log_entry()).expect("serialize did log entry");
+        let expected_doc_value = crate::operations::protocol::document::current_document_from_log(&did_log)
+            .expect("current document from log");
+        (did, did_log, expected_doc_value)
+    }
+
+    #[tokio::test]
+    async fn refresh_resolver_doc_from_log_seeds_cache_from_log() {
+        let resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .expect("resolver");
+        let (did, did_log, expected_doc_value) = sample_did_log_for_refresh().await;
+
+        refresh_resolver_doc_from_log(&resolver, &did, &did_log, "test").await;
+
+        let resolved = resolver
+            .resolve(&did)
+            .await
+            .expect("resolve from refreshed cache");
+        assert!(resolved.cache_hit, "expected cache hit after refresh");
+
+        let expected_doc = serde_json::from_value(expected_doc_value)
+            .expect("deserialize expected did document");
+        assert_eq!(resolved.doc, expected_doc);
+    }
+
+    #[tokio::test]
+    async fn refresh_resolver_doc_from_log_evicts_cache_on_parse_failure() {
+        let resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .expect("resolver");
+        let mut signing = affinidi_tdk::secrets_resolver::secrets::Secret::generate_ed25519(None, None);
+        let pub_mb = signing
+            .get_public_keymultibase()
+            .expect("public key multibase");
+        signing.id = format!("did:key:{pub_mb}#{pub_mb}");
+        let did = format!("did:key:{pub_mb}");
+
+        // A minimal did.jsonl line with a did:key state is enough for refresh
+        // seeding; after eviction, did:key remains resolvable without network.
+        let did_log = serde_json::to_string(&json!({
+            "versionId": "1-test",
+            "versionTime": "2026-01-01T00:00:00Z",
+            "parameters": {},
+            "state": {
+                "@context": ["https://www.w3.org/ns/did/v1"],
+                "id": did,
+            }
+        }))
+        .expect("serialize did log");
+
+        refresh_resolver_doc_from_log(&resolver, &did, &did_log, "test").await;
+        let seeded = resolver
+            .resolve(&did)
+            .await
+            .expect("resolve seeded DID from cache");
+        assert!(seeded.cache_hit, "sanity: DID should be served from cache before eviction");
+
+        refresh_resolver_doc_from_log(&resolver, &did, "not-a-valid-did-log", "test").await;
+
+        let after = resolver
+            .resolve(&did)
+            .await
+            .expect("did:key should still resolve after cache eviction");
+        assert!(
+            !after.cache_hit,
+            "after invalid refresh, DID must resolve via fallback (cache miss), proving cache entry was evicted"
+        );
     }
 }

@@ -41,7 +41,9 @@ use crate::error::AppError;
 use crate::messaging::registry::RegistryError;
 use crate::operations::did_webvh::{UpdateDidWebvhError, UpdateDidWebvhOptions, update_did_webvh};
 use crate::operations::protocol::document::{DocumentPatchError, without_didcomm_service};
-use crate::operations::protocol::{OpContext, PROTOCOL_LOCK, ServiceOpDeps};
+use crate::operations::protocol::{
+    OpContext, PROTOCOL_LOCK, ServiceOpDeps, refresh_self_did_resolver_after_service_mutation,
+};
 use crate::store::KeyspaceHandle;
 
 /// Spec minimum drain TTL when called over DIDComm transport: 1
@@ -192,6 +194,8 @@ pub async fn disable_didcomm(
         channel,
     )
     .await?;
+
+    refresh_self_did_resolver_after_service_mutation(deps, &vta_did, channel).await;
 
     // Persist: `services.didcomm = false` to fjall (authoritative runtime
     // state) + mirror into the in-memory config. `messaging` stays intact so
