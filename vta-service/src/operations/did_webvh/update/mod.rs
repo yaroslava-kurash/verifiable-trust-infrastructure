@@ -848,8 +848,8 @@ mod pre_rotation_e2e_tests {
             .expect("did log present");
         let expected_value = crate::operations::protocol::document::current_document_from_log(&log)
             .expect("extract current DID document");
-        let expected_doc = serde_json::from_value(expected_value)
-            .expect("deserialize expected DID document");
+        let expected_doc =
+            serde_json::from_value(expected_value).expect("deserialize expected DID document");
 
         assert_eq!(
             resolved.doc, expected_doc,

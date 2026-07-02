@@ -295,13 +295,8 @@ pub async fn update_did_webvh(
     webvh_store::store_did_log(webvh_ks, &record.did, &new_log_jsonl)
         .await
         .map_err(|e| UpdateDidWebvhError::Persistence(format!("store_did_log: {e}")))?;
-    super::super::refresh_resolver_doc_from_log(
-        did_resolver,
-        &record.did,
-        &new_log_jsonl,
-        channel,
-    )
-    .await;
+    super::super::refresh_resolver_doc_from_log(did_resolver, &record.did, &new_log_jsonl, channel)
+        .await;
 
     if !derived_auth.is_empty() {
         install_derived_webvh_keys(

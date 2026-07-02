@@ -381,7 +381,11 @@ mod tests {
             let telemetry: SharedTelemetrySink = Arc::from(telemetry_box);
             let registry = Arc::new(MediatorListenerRegistry::new(Arc::clone(&telemetry)));
             let (tx, _rx) = teardown_channel(8);
-            let sweeper = Arc::new(DrainSweeper::new(Arc::clone(&registry), ts.drains_ks.clone(), tx));
+            let sweeper = Arc::new(DrainSweeper::new(
+                Arc::clone(&registry),
+                ts.drains_ks.clone(),
+                tx,
+            ));
 
             Self {
                 ts,
@@ -457,8 +461,9 @@ mod tests {
         let result = create_did(cfg).await.expect("create did");
         let did = result.did().to_string();
         let did_log = serde_json::to_string(result.log_entry()).expect("serialize log entry");
-        let expected_doc = crate::operations::protocol::document::current_document_from_log(&did_log)
-            .expect("current document from log");
+        let expected_doc =
+            crate::operations::protocol::document::current_document_from_log(&did_log)
+                .expect("current document from log");
 
         (did, did_log, expected_doc)
     }
@@ -478,17 +483,21 @@ mod tests {
             .resolve(&did)
             .await
             .expect("resolve from refreshed cache");
-        assert!(resolved.cache_hit, "expected cache hit after helper refresh");
+        assert!(
+            resolved.cache_hit,
+            "expected cache hit after helper refresh"
+        );
 
-        let expected_doc = serde_json::from_value(expected_doc_value)
-            .expect("deserialize expected did document");
+        let expected_doc =
+            serde_json::from_value(expected_doc_value).expect("deserialize expected did document");
         assert_eq!(resolved.doc, expected_doc);
     }
 
     #[tokio::test]
     async fn helper_evicts_cache_when_log_missing() {
         let env = TestEnv::new().await;
-        let mut signing = affinidi_tdk::secrets_resolver::secrets::Secret::generate_ed25519(None, None);
+        let mut signing =
+            affinidi_tdk::secrets_resolver::secrets::Secret::generate_ed25519(None, None);
         let pub_mb = signing
             .get_public_keymultibase()
             .expect("public key multibase");
@@ -516,7 +525,10 @@ mod tests {
             .resolve(&did)
             .await
             .expect("resolve seeded DID from cache");
-        assert!(seeded.cache_hit, "sanity: DID should be served from cache before eviction");
+        assert!(
+            seeded.cache_hit,
+            "sanity: DID should be served from cache before eviction"
+        );
 
         env.ts
             .webvh_ks

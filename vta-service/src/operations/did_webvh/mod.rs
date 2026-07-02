@@ -242,7 +242,8 @@ pub(crate) async fn refresh_resolver_doc_from_log(
     did_log: &str,
     channel: &str,
 ) {
-    let doc_value = match crate::operations::protocol::document::current_document_from_log(did_log) {
+    let doc_value = match crate::operations::protocol::document::current_document_from_log(did_log)
+    {
         Ok(doc) => doc,
         Err(e) => {
             let _ = did_resolver.remove(did).await;
@@ -1723,11 +1724,11 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::store::Store;
+    use crate::webvh_store;
     use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
     use didwebvh_rs::create::{CreateDIDConfig, create_did};
     use serde_json::json;
-    use crate::store::Store;
-    use crate::webvh_store;
     use tempfile::TempDir;
     use vti_common::acl::Role;
     use vti_common::config::StoreConfig as VtiStoreConfig;
@@ -1852,7 +1853,8 @@ mod tests {
     async fn sample_did_log_for_refresh() -> (String, String, serde_json::Value) {
         use didwebvh_rs::parameters::Parameters as WebVHParameters;
 
-        let mut signing = affinidi_tdk::secrets_resolver::secrets::Secret::generate_ed25519(None, None);
+        let mut signing =
+            affinidi_tdk::secrets_resolver::secrets::Secret::generate_ed25519(None, None);
         let pub_mb = signing
             .get_public_keymultibase()
             .expect("public key multibase");
@@ -1887,8 +1889,9 @@ mod tests {
         let result = create_did(cfg).await.expect("create did");
         let did = result.did().to_string();
         let did_log = serde_json::to_string(result.log_entry()).expect("serialize did log entry");
-        let expected_doc_value = crate::operations::protocol::document::current_document_from_log(&did_log)
-            .expect("current document from log");
+        let expected_doc_value =
+            crate::operations::protocol::document::current_document_from_log(&did_log)
+                .expect("current document from log");
         (did, did_log, expected_doc_value)
     }
 
@@ -1907,8 +1910,8 @@ mod tests {
             .expect("resolve from refreshed cache");
         assert!(resolved.cache_hit, "expected cache hit after refresh");
 
-        let expected_doc = serde_json::from_value(expected_doc_value)
-            .expect("deserialize expected did document");
+        let expected_doc =
+            serde_json::from_value(expected_doc_value).expect("deserialize expected did document");
         assert_eq!(resolved.doc, expected_doc);
     }
 
@@ -1917,7 +1920,8 @@ mod tests {
         let resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
             .await
             .expect("resolver");
-        let mut signing = affinidi_tdk::secrets_resolver::secrets::Secret::generate_ed25519(None, None);
+        let mut signing =
+            affinidi_tdk::secrets_resolver::secrets::Secret::generate_ed25519(None, None);
         let pub_mb = signing
             .get_public_keymultibase()
             .expect("public key multibase");
@@ -1942,7 +1946,10 @@ mod tests {
             .resolve(&did)
             .await
             .expect("resolve seeded DID from cache");
-        assert!(seeded.cache_hit, "sanity: DID should be served from cache before eviction");
+        assert!(
+            seeded.cache_hit,
+            "sanity: DID should be served from cache before eviction"
+        );
 
         refresh_resolver_doc_from_log(&resolver, &did, "not-a-valid-did-log", "test").await;
 
