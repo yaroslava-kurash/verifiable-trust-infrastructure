@@ -44,9 +44,7 @@ use crate::messaging::handshake::{
 use crate::messaging::registry::{MediatorBinding, RegistryError};
 use crate::operations::did_webvh::{UpdateDidWebvhError, UpdateDidWebvhOptions, update_did_webvh};
 use crate::operations::protocol::document::{DocumentPatchError, with_didcomm_service};
-use crate::operations::protocol::{
-    OpContext, PROTOCOL_LOCK, ServiceOpDeps, refresh_self_did_resolver_after_service_mutation,
-};
+use crate::operations::protocol::{OpContext, PROTOCOL_LOCK, ServiceOpDeps};
 use crate::store::KeyspaceHandle;
 
 /// Caller-supplied parameters.
@@ -186,8 +184,6 @@ pub async fn enable_didcomm(
         channel,
     )
     .await?;
-
-    refresh_self_did_resolver_after_service_mutation(deps, &vta_did, channel).await;
 
     // Persist:
     //   * `services.didcomm = true` to fjall (authoritative runtime state) +

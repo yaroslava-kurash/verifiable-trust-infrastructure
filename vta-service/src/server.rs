@@ -1772,17 +1772,16 @@ async fn init_auth(
 /// so they are left to normal resolver behaviour.
 ///
 /// Staleness: this runs once at init, and the seeded resolver is now reused by
-/// the DIDComm listener path (so auth + listener share one cache view).
-/// Runtime DID-log mutations from the did-webvh lifecycle (`create` / `update`)
-/// also refresh that shared cache via `refresh_resolver_doc_from_log`.
+/// the DIDComm listener path (so auth + listener share one cache view). Every
+/// runtime DID-log mutation — the did-webvh lifecycle (`create` / `update`) and
+/// all protocol `services {…}` ops, which funnel through `update_did_webvh` —
+/// reseeds this shared entry via `refresh_resolver_doc_from_log` right after the
+/// new log is persisted, so service-advertisement changes stay in sync in the
+/// VTA's in-process self-view.
 ///
-/// Protocol `services {…}` mutations also re-seed this resolver entry after
-/// publish (best-effort, fail-closed via cache eviction on load/parse failure),
-/// so service-advertisement changes are kept in sync in the VTA's in-process
-/// self-view as well.
-///
-/// Best-effort: if local state is missing or malformed we warn and fall back to
-/// normal resolver behaviour (never a poisoned cache).
+/// Best-effort and fail-safe: if local state is missing or malformed we warn and
+/// keep the last-known-good cache entry (never evict, never poison), falling back
+/// to normal resolver behaviour where none exists.
 async fn preload_self_did_document(
     did_resolver: &mut DIDCacheClient,
     vta_did: &str,

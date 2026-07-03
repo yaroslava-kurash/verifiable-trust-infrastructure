@@ -232,10 +232,15 @@ impl<'a> CreateDidWebvhDeps<'a> {
 ///
 /// This runs after local did-log mutations so subsequent in-process resolves
 /// observe the newest DID document without waiting for process restart.
-/// On parse/deserialize failure, the current cache entry for `did` is evicted
-/// (best-effort) to avoid serving a stale in-process document after mutation.
-/// Failures are still non-fatal: the mutation already committed, and normal
-/// resolver network fallback remains available.
+///
+/// Fail-safe on error: if the new log can't be parsed/deserialized we **keep**
+/// the existing cache entry rather than evicting it. For the VTA's own DID the
+/// runtime-service-management invariant keeps `verificationMethod` byte-identical
+/// across mutations, so a stale-but-present self-document still carries the exact
+/// keys DIDComm pack/unpack needs — strictly safer than dropping the entry, which
+/// for a serverless / network-unreachable `did:webvh` would leave self-resolution
+/// with no source at all. Failures are non-fatal regardless: the mutation already
+/// committed, and normal resolver network fallback remains available.
 pub(crate) async fn refresh_resolver_doc_from_log(
     did_resolver: &DIDCacheClient,
     did: &str,
@@ -246,12 +251,11 @@ pub(crate) async fn refresh_resolver_doc_from_log(
     {
         Ok(doc) => doc,
         Err(e) => {
-            let _ = did_resolver.remove(did).await;
             warn!(
                 channel,
                 did = %did,
                 error = %e,
-                "resolver refresh failed: evicted cache entry and skipped refresh (parse current DID document from did.jsonl failed)"
+                "resolver refresh skipped: parse current DID document from did.jsonl failed; keeping last-known-good cache entry"
             );
             return;
         }
@@ -260,12 +264,11 @@ pub(crate) async fn refresh_resolver_doc_from_log(
     let doc = match serde_json::from_value(doc_value) {
         Ok(doc) => doc,
         Err(e) => {
-            let _ = did_resolver.remove(did).await;
             warn!(
                 channel,
                 did = %did,
                 error = %e,
-                "resolver refresh failed: evicted cache entry and skipped refresh (deserialize DID document failed)"
+                "resolver refresh skipped: deserialize DID document failed; keeping last-known-good cache entry"
             );
             return;
         }
@@ -1916,7 +1919,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refresh_resolver_doc_from_log_evicts_cache_on_parse_failure() {
+    async fn refresh_resolver_doc_from_log_preserves_cache_on_parse_failure() {
         let resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
             .await
             .expect("resolver");
@@ -1928,8 +1931,9 @@ mod tests {
         signing.id = format!("did:key:{pub_mb}#{pub_mb}");
         let did = format!("did:key:{pub_mb}");
 
-        // A minimal did.jsonl line with a did:key state is enough for refresh
-        // seeding; after eviction, did:key remains resolvable without network.
+        // A minimal did.jsonl line with a did:key state is enough to seed the
+        // cache with a known-good entry we can then assert survives a failed
+        // refresh.
         let did_log = serde_json::to_string(&json!({
             "versionId": "1-test",
             "versionTime": "2026-01-01T00:00:00Z",
@@ -1948,18 +1952,21 @@ mod tests {
             .expect("resolve seeded DID from cache");
         assert!(
             seeded.cache_hit,
-            "sanity: DID should be served from cache before eviction"
+            "sanity: DID should be served from cache after the good refresh"
         );
 
+        // A failed refresh must be fail-safe: keep the last-known-good entry
+        // rather than evicting it (evicting would strand a non-network-resolvable
+        // self-DID). The entry stays cached.
         refresh_resolver_doc_from_log(&resolver, &did, "not-a-valid-did-log", "test").await;
 
         let after = resolver
             .resolve(&did)
             .await
-            .expect("did:key should still resolve after cache eviction");
+            .expect("resolve after failed refresh");
         assert!(
-            !after.cache_hit,
-            "after invalid refresh, DID must resolve via fallback (cache miss), proving cache entry was evicted"
+            after.cache_hit,
+            "after a failed refresh the prior cache entry must be preserved (still a cache hit)"
         );
     }
 }

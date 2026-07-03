@@ -9,14 +9,18 @@ sync after runtime DID-log mutations, including protocol `services {…}`
 operations and did-webvh create/update paths.
 
 Highlights:
-- Added explicit protocol-layer post-mutation refresh for service-management
-  mutations (REST/WebAuthn/TSP shared lifecycle + DIDComm enable/update/disable).
-- Hardened refresh behavior to fail closed: on did-log read/parse/decode
-  failures, stale cache entries are evicted best-effort.
+- Centralized the post-mutation refresh at the DID-log write site: every runtime
+  mutation (did-webvh create/update and all protocol `services {…}` ops, which
+  funnel through `update_did_webvh`) reseeds the shared resolver cache once, from
+  the freshly-built log, right after it is persisted.
+- Fail-safe refresh: on did-log read/parse/decode failure the last-known-good
+  cache entry is kept (never evicted). For the VTA's own DID `verificationMethod`
+  stays byte-identical across service mutations, so a stale-but-present self-doc
+  still carries the exact keys pack/unpack needs — strictly safer than dropping
+  the entry, which would strand a serverless / network-unreachable `did:webvh`.
 - Kept startup preload + listener resolver reuse behavior aligned with runtime
   refresh semantics.
-- Added unit coverage for refresh success and eviction paths in both
-  `operations::protocol` and `operations::did_webvh`.
+- Added coverage for refresh success and the fail-safe (preserve-on-error) path.
 
 ### vta-sdk (0.18.15) — didcomm-mediator template: make the TSPTransport service opt-in
 

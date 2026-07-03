@@ -44,9 +44,7 @@ use crate::operations::protocol::invariant::{
 };
 use crate::operations::protocol::preconditions::ProtocolPreconditionError;
 use crate::operations::protocol::snapshot::{self, ServiceConfigSnapshot, ServiceKind};
-use crate::operations::protocol::{
-    OpContext, PROTOCOL_LOCK, refresh_self_did_resolver_after_service_mutation,
-};
+use crate::operations::protocol::{OpContext, PROTOCOL_LOCK};
 use crate::store::KeyspaceHandle;
 use tokio::sync::RwLock;
 use vta_sdk::error::VtaError;
@@ -156,7 +154,11 @@ pub(crate) async fn publish_patch<E: From<UpdateDidWebvhError>>(
     patched: JsonValue,
     channel: &str,
 ) -> Result<crate::operations::did_webvh::UpdateDidWebvhResult, E> {
-    let result = update_did_webvh(
+    // `update_did_webvh` owns the post-mutation self-DID resolver refresh (it
+    // reseeds the cache from the freshly-built log right after persisting it —
+    // see `did_webvh::update::orchestrator`). Every service-management op funnels
+    // through here, so there's no separate protocol-layer refresh to do.
+    update_did_webvh(
         &deps.webvh(),
         auth,
         scid,
@@ -168,11 +170,7 @@ pub(crate) async fn publish_patch<E: From<UpdateDidWebvhError>>(
         channel,
     )
     .await
-    .map_err(E::from)?;
-
-    refresh_self_did_resolver_after_service_mutation(deps, vta_did, channel).await;
-
-    Ok(result)
+    .map_err(E::from)
 }
 
 /// Enable preconditions: the service must be OFF in both the live config and
