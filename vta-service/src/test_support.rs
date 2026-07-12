@@ -133,6 +133,7 @@ pub fn test_app_config(data_dir: PathBuf) -> AppConfig {
         auth: Default::default(),
         audit: Default::default(),
         vault: Default::default(),
+        policy: Default::default(),
         secrets: Default::default(),
         #[cfg(feature = "tee")]
         tee: Default::default(),
@@ -830,6 +831,7 @@ pub async fn build_test_app_with(opts: TestAppOptions) -> (axum::Router, TestApp
             .keyspace(crate::keyspaces::ISSUED_CREDENTIALS)
             .unwrap(),
         memory_ks: store.keyspace(crate::keyspaces::MEMORY).unwrap(),
+        policy_ks: store.keyspace(crate::keyspaces::POLICY).unwrap(),
         service_state_ks,
         sealed_nonces_ks,
         backup_bundles_ks: backup_bundles_ks.clone(),
