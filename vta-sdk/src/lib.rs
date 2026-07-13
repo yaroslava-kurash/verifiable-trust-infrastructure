@@ -87,6 +87,8 @@ pub mod hex;
 pub mod context_path;
 pub mod identifier;
 
+#[cfg(feature = "acl-setup")]
+pub mod acl_setup;
 #[cfg(feature = "session")]
 pub mod agent_session;
 #[cfg(feature = "attest-verify")]
@@ -106,8 +108,6 @@ pub mod did_templates;
 pub mod didcomm_light;
 #[cfg(feature = "session")]
 pub mod didcomm_session;
-#[cfg(feature = "acl-setup")]
-pub mod acl_setup;
 // Pins rustls to the aws-lc-rs backend; every binary calls this at startup.
 #[cfg(feature = "crypto-provider")]
 pub mod crypto_init;

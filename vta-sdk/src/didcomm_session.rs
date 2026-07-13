@@ -257,7 +257,7 @@ impl DIDCommSession {
             let atm_clone = Arc::clone(&atm);
             tokio::spawn(async move {
                 crate::acl_setup::set_client_acl_on_connection(
-                    &*atm_clone,
+                    &atm_clone,
                     &client_did_str,
                     &mediator_did_str,
                     "didcomm-session",

@@ -10,11 +10,11 @@
 
 use std::sync::Arc;
 
-use affinidi_tdk::messaging::profiles::ATMProfile;
 use affinidi_tdk::messaging::ATM;
+use affinidi_tdk::messaging::profiles::ATMProfile;
 use sha2::{Digest, Sha256};
-use trust_tasks_rs::specs::messaging::acl;
 use tracing::{debug, info, warn};
+use trust_tasks_rs::specs::messaging::acl;
 
 /// Set a client's own ACL on the mediator to accept all messages.
 ///
@@ -33,7 +33,9 @@ pub async fn set_client_acl_on_connection(
     channel: &str,
     client_name: &str,
 ) {
-    if let Err(e) = set_client_acl_internal(atm, client_did, mediator_did, channel, client_name).await {
+    if let Err(e) =
+        set_client_acl_internal(atm, client_did, mediator_did, channel, client_name).await
+    {
         warn!(
             channel,
             error = %e,
@@ -52,9 +54,14 @@ async fn set_client_acl_internal(
     client_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Build an ATM profile for the client with the mediator as the peer.
-    let atm_profile = ATMProfile::new(atm, None, client_did.to_string(), Some(mediator_did.to_string()))
-        .await
-        .map_err(|e| format!("failed to create ATM profile: {e}"))?;
+    let atm_profile = ATMProfile::new(
+        atm,
+        None,
+        client_did.to_string(),
+        Some(mediator_did.to_string()),
+    )
+    .await
+    .map_err(|e| format!("failed to create ATM profile: {e}"))?;
 
     // Hash the client's DID for the mediator's ACL record (self-reference)
     // SHA-256 to match the TDK's acl_set convention

@@ -1054,11 +1054,11 @@ pub async fn run(
                             // DIDComm transport to send the trust task. The ACL setting is
                             // non-blocking — if it fails, we log a warning and continue.
                             acl_setup::set_client_acl_on_connection(
-                                &app_state.atm.as_ref().unwrap(),
-                                &config.vta_did.as_ref().unwrap(),
+                                app_state.atm.as_ref().unwrap(),
+                                config.vta_did.as_ref().unwrap(),
                                 messaging_config.mediator_did.as_str(),
                                 "vta-main",
-                                "vta"
+                                "vta",
                             )
                             .await;
 
