@@ -42,6 +42,7 @@ use affinidi_messaging_didcomm_service::{
 use affinidi_tdk_common::profiles::TDKProfile;
 #[cfg(feature = "didcomm")]
 use tokio_util::sync::CancellationToken;
+use vta_sdk::acl_setup;
 
 /// TEE context passed by the caller (main.rs or vta-enclave).
 /// None when running outside a TEE.
@@ -1047,6 +1048,20 @@ pub async fn run(
                                     endpoint: messaging_config.mediator_url.clone(),
                                 })
                                 .await;
+
+                            // Set the VTA's own ACL on the mediator to accept all messages.
+                            // This happens after the connection succeeds, so we have a live
+                            // DIDComm transport to send the trust task. The ACL setting is
+                            // non-blocking — if it fails, we log a warning and continue.
+                            acl_setup::set_client_acl_on_connection(
+                                &app_state.atm.as_ref().unwrap(),
+                                &config.vta_did.as_ref().unwrap(),
+                                messaging_config.mediator_did.as_str(),
+                                "vta-main",
+                                "vta"
+                            )
+                            .await;
+
                             info!("DIDComm service started");
                             Some(service)
                         }
