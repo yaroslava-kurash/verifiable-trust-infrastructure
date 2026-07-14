@@ -694,6 +694,7 @@ mod tests {
                 mediator_url: String::new(),
                 mediator_did: MEDIATOR.into(),
                 mediator_host: None,
+                setup_acl: false,
             });
         }
         crate::policy::storage::store_policy(

@@ -16,6 +16,11 @@
 * ACL provisioning is performed transparently during startup and does
   not alter existing DIDComm workflows beyond automatically ensuring
   the required mediator access rules are present.
+* Added `setup_acl` boolean to `[messaging]` in `config.toml` and the
+  `vta setup` wizard / `--from <toml>` schema. When `true`, the VTA
+  automatically provisions its per-DID allow-all ACL on the mediator
+  after connecting (required for mediators using `ExplicitAllow` mode).
+  Defaults to `false`; existing configs are unaffected.
 
 
 ### cnm-cli (0.11.0) / pnm-cli (0.11.0) — automatic ACL setup on DIDComm connect
