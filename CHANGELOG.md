@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### vti-common (0.11.5)
+
+* Added `setup_acl: bool` (default `false`) to `MessagingConfig`.
+
+### vtc-service (0.11.3)
+
+* Fixed `MessagingConfig` initialisers to include the new `setup_acl` field.
+
 ### vta-service (0.11.0) — automatic ACL provisioning on startup
 
 * Enabled the SDK's `acl-setup` feature and integrated automatic
@@ -21,7 +29,6 @@
   automatically provisions its per-DID allow-all ACL on the mediator
   after connecting (required for mediators using `ExplicitAllow` mode).
   Defaults to `false`; existing configs are unaffected.
-
 
 ### cnm-cli (0.11.0) / pnm-cli (0.11.0) — automatic ACL setup on DIDComm connect
 
