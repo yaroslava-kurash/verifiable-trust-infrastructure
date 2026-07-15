@@ -1,4 +1,4 @@
-//! Mediator ACL setup for DIDComm clients.
+//! Mediator ACL setup for DIDComm/TSP clients.
 //!
 //! After a client successfully connects to a mediator, it configures its own per-DID
 //! ACL to accept all messages despite potentially restrictive global ACL defaults.
@@ -7,6 +7,28 @@
 //!
 //! Used by both VTA (server startup) and PNM (on DIDComm connect).
 //! Gated on the `acl-setup` feature which requires `session` + `trust-tasks-rs`.
+//!
+//! ## Why this covers both DIDComm *and* TSP
+//!
+//! The mediator ACL is keyed on the **hashed DID** (`sha256(did)`), not on the
+//! transport — it gates the account, not a protocol. A DID gets a **single**
+//! mediator websocket (one socket per DID; a second is evicted as
+//! `duplicate-channel`), and both DIDComm and TSP frames are multiplexed over
+//! that one socket. So provisioning the DID's ACL once, after the socket is up,
+//! authorises the account for *both* transports — there is no separate TSP ACL
+//! to set.
+//!
+//! On the VTA this is invoked from the DIDComm-listener start path, which is
+//! also the TSP-receive path (a `tsp`-compiled VTA always multiplexes TSP on the
+//! same listener). On the client (PNM/CNM) it is invoked from
+//! [`crate::didcomm_session`], today the only mediator-connect path.
+//!
+//! TODO(tsp-client): when the SDK grows a *dedicated* client-side TSP transport
+//! (see the `#[non_exhaustive]` `TransportChoice` in `session.rs` — TSP is the
+//! workspace's preferred transport), that connect path must also call
+//! [`set_client_acl_on_connection`], or an `ExplicitAllow` mediator will reject
+//! it exactly as it did before this feature. The provisioning logic lives here
+//! precisely so that future call site can reuse it — only the trigger is missing.
 
 use std::sync::Arc;
 
@@ -18,14 +40,20 @@ use trust_tasks_rs::specs::messaging::acl;
 
 /// Set a client's own ACL on the mediator to accept all messages.
 ///
-/// Call this immediately after a DIDComm connection to the mediator succeeds.
-/// The client sets its per-DID ACL to allow all message types, which overrides any
-/// restrictive global ACL settings on the mediator while still respecting per-context
-/// ACLs configured for integrations.
+/// Call this immediately after a connection to the mediator succeeds. The client
+/// sets its per-DID ACL to allow all message types, which overrides any
+/// restrictive global ACL settings on the mediator while still respecting
+/// per-context ACLs configured for integrations.
+///
+/// **Fire-and-forget and fully non-blocking.** The entire operation — including
+/// building the ATM profile and the mediator round-trip — runs on a spawned
+/// background task, so neither VTA startup nor a client connect is delayed. This
+/// returns as soon as the task is spawned; both call sites (VTA and PNM) get the
+/// same non-blocking behaviour.
 ///
 /// # Behavior
-/// - If ATM or required DIDs are not available, this is a no-op (graceful degradation)
-/// - If ACL setting fails, a warning is logged but startup continues (fire-and-forget)
+/// - If building the profile or setting the ACL fails, a warning/debug line is
+///   logged but the caller's startup/connect continues unaffected.
 pub async fn set_client_acl_on_connection(
     atm: &ATM,
     client_did: &str,
@@ -33,19 +61,32 @@ pub async fn set_client_acl_on_connection(
     channel: &str,
     client_name: &str,
 ) {
-    if let Err(e) =
-        set_client_acl_internal(atm, client_did, mediator_did, channel, client_name).await
-    {
-        warn!(
-            channel,
-            error = %e,
-            client = client_name,
-            "failed to set client ACL on mediator (startup continues)"
-        );
-    }
+    // Own everything so the work can outlive the caller's stack frame, then
+    // spawn a single background task. One spawn — not a spawn-inside-a-spawn —
+    // keeps the profile build and the ACL round-trip off the hot path together.
+    let atm = atm.clone();
+    let client_did = client_did.to_string();
+    let mediator_did = mediator_did.to_string();
+    let channel = channel.to_string();
+    let client_name = client_name.to_string();
+
+    tokio::spawn(async move {
+        if let Err(e) =
+            set_client_acl_internal(&atm, &client_did, &mediator_did, &channel, &client_name).await
+        {
+            warn!(
+                channel,
+                error = %e,
+                client = client_name,
+                "failed to set client ACL on mediator (startup continues)"
+            );
+        }
+    });
 }
 
-/// Internal implementation of ACL setup.
+/// Internal implementation of ACL setup. Runs on the background task spawned by
+/// [`set_client_acl_on_connection`]; it is free to `await` the mediator
+/// round-trip directly since nothing on the caller's path is waiting on it.
 async fn set_client_acl_internal(
     atm: &ATM,
     client_did: &str,
@@ -63,8 +104,9 @@ async fn set_client_acl_internal(
     .await
     .map_err(|e| format!("failed to create ATM profile: {e}"))?;
 
-    // Hash the client's DID for the mediator's ACL record (self-reference)
-    // SHA-256 to match the TDK's acl_set convention
+    // Hash the client's DID for the mediator's ACL record (self-reference).
+    // SHA-256 hex to match the mediator's account-key convention
+    // (`sha256::digest(did)` in affinidi-messaging-sdk).
     let mut hasher = Sha256::new();
     hasher.update(client_did);
     let hash_bytes = hasher.finalize();
@@ -73,51 +115,40 @@ async fn set_client_acl_internal(
         .map(|b| format!("{:02x}", b))
         .collect::<String>();
 
-    // Build an "allow all" ACL that accepts every message type.
-    // This is a partial update: only the flags we set matter; the rest left unchanged.
+    // Build an "allow all" ACL that accepts every message type. Fields left
+    // `None` (e.g. the self-manage flags) keep the mediator's existing value.
     let acl = build_allow_all_acl();
 
-    // Apply the ACL to the client's own DID via the mediator's trust-tasks protocol.
-    // Send the request without waiting for response, because receiving the response
-    // requires receive_forwarded permission which we don't have until the ACL is
-    // applied. The mediator will process the request asynchronously anyway.
-    let client_did_copy = client_did.to_string();
-    let client_name_copy = client_name.to_string();
     let atm_profile_arc = Arc::new(atm_profile);
-    let atm_clone = atm.clone();
 
-    // Spawn a background task to send the ACL request fire-and-forget.
-    // Errors are logged at debug level since the mediator may still process it.
-    tokio::spawn(async move {
-        match atm_clone
-            .trust_tasks()
-            .acl_set(&atm_profile_arc, client_did_hash, acl)
-            .await
-        {
-            Ok(_) => {
-                info!(
-                    client_did = %client_did_copy,
-                    client = client_name_copy,
-                    "client ACL configured on mediator"
-                );
-            }
-            Err(e) => {
-                debug!(
-                    client_did = %client_did_copy,
-                    error = %e,
-                    client = client_name_copy,
-                    "client ACL request error (mediator may still process asynchronously)"
-                );
-            }
+    // Apply the ACL to the client's own DID via the mediator's trust-tasks
+    // protocol. `acl_set` waits for a response, which on an `ExplicitAllow`
+    // mediator cannot arrive until this very ACL grants `receive_forwarded` —
+    // so an `Err` here (typically a timeout) does NOT mean the request was
+    // dropped; the mediator still applies it. Hence debug, not warn, on error.
+    match atm
+        .trust_tasks()
+        .acl_set(&atm_profile_arc, client_did_hash, acl)
+        .await
+    {
+        Ok(_) => {
+            info!(
+                channel,
+                client_did = %client_did,
+                client = client_name,
+                "client ACL configured on mediator"
+            );
         }
-    });
-
-    info!(
-        channel,
-        client_did = %client_did,
-        client = client_name,
-        "client ACL configuration request sent to mediator"
-    );
+        Err(e) => {
+            debug!(
+                channel,
+                client_did = %client_did,
+                error = %e,
+                client = client_name,
+                "client ACL request error (mediator may still process asynchronously)"
+            );
+        }
+    }
 
     Ok(())
 }

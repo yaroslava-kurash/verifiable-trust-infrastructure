@@ -1051,19 +1051,28 @@ pub async fn run(
 
                             // Set the VTA's own ACL on the mediator to accept all messages.
                             // This happens after the connection succeeds, so we have a live
-                            // DIDComm transport to send the trust task. The ACL setting is
-                            // non-blocking — if it fails, we log a warning and continue.
+                            // transport to send the trust task. The ACL setting is
+                            // fire-and-forget (spawns internally) — startup is not blocked.
+                            // The ACL is keyed on the VTA's DID, so it authorises the account
+                            // for both DIDComm *and* TSP, which share this one mediator socket.
                             // Only runs when `setup_acl = true` in the messaging config
                             // (set during VTA setup for mediators using ExplicitAllow mode).
                             if messaging_config.setup_acl {
-                                acl_setup::set_client_acl_on_connection(
-                                    app_state.atm.as_ref().unwrap(),
-                                    config.vta_did.as_ref().unwrap(),
-                                    messaging_config.mediator_did.as_str(),
-                                    "vta-main",
-                                    "vta",
-                                )
-                                .await;
+                                if let Some(atm) = app_state.atm.as_ref() {
+                                    acl_setup::set_client_acl_on_connection(
+                                        atm,
+                                        vta_did,
+                                        messaging_config.mediator_did.as_str(),
+                                        "vta-main",
+                                        "vta",
+                                    )
+                                    .await;
+                                } else {
+                                    warn!(
+                                        "setup_acl = true but no ATM available; \
+                                         skipping mediator ACL provisioning"
+                                    );
+                                }
                             }
 
                             info!("DIDComm service started");

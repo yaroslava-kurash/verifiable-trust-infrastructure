@@ -245,27 +245,21 @@ impl DIDCommSession {
         }
 
         // Set this client's ACL on the mediator to accept all message types.
-        // Fire-and-forget: spawn a background task since the mediator processes
-        // ACL requests asynchronously. Errors are logged but don't block session setup.
-        // Only compiled-in when the `acl-setup` feature is enabled (requires
-        // `session` + `trust-tasks-rs`). PNM enables `acl-setup`; SDK consumers
-        // that omit it are unaffected.
+        // `set_client_acl_on_connection` is itself fire-and-forget (it spawns a
+        // background task and returns immediately), so no extra spawn here — the
+        // connect path is not blocked on the mediator round-trip. Only compiled-in
+        // when the `acl-setup` feature is enabled (requires `session` +
+        // `trust-tasks-rs`). PNM enables `acl-setup`; SDK consumers that omit it
+        // are unaffected.
         #[cfg(feature = "acl-setup")]
-        {
-            let client_did_str = client_did.to_string();
-            let mediator_did_str = mediator_did.to_string();
-            let atm_clone = Arc::clone(&atm);
-            tokio::spawn(async move {
-                crate::acl_setup::set_client_acl_on_connection(
-                    &atm_clone,
-                    &client_did_str,
-                    &mediator_did_str,
-                    "didcomm-session",
-                    "pnm",
-                )
-                .await;
-            });
-        }
+        crate::acl_setup::set_client_acl_on_connection(
+            &atm,
+            client_did,
+            mediator_did,
+            "didcomm-session",
+            "pnm",
+        )
+        .await;
 
         debug!("DIDComm session connected via mediator {mediator_did} (WebSocket mode)");
 
