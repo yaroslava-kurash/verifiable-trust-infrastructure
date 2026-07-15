@@ -11,24 +11,30 @@
 //! ## Why this covers both DIDComm *and* TSP
 //!
 //! The mediator ACL is keyed on the **hashed DID** (`sha256(did)`), not on the
-//! transport — it gates the account, not a protocol. A DID gets a **single**
-//! mediator websocket (one socket per DID; a second is evicted as
-//! `duplicate-channel`), and both DIDComm and TSP frames are multiplexed over
-//! that one socket. So provisioning the DID's ACL once, after the socket is up,
-//! authorises the account for *both* transports — there is no separate TSP ACL
-//! to set.
+//! transport — it gates the account, not a protocol. On the VTA, DIDComm and TSP
+//! are multiplexed over the DID's **single** mediator websocket (one socket per
+//! DID; a second is evicted as `duplicate-channel`), so provisioning the DID's
+//! ACL once — from the DIDComm-listener start path, which is also the
+//! TSP-receive path on a `tsp`-compiled VTA — authorises the account for *both*
+//! transports. There is no separate TSP ACL to set.
 //!
-//! On the VTA this is invoked from the DIDComm-listener start path, which is
-//! also the TSP-receive path (a `tsp`-compiled VTA always multiplexes TSP on the
-//! same listener). On the client (PNM/CNM) it is invoked from
-//! [`crate::didcomm_session`], today the only mediator-connect path.
+//! On the client (PNM/CNM) the general request transport (`VtaClient` /
+//! `TransportChoice` in `session.rs`) is DIDComm-or-REST: every *persistent*,
+//! ACL-needing client connect goes through [`crate::didcomm_session`], which
+//! calls this. The SDK's one dedicated *client-side* TSP session,
+//! [`crate::session::TspPingSession`], is a transient `pnm health` liveness
+//! probe on an ephemeral DID — it opens its own short-lived TSP socket and tears
+//! it down, so it deliberately does **not** persist a mediator ACL (that would
+//! litter the mediator with allow-all entries for throwaway probe DIDs). A probe
+//! against an `ExplicitAllow` mediator is expected to require its DID be
+//! pre-authorised.
 //!
-//! TODO(tsp-client): when the SDK grows a *dedicated* client-side TSP transport
-//! (see the `#[non_exhaustive]` `TransportChoice` in `session.rs` — TSP is the
-//! workspace's preferred transport), that connect path must also call
-//! [`set_client_acl_on_connection`], or an `ExplicitAllow` mediator will reject
-//! it exactly as it did before this feature. The provisioning logic lives here
-//! precisely so that future call site can reuse it — only the trigger is missing.
+//! TODO(tsp-client): if/when the general client request transport gains a
+//! *persistent* TSP variant (a `Tsp` arm on the `#[non_exhaustive]`
+//! `TransportChoice`, or `TspPingSession` generalised into a request session),
+//! that connect path must also call [`set_client_acl_on_connection`], or an
+//! `ExplicitAllow` mediator will reject it exactly as it did before this
+//! feature. The provisioning logic lives here so only the trigger is needed.
 
 use std::sync::Arc;
 
