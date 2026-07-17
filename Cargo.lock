@@ -478,9 +478,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-sdk"
-version = "0.18.56"
+version = "0.18.57"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f46fbfc0492e04bc651f9f27ef34e303e8e928688a3da79b3033c8960069020"
+checksum = "197dc2c0e495bc94e92f74df980b59cc16668018fe47d6f55e22f9c699e40f00"
 dependencies = [
  "affinidi-crypto",
  "affinidi-did-authentication",
@@ -2984,7 +2984,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -10301,15 +10301,16 @@ dependencies = [
 
 [[package]]
 name = "vtc-service"
-version = "0.11.6"
+version = "0.11.7"
 dependencies = [
  "aes-gcm",
  "affinidi-bbs",
  "affinidi-crypto",
  "affinidi-data-integrity",
  "affinidi-did-resolver-cache-sdk",
+ "affinidi-messaging-core",
+ "affinidi-messaging-delivery",
  "affinidi-messaging-didcomm",
- "affinidi-messaging-didcomm-service",
  "affinidi-messaging-test-mediator",
  "affinidi-openid4vci",
  "affinidi-openid4vp",
@@ -10333,6 +10334,7 @@ dependencies = [
  "ed25519-dalek",
  "fjall",
  "flate2",
+ "futures-util",
  "gethostname",
  "hex",
  "hkdf 0.13.0",
