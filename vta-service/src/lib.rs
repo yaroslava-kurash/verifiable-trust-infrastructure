@@ -24,6 +24,7 @@ pub mod deprecation;
 pub mod did_templates;
 pub mod didcomm_bridge;
 pub mod error;
+pub mod hardened;
 pub mod keys;
 pub mod keyspaces;
 #[cfg(feature = "didcomm")]
