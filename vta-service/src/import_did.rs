@@ -17,7 +17,26 @@ pub struct ImportDidArgs {
 pub async fn run_import_did(args: ImportDidArgs) -> Result<(), Box<dyn std::error::Error>> {
     let config = AppConfig::load(args.config_path)?;
     let store = Store::open(&config.store)?;
-    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
+
+    // In hardened mode the ACL keyspace is encrypted. Derive the storage key
+    // so this offline command reads and writes through the same encrypted
+    // handles as the daemon — otherwise the ACL entry is written as plaintext
+    // and the daemon refuses to decrypt it.
+    let acl_ks = {
+        let ks = store.keyspace(crate::keyspaces::ACL)?;
+        if config.hardened.derive_keys_from_seed {
+            let seed_store = crate::keys::seed_store::create_seed_store(&config)?;
+            let seed = seed_store
+                .get()
+                .await
+                .map_err(|e| format!("hardened import-did: seed load failed: {e}"))?
+                .ok_or("hardened import-did: no seed in secret store — run setup first")?;
+            let key = *crate::hardened::derive_storage_key(&seed, &config.hardened.storage_key_salt);
+            ks.with_encryption(key)
+        } else {
+            ks
+        }
+    };;
 
     // Validate DID format
     if !args.did.starts_with("did:") {

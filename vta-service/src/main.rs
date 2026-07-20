@@ -1962,7 +1962,7 @@ async fn main() {
             }
         }
         None => {
-            let config = match AppConfig::load(cli.config) {
+            let mut config = match AppConfig::load(cli.config) {
                 Ok(config) => config,
                 Err(e) => {
                     eprintln!("Error: {e}");
@@ -1982,11 +1982,186 @@ async fn main() {
             let seed_store: Arc<dyn keys::seed_store::SeedStore> =
                 Arc::from(create_seed_store(&config).expect("failed to create seed store"));
 
+            // Hardened mode (PoC): derive the storage-encryption key and the JWT
+            // signing key from the master seed so neither secret lives in
+            // config.toml or on disk.  Mirrors what `vta-enclave` does inside a
+            // Nitro enclave without requiring KMS.  See `hardened.rs`.
+            let storage_encryption_key =
+                if config.hardened.derive_keys_from_seed {
+                    // Gap 4: if VTA_AUTH_JWT_SIGNING_KEY is set in the environment, its
+                    // value would sit in /proc/<pid>/environ visible to root even though
+                    // hardened mode never uses it (the derived/sealed key overwrites
+                    // config.auth.jwt_signing_key below). Remove it from the process
+                    // environment immediately so it is no longer visible after this point.
+                    if std::env::var("VTA_AUTH_JWT_SIGNING_KEY").is_ok() {
+                        tracing::warn!(
+                            "SECURITY: VTA_AUTH_JWT_SIGNING_KEY was set in the environment but \
+                             hardened.derive_keys_from_seed = true — the env var is not used and \
+                             has been removed from the process environment. Remove it from your \
+                             deployment configuration to avoid this warning."
+                        );
+                        // SAFETY: single-threaded at this point in main() — no other thread
+                        // is reading environment variables concurrently.
+                        #[allow(unused_unsafe)]
+                        unsafe { std::env::remove_var("VTA_AUTH_JWT_SIGNING_KEY") };
+                    }
+
+                    let seed = match seed_store.get().await {
+                        Ok(Some(s)) => s,
+                        Ok(None) => {
+                            tracing::error!(
+                                "hardened.derive_keys_from_seed = true but no seed found in the \
+                                 secret store — run `vta setup` first, or check [secrets] backend"
+                            );
+                            std::process::exit(1);
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                "hardened.derive_keys_from_seed = true but seed load failed — \
+                                 check that the [secrets] backend is reachable and configured"
+                            );
+                            std::process::exit(1);
+                        }
+                    };
+
+                    // Warn only when the factory would actually fall back to the plaintext
+                    // file backend: no cloud/vault/k8s/config-seed field is set AND the
+                    // keyring feature is not compiled in (keyring is in the default features,
+                    // so this warning fires only in non-default/stripped builds).
+                    let looks_like_plaintext_backend = config.secrets.seed.is_none()
+                        && config.secrets.aws_secret_name.is_none()
+                        && config.secrets.gcp_project.is_none()
+                        && config.secrets.azure_vault_url.is_none()
+                        && config.secrets.vault_addr.is_none()
+                        && config.secrets.k8s_secret_name.is_none()
+                        && !cfg!(feature = "keyring");
+                    if looks_like_plaintext_backend {
+                        tracing::warn!(
+                            "hardened mode is enabled but the [secrets] backend appears to be \
+                             the plaintext file fallback — the storage-encryption and JWT signing \
+                             keys can be re-derived by anyone who reads the seed file. Use a real \
+                             secret-store backend (OS keyring, aws-secrets, gcp-secrets, …) for \
+                             meaningful protection"
+                        );
+                    }
+
+                    let storage_key =
+                        hardened::derive_storage_key(&seed, &config.hardened.storage_key_salt);
+                    // seed bytes are no longer needed — drop them.
+                    drop(seed);
+
+                    // JWT signing key: random + AES-GCM sealed, mirroring TEE mode.
+                    // Use the bootstrap keyspace (unencrypted at the keyspace level,
+                    // application-layer encrypted under the storage key — same as TEE).
+                    let bootstrap_ks = store
+                        .keyspace(crate::keyspaces::BOOTSTRAP)
+                        .expect("failed to open bootstrap keyspace");
+
+                    let jwt_key: [u8; 32] = match bootstrap_ks
+                        .get_raw(hardened::HARDENED_JWT_CT_KEY)
+                        .await
+                        .expect("failed to read hardened JWT ciphertext")
+                    {
+                        Some(ciphertext) => {
+                            // Subsequent boot: decrypt and verify fingerprint.
+                            let plaintext = hardened::aes_gcm_open(&storage_key, &ciphertext)
+                                .unwrap_or_else(|| {
+                                    tracing::error!(
+                                        "hardened mode: AES-GCM decryption of JWT signing key \
+                                         failed — storage_key_salt mismatch or tampered \
+                                         ciphertext. Clear 'hardened:jwt_ciphertext' from the \
+                                         bootstrap keyspace to generate a new key (existing \
+                                         sessions will be invalidated)."
+                                    );
+                                    std::process::exit(1);
+                                });
+                            let key: [u8; 32] = plaintext.try_into().unwrap_or_else(|_| {
+                                tracing::error!(
+                                    "hardened mode: decrypted JWT key is not 32 bytes"
+                                );
+                                std::process::exit(1);
+                            });
+                            // Verify fingerprint (tamper detection, same as TEE).
+                            let stored_fp = bootstrap_ks
+                                .get_raw(hardened::HARDENED_JWT_FINGERPRINT_KEY)
+                                .await
+                                .expect("failed to read hardened JWT fingerprint");
+                            match stored_fp {
+                                None => {
+                                    tracing::error!(
+                                        "hardened mode: JWT key fingerprint missing — possible \
+                                         tampering. Clear 'hardened:jwt_ciphertext' and \
+                                         'hardened:jwt_fingerprint' from the bootstrap keyspace \
+                                         to regenerate."
+                                    );
+                                    std::process::exit(1);
+                                }
+                                Some(fp_bytes) => {
+                                    let stored = String::from_utf8_lossy(&fp_bytes);
+                                    let computed = hardened::jwt_key_fingerprint(&key);
+                                    if stored.trim() != computed {
+                                        tracing::error!(
+                                            stored = %stored.trim(),
+                                            computed = %computed,
+                                            "hardened mode: JWT key fingerprint MISMATCH — \
+                                             possible tampering with the ciphertext or salt \
+                                             change. Clear both bootstrap entries to regenerate."
+                                        );
+                                        std::process::exit(1);
+                                    }
+                                }
+                            }
+                            tracing::info!(
+                                "hardened mode: JWT signing key decrypted from bootstrap keyspace"
+                            );
+                            key
+                        }
+                        None => {
+                            // First boot: generate a random JWT key and seal it.
+                            let mut key_bytes = [0u8; 32];
+                            rand::fill(&mut key_bytes);
+                            let ciphertext =
+                                hardened::aes_gcm_seal(&storage_key, &key_bytes);
+                            let fingerprint = hardened::jwt_key_fingerprint(&key_bytes);
+                            bootstrap_ks
+                                .insert_raw(hardened::HARDENED_JWT_CT_KEY, ciphertext)
+                                .await
+                                .expect("failed to store hardened JWT ciphertext");
+                            bootstrap_ks
+                                .insert_raw(
+                                    hardened::HARDENED_JWT_FINGERPRINT_KEY,
+                                    fingerprint.as_bytes().to_vec(),
+                                )
+                                .await
+                                .expect("failed to store hardened JWT fingerprint");
+                            store.persist().await.expect("failed to persist bootstrap keyspace");
+                            tracing::info!(
+                                "hardened mode: new random JWT signing key generated and \
+                                 sealed in bootstrap keyspace"
+                            );
+                            key_bytes
+                        }
+                    };
+
+                    // Inject the JWT key into in-memory config — never written to config.toml.
+                    config.auth.jwt_signing_key = Some(BASE64.encode(jwt_key));
+
+                    tracing::info!(
+                        "hardened mode: storage-encryption key derived from seed, \
+                         JWT signing key loaded from bootstrap keyspace (neither stored on disk)"
+                    );
+
+                    Some(*storage_key)
+                } else {
+                    None // standard non-TEE: plaintext fjall, JWT key from config.toml
+                };
+
             if let Err(e) = server::run(
                 config,
                 store,
                 seed_store,
-                None, // no storage encryption (non-TEE mode)
+                storage_encryption_key,
                 None, // no TEE context (use vta-enclave for TEE mode)
                 cli.allow_degraded,
             )

@@ -134,6 +134,11 @@ pub struct AppConfig {
     #[cfg(feature = "tee")]
     #[serde(default)]
     pub tee: TeeConfig,
+    /// Non-TEE hardened mode: derive the storage-encryption key and JWT signing
+    /// key from the master seed at boot, keeping both secrets out of
+    /// `config.toml`. See `hardened.rs` for details.
+    #[serde(default)]
+    pub hardened: HardenedConfig,
     #[serde(skip)]
     pub config_path: PathBuf,
     /// Dotted paths of keys present in the parsed `config.toml` that no
@@ -437,6 +442,58 @@ fn default_attestation_cache_ttl() -> u64 {
 #[cfg(feature = "tee")]
 fn default_storage_key_salt() -> String {
     "vta-tee-storage-v1".to_string()
+}
+
+fn default_hardened_storage_key_salt() -> String {
+    "vta-storage-v1".to_string()
+}
+
+/// Non-TEE hardened mode: derive storage-encryption and JWT signing keys from
+/// the master seed, so neither secret lives in `config.toml` or on disk.
+///
+/// This PoC mirrors the key-derivation that `vta-enclave` performs inside the
+/// Nitro enclave (see `tee::kms_bootstrap`), without requiring KMS or an
+/// enclave. The seed must reside in a real secret-store backend — the
+/// plaintext file fallback (`PlaintextSeedStore`) defeats the protection.
+///
+/// Enable in `config.toml`:
+/// ```toml
+/// [hardened]
+/// derive_keys_from_seed = true
+/// storage_key_salt = "my-unique-per-vta-salt"
+/// ```
+///
+/// **Migration note**: enabling on an existing plaintext-fjall VTA requires a
+/// one-time `migrate_to_encrypted` pass before starting with this flag.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HardenedConfig {
+    /// When `true`:
+    /// - derive the AES-256-GCM storage-encryption key from the master seed
+    ///   (all fjall keyspaces encrypted, `VAE1` format — same as TEE mode);
+    /// - derive the JWT signing key from the master seed and inject it into
+    ///   the in-memory config (`[auth] jwt_signing_key` in `config.toml` is
+    ///   ignored when this is `true`).
+    ///
+    /// Default `false` (standard non-TEE behaviour).
+    #[serde(default)]
+    pub derive_keys_from_seed: bool,
+
+    /// Salt for the HKDF storage-key derivation.
+    ///
+    /// **Changing this invalidates all encrypted data.** Set it once at
+    /// initial setup and treat it as permanent. Ignored when
+    /// `derive_keys_from_seed = false`.
+    #[serde(default = "default_hardened_storage_key_salt")]
+    pub storage_key_salt: String,
+}
+
+impl Default for HardenedConfig {
+    fn default() -> Self {
+        Self {
+            derive_keys_from_seed: false,
+            storage_key_salt: default_hardened_storage_key_salt(),
+        }
+    }
 }
 
 #[cfg(feature = "tee")]
