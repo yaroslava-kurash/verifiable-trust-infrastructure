@@ -2,7 +2,11 @@
 
 > **Status:** PoC / exploratory. Not enabled by default; no migration tooling
 > yet. All existing behaviour is unchanged unless `[hardened]
-> derive_keys_from_seed = true` is set in `config.toml`.
+> enabled = true` is set in `config.toml`.
+>
+> **JWT key design choice:** Option 2 (random key, AES-GCM sealed in bootstrap
+> keyspace) is implemented. Option 1 (derived from seed) is documented for
+> comparison but not built.
 
 ---
 
@@ -121,7 +125,7 @@ storage key:
 ## What Was Changed
 
 Four files were touched. No existing behaviour changes unless
-`derive_keys_from_seed = true` is set.
+`enabled = true` is set.
 
 ### 1. `vta-service/src/hardened.rs` *(new file)*
 
@@ -159,7 +163,7 @@ are unaffected.
 
 ```toml
 [hardened]
-derive_keys_from_seed = true
+enabled = true
 storage_key_salt = "my-unique-per-vta-salt"
 ```
 
@@ -167,7 +171,7 @@ Fields:
 
 | Field | Default | Description |
 |---|---|---|
-| `derive_keys_from_seed` | `false` | Enable the PoC. When `true`, both keys are controlled by this module and `[auth] jwt_signing_key` in `config.toml` is ignored |
+| `enabled` | `false` | Enable the PoC. When `true`, both keys are controlled by this module and `[auth] jwt_signing_key` in `config.toml` is ignored |
 | `storage_key_salt` | `"vta-storage-v1"` | HKDF salt for the storage key. **Treat as a permanent constant** — changing it invalidates all encrypted data |
 
 ### 3. `vta-service/src/main.rs`
@@ -217,7 +221,7 @@ path so operators do not need to hand-edit `config.toml` after setup:
 - **`WizardInputs`** (the setup TOML schema) gained a `[hardened]` field of
   type `HardenedConfig`. `WizardInputs` carries `#[serde(deny_unknown_fields)]`
   so the field had to be explicitly added.
-- **`apply_inputs`** now checks `inputs.hardened.derive_keys_from_seed`:
+- **`apply_inputs`** now checks `inputs.hardened.enabled`:
   - If `true`: skips the `rand::fill` JWT key generation step entirely
     (produces `jwt_signing_key: None`).
   - If `false` (default): generates a random JWT key as before.
@@ -251,7 +255,7 @@ encrypted handles cannot read. Fixed for `import-did`:
 // import_did.rs
 let acl_ks = {
     let ks = store.keyspace(ACL)?;
-    if config.hardened.derive_keys_from_seed {
+    if config.hardened.enabled {
         let seed = seed_store.get().await?...;
         let key = *hardened::derive_storage_key(&seed, &salt);
         ks.with_encryption(key)   // same key as daemon
@@ -304,7 +308,7 @@ All three modes converge on the same `apply_encryption` closure in
 `server::build_app_state()` — the `VAE1` AES-256-GCM result is identical.
 The difference is only how the key arrives there.
 
-| | TEE (`vta-enclave`) | [hardened] derive_keys_from_seed = true |
+| | TEE (`vta-enclave`) | [hardened] enabled = true |
 |---|---|---|
 | **Storage key origin** | `HKDF(seed, salt, info="aes-256-gcm-storage")` after KMS `Decrypt` inside enclave | `HKDF(seed, salt, info="vta-storage-key/v1")` after `seed_store.get()` |
 | **Seed protection** | KMS + PCR-bound attestation | External secret store (keyring, AWS SM, …) |
@@ -345,7 +349,7 @@ data_dir    = "/var/lib/vta/data"
 # aws_region = "eu-west-1"
 
 [hardened]
-derive_keys_from_seed = true
+enabled = true
 storage_key_salt = "choose-a-unique-string-per-vta"   # permanent — never change
 
 [vta_did]
@@ -357,7 +361,7 @@ Run setup:
 vta setup --from setup-hardened.toml
 ```
 
-**What the wizard does with `derive_keys_from_seed = true`:**
+**What the wizard does with `enabled = true`:**
 - Skips generating `jwt_signing_key` (no `rand::fill`, no base64 encode).
 - Writes `jwt_signing_key` as **absent** from `[auth]` in `config.toml`.
 - Writes the `[hardened]` section verbatim to `config.toml`.
@@ -368,7 +372,7 @@ vta setup --from setup-hardened.toml
 # jwt_signing_key is absent — derived from seed at every boot
 
 [hardened]
-derive_keys_from_seed = true
+enabled = true
 storage_key_salt = "choose-a-unique-string-per-vta"
 ```
 
@@ -379,7 +383,7 @@ storage_key_salt = "choose-a-unique-string-per-vta"
 3. Add the `[hardened]` section:
    ```toml
    [hardened]
-   derive_keys_from_seed = true
+   enabled = true
    storage_key_salt = "choose-a-unique-string-per-vta"
    ```
 
@@ -397,35 +401,44 @@ Start the daemon. Expected log output:
 
 ### Rotating the JWT key
 
-- **Option 1**: no independent rotation — must rotate the master seed (`vta keys rotate-seed`). This also changes the storage encryption key, requiring a re-encryption pass of all fjall data.
-- **Option 2**: delete `hardened:jwt_ciphertext` and `hardened:jwt_fingerprint` from the `bootstrap` keyspace (no CLI command yet — see Known Gaps) and restart. The master seed and all fjall data are unaffected. All existing sessions are invalidated.
+- **Option 1** (not implemented): no independent rotation — must rotate the master seed (`vta keys rotate-seed`). This also changes the storage encryption key, requiring a re-encryption pass of all fjall data.
+- **Option 2** (implemented): `vta hardened rotate-jwt` deletes `hardened:jwt_ciphertext` and `hardened:jwt_fingerprint` from the `bootstrap` keyspace and prints restart instructions. On next daemon start a new random key is generated. The master seed and all fjall data are unaffected. All existing sessions are invalidated.
 
 ---
 
 ## Migration for Existing (Plaintext-Fjall) VTAs
 
-Enabling `derive_keys_from_seed = true` on a VTA that was originally set up
+Enabling `enabled = true` on a VTA that was originally set up
 **without** hardened mode will cause read failures — the `VAE1` decoder cannot
 decrypt plaintext rows.
 
 A `KeyspaceHandle::migrate_to_encrypted(key)` API exists in
-`vti-common/src/store/mod.rs` that re-writes rows in place. A CLI command
-(`vta migrate-to-encrypted`) to drive it is **not yet implemented**.
+`vti-common/src/store/mod.rs` that re-writes rows in place.
 
-Workaround: only enable hardened mode on freshly-setup VTAs.
+**Required behaviour (not yet implemented):** when `hardened.enabled = true` and
+the daemon detects plaintext rows in any keyspace at startup, it must
+automatically migrate all keyspaces in-place — re-encrypting every row under the
+derived storage key — before opening the store for business. This must happen
+with **no operator action** (no CLI command, no flag) and must be
+tested.
+
+Until this is implemented: only enable hardened mode on freshly-setup VTAs.
 
 ---
 
 ## Known Gaps and Future Work
 
-| Gap | Applies to | Description | Status | Estimate |
-|---|---|---|---|---|
-| `vta migrate-to-encrypted` CLI | Both options | Required to safely enable hardened mode on a VTA originally set up without it | Open | ~2 d |
-| `vta hardened rotate-jwt` CLI | Option 2 | Convenience command to delete `hardened:jwt_ciphertext` + `hardened:jwt_fingerprint` and trigger a restart | Open | ~0,5 d |
-| Remaining offline CLI commands | Both options | `acl_cli`, `keys_cli`, `webvh_cli`, `bootstrap_cli`, `services_cli` write to the store without the hardened storage key — same issue fixed for `import_did`. Each command needs the same seed-load + `with_encryption` pattern | Open | ~2 d |
-| Setup encryption ordering | Both options | Seed generated before store opens; all writes VAE1 from first byte; implemented in `apply_inputs` step 3.5 | Fixed (PoC) | — |
-| `VTA_AUTH_JWT_SIGNING_KEY` env var exposure | Both options | Removed from process env at boot; see section below | Fixed (PoC) | — |
-| `BackupPayload` non-`Zeroizing` strings in memory | Both options | Seed + JWT key + imported privkeys assembled as plain `String` before Argon2id encryption; see section below | Open | ~0,5 d |
+| Gap | Description | Status | Estimate |
+|---|---|---|---|
+| Storage encryption (fjall keyspaces) | Core hardened feature: derive storage key from seed via HKDF, wrap all keyspace handles with `with_encryption(key)` in `server::build_app_state()`. PoC wires up the key derivation and `apply_encryption` closure; needs end-to-end validation, test coverage, and integration with the remaining offline CLI commands before it is production-ready. | PoC unfinished | ~0.5 d |
+| Random JWT signing key generation and sealing | Core hardened feature: generate a random 32-byte key on first boot, AES-256-GCM seal it under the storage key, persist to the `bootstrap` keyspace, unseal + fingerprint-check on every subsequent boot. PoC implements the happy path; needs test coverage for the fingerprint-mismatch boot-abort and the rotate path. | PoC unfinished | ~0.5 d |
+| Auto-migration on startup | When `hardened.enabled = true` is set on an existing plaintext-fjall VTA, the daemon must detect plaintext rows and re-encrypt all keyspaces in-place at boot — **no operator action, no CLI command**. Needs an integration test (plaintext setup → flip enabled → restart → verify VAE1). `KeyspaceHandle::migrate_to_encrypted(key)` API exists in `vti-common`; call site and test coverage are missing. | Open | ~3–5 d |
+| `vta hardened rotate-jwt` CLI | Deletes `hardened:jwt_ciphertext` + `hardened:jwt_fingerprint` from the bootstrap keyspace; on next daemon start a new random key is generated and all existing sessions are invalidated | Open | ~0,5 d |
+| Remaining offline CLI commands + broken seal under hardened mode | `acl_cli`, `keys_cli`, `webvh_cli`, `bootstrap_cli`, `services_cli` open the store with a bare (unencrypted) handle — same gap fixed for `import_did`. Writes are plaintext; the daemon's encrypted handles cannot read them. Compounded by two seal-interaction issues: (1) `check_seal` in `main.rs` also opens a bare handle, which results in JSON-parse error rather than the expected `"VTA is sealed"` message. The command is blocked (correct outcome), but the operator sees an opaque internal error with no indication the VTA is sealed; (2) after a successful unseal the VTA is fully open to plaintext-writing offline commands. Each command (and `check_seal` itself) needs the same seed-load + `with_encryption` pattern so the ACL keyspace is read through an encrypted handle. | Open | ~2 d |
+| Setup encryption ordering | Seed generated before store opens; all writes VAE1 from first byte; implemented in `apply_inputs` step 3.5 | Fixed (PoC) | — |
+| `VTA_AUTH_JWT_SIGNING_KEY` env var exposure | Removed from process env at boot; see section below | Fixed (PoC) | — |
+| `BackupPayload` non-`Zeroizing` strings in memory | `Drop` impls added to `BackupPayload` and `ImportedSecretBackup` in `vta-sdk`; zeroize active seed + JWT key + imported private keys on drop | Open | ~0.5 d |
+| Backup password minimum length too low | All four enforcement points (`vta-service/src/operations/backup/mod.rs`, `pnm-cli/src/commands/backup.rs` ×2, `cnm-cli/src/backup.rs`, `vtc-service/src/backup.rs` `MIN_PASSWORD_LEN`) use 12 characters. Bump to 15 across all sites. | Open | ~0.5 d |
 
 ---
 
@@ -445,7 +458,7 @@ JWT key in the env var and then switched to hardened mode may not have removed i
 
 ### Mitigation applied (PoC)
 
-When `hardened.derive_keys_from_seed = true` and `VTA_AUTH_JWT_SIGNING_KEY` is found
+When `hardened.enabled = true` and `VTA_AUTH_JWT_SIGNING_KEY` is found
 in the process environment, the hardened boot block in `vta-service/src/main.rs`:
 
 1. Emits a `warn!` telling the operator to remove it from their deployment config.
