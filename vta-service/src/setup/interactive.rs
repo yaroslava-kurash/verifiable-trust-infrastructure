@@ -1015,6 +1015,9 @@ async fn gather_inputs(
         // Staff provisioning is a non-interactive (enterprise) feature, exposed
         // only via `--from <toml>`.
         staff: Vec::new(),
+        // Hardened mode is not surfaced in the interactive wizard — operators
+        // configure it via `--from <toml>` with `[hardened] derive_keys_from_seed = true`.
+        hardened: Default::default(),
     }))
 }
 

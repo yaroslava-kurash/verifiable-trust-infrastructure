@@ -142,6 +142,20 @@ pub struct WizardInputs {
     /// personal VTA where owner and user are the same DID).
     #[serde(default)]
     pub staff: Vec<StaffProvision>,
+
+    /// Hardened-mode configuration. When `derive_keys_from_seed = true`:
+    /// - The setup wizard skips generating `jwt_signing_key` and does **not**
+    ///   write it to `config.toml`.
+    /// - A `[hardened]` section is written to `config.toml` with
+    ///   `derive_keys_from_seed = true` and `storage_key_salt`.
+    /// - At every daemon boot, the JWT signing key is derived/sealed from the
+    ///   master seed (never stored on disk).
+    /// - All fjall keyspaces are encrypted with a key derived from the seed.
+    ///
+    /// Requires the `[secrets]` backend to be a real secret store (OS keyring,
+    /// AWS SM, GCP SM, …) — the plaintext file fallback defeats the protection.
+    #[serde(default)]
+    pub hardened: crate::config::HardenedConfig,
 }
 
 /// One enterprise staff member to provision at setup: a context, its initial
@@ -564,46 +578,97 @@ pub async fn apply_inputs(
         }
     }
 
-    // 4. Open store + seed contexts.
+    // 3.5. Hardened mode: generate the mnemonic + store the seed BEFORE the fjall
+    //     store is opened. Deriving the storage key requires the seed, and having
+    //     the key before the first store write means all keyspace handles are
+    //     wrapped with encryption from the start — there is no plaintext window.
+    //
+    //     For non-hardened mode, seed generation stays in steps 5–7 as before.
+    let setup_storage_key: Option<[u8; 32]>;
+    let pre_generated_seed: Option<[u8; 64]>;
+    let early_secrets_config: Option<SecretsConfig>;
+
+    if inputs.hardened.derive_keys_from_seed {
+        let mnemonic = generate_mnemonic_silent()?;
+        ui.confirm_mnemonic(&mnemonic)?;
+        let seed = mnemonic.to_seed("");
+
+        let mut sc = secrets_config_from_input(&inputs.secrets)?;
+        if matches!(inputs.secrets, SecretsBackendInput::ConfigSeed) {
+            sc.seed = Some(hex::encode(seed));
+        } else {
+            let scratch = scratch_config_for_seed_store(
+                inputs.data_dir.clone(),
+                sc.clone(),
+                inputs.config_path.clone(),
+            );
+            let seed_store = create_seed_store(&scratch).map_err(|e| format!("{e}"))?;
+            seed_store.set(&seed).await.map_err(|e| format!("{e}"))?;
+        }
+
+        let key = *crate::hardened::derive_storage_key(&seed, &inputs.hardened.storage_key_salt);
+        setup_storage_key = Some(key);
+        pre_generated_seed = Some(seed);
+        early_secrets_config = Some(sc);
+        eprintln!("  Hardened mode: seed stored, storage key derived (store will be encrypted from first write).");
+    } else {
+        setup_storage_key = None;
+        pre_generated_seed = None;
+        early_secrets_config = None;
+    }
+
+    // 4. Open store and wrap every keyspace with encryption when in hardened mode.
+    //    In hardened mode all writes are encrypted from the first byte — no
+    //    plaintext window exists on disk.
     let store = Store::open(&StoreConfig {
         data_dir: inputs.data_dir.clone(),
     })?;
-    let keys_ks = store.keyspace(crate::keyspaces::KEYS)?;
-    let imported_ks = store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?;
-    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
-    let webvh_ks = store.keyspace(crate::keyspaces::WEBVH)?;
-    let audit_ks = store.keyspace(crate::keyspaces::AUDIT)?;
-    let did_templates_ks = store.keyspace(crate::keyspaces::DID_TEMPLATES)?;
+    let maybe_encrypt = |ks: KeyspaceHandle| -> KeyspaceHandle {
+        match setup_storage_key {
+            Some(key) => ks.with_encryption(key),
+            None => ks,
+        }
+    };
+    let keys_ks = maybe_encrypt(store.keyspace(crate::keyspaces::KEYS)?);
+    let imported_ks = maybe_encrypt(store.keyspace(crate::keyspaces::IMPORTED_SECRETS)?);
+    let contexts_ks = maybe_encrypt(store.keyspace(crate::keyspaces::CONTEXTS)?);
+    let webvh_ks = maybe_encrypt(store.keyspace(crate::keyspaces::WEBVH)?);
+    let audit_ks = maybe_encrypt(store.keyspace(crate::keyspaces::AUDIT)?);
+    let did_templates_ks = maybe_encrypt(store.keyspace(crate::keyspaces::DID_TEMPLATES)?);
 
     let mut vta_ctx = create_seed_context(&contexts_ks, "vta", "Verifiable Trust Agent").await?;
     eprintln!("  Created application context: vta");
 
-    // 5. Mnemonic — generate, then hand to the UI. `--from` (SilentUi) never
-    //    displays it (operator captures via `pnm backup export` after the
-    //    first admin connects); the interactive wizard shows it and requires
-    //    the operator to confirm they've recorded it before continuing.
-    let mnemonic = generate_mnemonic_silent()?;
-    ui.confirm_mnemonic(&mnemonic)?;
-    let seed = mnemonic.to_seed("");
-
-    // 6. Translate the typed backend choice into a SecretsConfig the
-    //    seed-store factory can consume.
-    let mut secrets_config = secrets_config_from_input(&inputs.secrets)?;
-
-    // 7. Persist seed via the chosen backend.
-    if matches!(inputs.secrets, SecretsBackendInput::ConfigSeed) {
-        // config-seed backend: hex-encode seed into the config struct so
-        // it gets written to config.toml at save time.
-        secrets_config.seed = Some(hex::encode(seed));
+    // 5–7. Mnemonic generation, secrets config, and seed persistence.
+    //     For hardened mode these were already completed in step 3.5 — skip them
+    //     here to avoid regenerating a different seed.
+    let (seed, mut secrets_config) = if let (Some(s), Some(sc)) =
+        (pre_generated_seed, early_secrets_config)
+    {
+        (s, sc)
     } else {
-        let scratch_config = scratch_config_for_seed_store(
-            inputs.data_dir.clone(),
-            secrets_config.clone(),
-            inputs.config_path.clone(),
-        );
-        let seed_store = create_seed_store(&scratch_config).map_err(|e| format!("{e}"))?;
-        seed_store.set(&seed).await.map_err(|e| format!("{e}"))?;
-    }
+        // 5. Mnemonic
+        let mnemonic = generate_mnemonic_silent()?;
+        ui.confirm_mnemonic(&mnemonic)?;
+        let seed = mnemonic.to_seed("");
+
+        // 6. Translate backend choice.
+        let mut sc = secrets_config_from_input(&inputs.secrets)?;
+
+        // 7. Persist seed via the chosen backend.
+        if matches!(inputs.secrets, SecretsBackendInput::ConfigSeed) {
+            sc.seed = Some(hex::encode(seed));
+        } else {
+            let scratch_config = scratch_config_for_seed_store(
+                inputs.data_dir.clone(),
+                sc.clone(),
+                inputs.config_path.clone(),
+            );
+            let seed_store = create_seed_store(&scratch_config).map_err(|e| format!("{e}"))?;
+            seed_store.set(&seed).await.map_err(|e| format!("{e}"))?;
+        }
+        (seed, sc)
+    };
 
     // 8. Initial seed record + JWT signing key.
     let initial_seed_record = SeedRecord {
@@ -616,9 +681,16 @@ pub async fn apply_inputs(
     save_seed_record(&keys_ks, &initial_seed_record).await?;
     set_active_seed_id(&keys_ks, 0).await?;
 
-    let mut jwt_key_bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut jwt_key_bytes);
-    let jwt_signing_key = BASE64.encode(jwt_key_bytes);
+    // In hardened mode the JWT signing key is derived from the master seed at
+    // boot and sealed in the bootstrap keyspace — it is never written to
+    // config.toml. In standard mode we generate a random key here and write it.
+    let jwt_signing_key: Option<String> = if inputs.hardened.derive_keys_from_seed {
+        None
+    } else {
+        let mut jwt_key_bytes = [0u8; 32];
+        rand::rng().fill_bytes(&mut jwt_key_bytes);
+        Some(BASE64.encode(jwt_key_bytes))
+    };
 
     // 9. Build a scratch AppConfig the messaging/DID builders can use to
     //    open the seed store. The real AppConfig is constructed at the end
@@ -812,7 +884,7 @@ pub async fn apply_inputs(
             .map_err(|e| format!("{e}"))?;
     }
 
-    // 12. Flush store and release the directory lock before any later step
+    // 13. Flush store and release the directory lock before any later step
     //     that re-opens it. fjall holds an exclusive lock per data dir, so
     //     the admin-seeding step (which reopens the store) would deadlock
     //     if these handles were still alive.
@@ -826,7 +898,7 @@ pub async fn apply_inputs(
     drop(did_templates_ks);
     drop(store);
 
-    // 13. Save AppConfig.
+    // 14. Save AppConfig.
     let config = AppConfig {
         trusted_presentation_verifiers: Vec::new(),
         credential_holder_did: None,
@@ -841,7 +913,7 @@ pub async fn apply_inputs(
         services: inputs.services.clone(),
         messaging: messaging.clone(),
         auth: AuthConfig {
-            jwt_signing_key: Some(jwt_signing_key),
+            jwt_signing_key,
             ..AuthConfig::default()
         },
         audit: inputs.audit.clone(),
@@ -850,22 +922,23 @@ pub async fn apply_inputs(
         secrets: secrets_config,
         #[cfg(feature = "tee")]
         tee: Default::default(),
+        hardened: inputs.hardened.clone(),
         resolver_url: inputs.resolver_url.clone(),
         config_path: inputs.config_path.clone(),
         unknown_keys: Vec::new(),
     };
     config.save()?;
 
-    // 14. Optional admin seeding + seal. Atomic from the operator's
+    // 15. Optional admin seeding + seal. Atomic from the operator's
     //    perspective — if seeding fails, setup as a whole fails (config is
     //    on disk but the VTA is not declared "ready").
     if let Some(ref admin_did) = inputs.admin_did {
-        seed_initial_admin(&inputs.data_dir, admin_did, inputs.admin_label.clone()).await?;
+        seed_initial_admin(&inputs.data_dir, admin_did, inputs.admin_label.clone(), setup_storage_key).await?;
     }
 
-    // 14b. Enterprise staff provisioning (context + policy + scoped ACL row).
+    // 15b. Enterprise staff provisioning (context + policy + scoped ACL row).
     //     Runs after the owner is seeded; no-op for a personal VTA.
-    seed_staff(&inputs.data_dir, &inputs.staff).await?;
+    seed_staff(&inputs.data_dir, &inputs.staff, setup_storage_key).await?;
 
     // 15. Summary.
     eprintln!();
@@ -1301,6 +1374,7 @@ fn scratch_config_for_seed_store(
         secrets,
         #[cfg(feature = "tee")]
         tee: Default::default(),
+        hardened: Default::default(),
         resolver_url: None,
         config_path,
         unknown_keys: Vec::new(),
@@ -1511,13 +1585,18 @@ async fn seed_initial_admin(
     data_dir: &Path,
     did: &str,
     label: Option<String>,
+    storage_key: Option<[u8; 32]>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::{acl, seal};
 
     let store = Store::open(&StoreConfig {
         data_dir: data_dir.to_path_buf(),
     })?;
-    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
+    let acl_ks_raw = store.keyspace(crate::keyspaces::ACL)?;
+    let acl_ks = match storage_key {
+        Some(key) => acl_ks_raw.with_encryption(key),
+        None => acl_ks_raw,
+    };
 
     if let Some(existing) = seal::get_seal(&acl_ks).await? {
         return Err(format!(
@@ -1555,6 +1634,7 @@ async fn seed_initial_admin(
 async fn seed_staff(
     data_dir: &Path,
     staff: &[StaffProvision],
+    storage_key: Option<[u8; 32]>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if staff.is_empty() {
         return Ok(());
@@ -1564,8 +1644,15 @@ async fn seed_staff(
     let store = Store::open(&StoreConfig {
         data_dir: data_dir.to_path_buf(),
     })?;
-    let contexts_ks = store.keyspace(crate::keyspaces::CONTEXTS)?;
-    let acl_ks = store.keyspace(crate::keyspaces::ACL)?;
+    let contexts_ks_raw = store.keyspace(crate::keyspaces::CONTEXTS)?;
+    let acl_ks_raw = store.keyspace(crate::keyspaces::ACL)?;
+    let (contexts_ks, acl_ks) = match storage_key {
+        Some(key) => (
+            contexts_ks_raw.with_encryption(key),
+            acl_ks_raw.with_encryption(key),
+        ),
+        None => (contexts_ks_raw, acl_ks_raw),
+    };
 
     for s in staff {
         let name = s.label.clone().unwrap_or_else(|| s.context.clone());

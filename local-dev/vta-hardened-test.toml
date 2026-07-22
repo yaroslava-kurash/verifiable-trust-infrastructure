@@ -1,0 +1,60 @@
+# Local dev — hardened mode test VTA
+#
+# Tests storage encryption + JWT signing key management without a Nitro Enclave.
+# Uses the OS keyring backend (macOS Keychain / Linux secret-service) so the
+# master seed is in a real secret store, not a plaintext file.
+#
+# Setup (one-time, wipes and re-inits on every run):
+#   vta setup --from local-dev/vta-hardened-test.toml
+#
+# Start the daemon:
+#   vta --config /tmp/vta-hardened/config.toml
+#
+# Verify hardened mode is wired correctly after setup:
+#   grep -c "jwt_signing_key" /tmp/vta-hardened/config.toml   # must print 0
+#   grep "derive_keys_from_seed" /tmp/vta-hardened/config.toml # must print "true"
+#
+# Verify hardened mode is active at boot (look for these log lines):
+#   INFO hardened mode: new random JWT signing key generated and sealed in bootstrap keyspace
+#   INFO hardened mode: storage-encryption key derived from seed, JWT signing key loaded from bootstrap keyspace (neither stored on disk)
+#
+# Verify fjall data is encrypted on disk (should print nothing — no plaintext DIDs):
+#   strings /tmp/vta-hardened/data/ 2>/dev/null | grep "did:key"
+
+config_path     = "/tmp/vta-hardened/config.toml"
+data_dir        = "/tmp/vta-hardened/data"
+public_url      = "http://localhost:3001"
+data_dir_exists = "delete"   # wipes and re-inits on each setup call
+
+[server]
+host = "0.0.0.0"
+port = 3001
+
+[log]
+level  = "debug"
+format = "text"
+
+[secrets]
+# OS keyring — seed stored in macOS Keychain / Linux secret-service.
+# Using a distinct `service` name so this VTA doesn't share the keyring entry
+# with the main dev VTA (service = "vta").
+backend = "keyring"
+service = "vta-hardened-test"
+
+[services]
+rest    = true
+didcomm = false   # no mediator needed for this test; REST-only keeps it self-contained
+
+[messaging]
+kind = "skip"
+
+[vta_did]
+# did:key: no hosting server required — resolves locally.
+# Keeps the test setup self-contained (no webvh server, no domain needed).
+kind = "create_did_key"
+
+[hardened]
+derive_keys_from_seed = true
+# Unique salt per VTA instance. NEVER change after first boot — doing so
+# invalidates all encrypted keyspace data (same restriction as TEE's storage_key_salt).
+storage_key_salt = "local-hardened-test-v1"
