@@ -2,6 +2,107 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.5.2](https://github.com/yaroslava-kurash/verifiable-trust-infrastructure/compare/vtc-client-v0.5.1...vtc-client-v0.5.2) — 2026-09-04
+
+
+### Added
+
+- **rooms**: Data rooms end to end — storage, dispatch, verification, MLS, and a host ([#1237](https://github.com/yaroslava-kurash/verifiable-trust-infrastructure/pull/1237))
+
+* feat(rooms): the data-room storage layer
+
+  A data room is a shared space whose access is governed by credentials the
+  room itself issues. This lands the storage and its invariants; the
+  Trust-Task dispatch that authorizes operations follows once rooms/* is
+  published in the registry (trustoverip/dtgwg-trust-tasks-tf#346) - the
+  dispatcher refuses a URI the published registry has no schema for, and
+  growing the unspecced allowlist is the wrong fix.
+
+  Written first so that the dispatch layer is a thin wrapper over settled
+  behaviour rather than a place where storage decisions get made under time
+  pressure.
+
+  The row deliberately carries an owner, a visibility, an epoch and a
+  retention period, and NO member list. Not omitted for now - there must not
+  be one. The moment this service keeps a roster and consults it, three
+  things stop being true at once: the room can no longer move to another
+  host without reissuing credentials, this service becomes part of the
+  room's membership definition, and a room whose contents we cannot read
+  acquires a member list we can.
+
+  Invariants enforced in the store rather than trusted to callers, each with
+  a test:
+
+  - An open room refuses ciphertext and a sealed room refuses cleartext, so
+    a tier promise cannot be broken by a caller passing the wrong shape.
+  - A private room refuses a recorded author: on that tier authorship
+    belongs inside the sealed body where only members can read it.
+  - A record sealed under a stale epoch is refused, because a reader holding
+    the current key could not open it.
+  - An epoch advances by exactly one. A gap would leave records sealed under
+    an epoch nobody holds a key for; a repeat would let a removed member's
+    key open material written after their removal, which is the whole point
+    of advancing.
+  - Versions are monotonic per room, not per record - one comparable number
+    is what a sinceVersion watermark needs. A conflict carries the current
+    version so a caller need not re-read, because between a bare rejection
+    and the re-read the record can change again.
+  - A listing returns tombstones to a watermark caller. Without that a
+    puller learns of every create and update and never of a delete, so
+    retracted records resurrect on its next full rebuild.
+  - Retract and purge are separate verbs: a tombstone keeps the key, version
+    and epoch so sync converges and the audit chain holds, and erasure is a
+    distinct, higher-trust act.
+
+  Keyspaces registered in ALL and BACKED_UP - the two must partition ALL
+  exactly - with the census count moved to 27 and the matching AppState
+  fields opened, so the documented ALL-matches-AppState invariant stays
+  true rather than merely passing a length check.
+
+
+
+### Changed
+
+- **rooms**: Move the group-key and sealing layers into vti-rooms ([#1241](https://github.com/yaroslava-kurash/verifiable-trust-infrastructure/pull/1241))
+
+A VTA must not depend on a VTC client, and rooms/keys/open needs both
+  layers inside vta-service - the VTA is what holds the principal's keys
+  and opens a record on an agent's behalf. Today they live in vtc-client,
+  so that task could not be written at all without a layering inversion.
+
+  vti-rooms is already the shared home for the parts of a room that are not
+  a service, and it is where the ciphertext is stored. Putting the AEAD
+  binding beside the storage layer that binds to it closes the other half
+  of the argument: the associated data commits to roomId | key | version |
+  epoch, and until now the code that seals and the code that stores those
+  four fields were in different crates. That is how a binding drifts.
+
+  Both live behind an mls feature, off by default, so a host that only
+  stores ciphertext still compiles no OpenMLS.
+
+  SealedRoom no longer holds a RoomSession. It holds the room id and the
+  group - and the separation is the honest shape rather than a concession
+  to the move: the credentials a caller presents travel to the host on
+  every request, and the keys never travel anywhere. Pairing them made a
+  client the only place a room could be opened.
+
+  The move surfaced a duplication that was invisible while it compiled.
+  vtc-client defined its own Visibility, AuthorityPresentation,
+  SealedContent, CleartextContent and three response types, plus all five
+  Type URI constants - identical to vti-rooms' and with nothing checking
+  they stayed identical. The schema-conformance suite added with the open
+  tier validates vti-rooms' copies against the published schemas and could
+  not see the client's at all, so those could have drifted freely. They are
+  re-exports now, which makes the suite cover both.
+
+  RoomKeyError replaces VtcError for this layer, deliberately not
+  vti_common::AppError: a record that does not open is a legitimate outcome
+  with a specific meaning, and folding it into Internal would say 'this
+  service is broken' about the one case the design most wants to be loud -
+  a host relocated a record.
+
+
+
 ## [0.5.1](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vtc-client-v0.5.0...vtc-client-v0.5.1) — 2026-08-29
 
 

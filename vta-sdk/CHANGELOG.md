@@ -2,6 +2,225 @@
 
 Notable changes to the published crates. Generated from conventional commits by
 [git-cliff](https://git-cliff.org) when a release is cut — do not edit by hand.
+## [0.32.4](https://github.com/yaroslava-kurash/verifiable-trust-infrastructure/compare/vta-sdk-v0.32.3...vta-sdk-v0.32.4) — 2026-09-04
+
+
+### Added
+
+- **rooms**: The presentation oracle, so an agent never holds its human's credentials ([#1247](https://github.com/yaroslava-kurash/verifiable-trust-infrastructure/pull/1247))
+
+Implements rooms/keys/present/0.1. The data-rooms design turns on a member
+  equipping their agent with strictly less than they hold - a chain one link
+  longer, conferring read for four hours, bound to one host - and nothing
+  minted one. A member wanting to give an agent access had two options: hand
+  over their own credentials, which is the outcome attenuation exists to
+  prevent, or mint an attenuation by hand, which nobody does.
+
+  So the agent asks, and the VTA mints. The VTA already holds the member's
+  keys and is already in their trusted computing base; a host is not, which
+  is why the host only ever sees the result.
+
+  Four things a caller cannot obtain by asking, and each closes a way this
+  could have quietly become the credential hand-off it replaces:
+
+    More than the principal holds fails in attenuate, which refuses to
+    widen - not at a policy check somebody could forget to write.
+
+    A presentation covering everything is unreachable: action is required
+    and exactly one action is conferred.
+
+    A presentation made out to somebody else is unreachable: the leaf grants
+    to the DID the transport authenticated, never one named in the payload.
+    One minted for A is worthless to B even if B obtains it, because the
+    presenter binding refuses it on the far side.
+
+    A long-lived leaf is unreachable: the lifetime is a constant, not a
+    request parameter. A caller that could ask for a year would be asking
+    for the standing credential the oracle exists not to hand over.
+
+  Gated on Capability::RoomPresent - registered upstream as roomPresent in
+  dtgwg-trust-tasks-tf#351 - and deliberately not on Sign. An agent that may
+  ask for a scoped, audience-bound presentation is not thereby an agent that
+  may sign anything at all with its principal's key, and gating an oracle on
+  the generic signing oracle grants strictly more than the task needs.
+
+  The credentials are found by issuer, because a room issues its own - the
+  same property the host verifies against, so a credential that would not
+  verify there is not one this will present. Two authority credentials from
+  one room is refused rather than resolved: picking the broader one hands
+  out more than necessary, picking the narrower produces a presentation that
+  fails at the host for reasons the caller cannot see.
+
+  Five censuses had something to say, and all five were right. The
+  conformance witness. The retry-safety classification - RetrySafe, because
+  the oracle stores nothing and a retry mints a second leaf conferring
+  exactly what the first did, on the same expiry; keying it would buy a
+  dedup record against a harmless duplicate at the price of failing a retry
+  the caller needs. The MCP guard, where it joins 'authority, moved' beside
+  vta/credentials/issue: an MCP host approves a tool, so a blanket vta_call
+  approval must not silently cover minting a presentation over its
+  principal's standing. And the canonical-namespace list, which gains
+  spec/rooms/ for exactly one URI - most of that family is a host's surface,
+  and this is the one member a VTA serves.
+
+- **rooms**: Data rooms end to end — storage, dispatch, verification, MLS, and a host ([#1237](https://github.com/yaroslava-kurash/verifiable-trust-infrastructure/pull/1237))
+
+* feat(rooms): the data-room storage layer
+
+  A data room is a shared space whose access is governed by credentials the
+  room itself issues. This lands the storage and its invariants; the
+  Trust-Task dispatch that authorizes operations follows once rooms/* is
+  published in the registry (trustoverip/dtgwg-trust-tasks-tf#346) - the
+  dispatcher refuses a URI the published registry has no schema for, and
+  growing the unspecced allowlist is the wrong fix.
+
+  Written first so that the dispatch layer is a thin wrapper over settled
+  behaviour rather than a place where storage decisions get made under time
+  pressure.
+
+  The row deliberately carries an owner, a visibility, an epoch and a
+  retention period, and NO member list. Not omitted for now - there must not
+  be one. The moment this service keeps a roster and consults it, three
+  things stop being true at once: the room can no longer move to another
+  host without reissuing credentials, this service becomes part of the
+  room's membership definition, and a room whose contents we cannot read
+  acquires a member list we can.
+
+  Invariants enforced in the store rather than trusted to callers, each with
+  a test:
+
+  - An open room refuses ciphertext and a sealed room refuses cleartext, so
+    a tier promise cannot be broken by a caller passing the wrong shape.
+  - A private room refuses a recorded author: on that tier authorship
+    belongs inside the sealed body where only members can read it.
+  - A record sealed under a stale epoch is refused, because a reader holding
+    the current key could not open it.
+  - An epoch advances by exactly one. A gap would leave records sealed under
+    an epoch nobody holds a key for; a repeat would let a removed member's
+    key open material written after their removal, which is the whole point
+    of advancing.
+  - Versions are monotonic per room, not per record - one comparable number
+    is what a sinceVersion watermark needs. A conflict carries the current
+    version so a caller need not re-read, because between a bare rejection
+    and the re-read the record can change again.
+  - A listing returns tombstones to a watermark caller. Without that a
+    puller learns of every create and update and never of a delete, so
+    retracted records resurrect on its next full rebuild.
+  - Retract and purge are separate verbs: a tombstone keeps the key, version
+    and epoch so sync converges and the audit chain holds, and erasure is a
+    distinct, higher-trust act.
+
+  Keyspaces registered in ALL and BACKED_UP - the two must partition ALL
+  exactly - with the census count moved to 27 and the matching AppState
+  fields opened, so the documented ALL-matches-AppState invariant stays
+  true rather than merely passing a length check.
+
+- **vta**: Implement vta/credentials/list, and check the vault/credentials family ([#1235](https://github.com/yaroslava-kurash/verifiable-trust-infrastructure/pull/1235))
+
+* feat(vta): implement vta/credentials/list, and check the vault/credentials family
+
+  `vta/credentials` served `issue` and `revoke` and nothing else, so an issuer
+  could not ask its own agent what it had issued. The `credentialId` that
+  `revoke` is keyed on is returned exactly once, in the `issue` response; a
+  caller that did not record it at that moment could not recover it at all.
+
+  Specified upstream as `vta/credentials/list/0.1`
+  (trustoverip/dtgwg-trust-tasks-tf#342). This implements it — a read over
+  records that already exist. `IssuedCredentialRecord` carries the id, holder,
+  both instants and the revocation instant and reason, and revocation is a
+  tombstone rather than a delete, so a revoked credential is still there to list.
+  No new storage.
+
+  Bodies are never returned. `vault/list/0.1` states the rule this follows —
+  list enumerates, release uses — and `summarise` is the one place the projection
+  happens, so "a summary never carries the credential" is enforced rather than
+  remembered. `status` is derived at read time with `revoked` beating `expired`:
+  reporting a revoked credential as merely expired would hide that somebody
+  acted, and a stored status is wrong one second after it is written.
+
+  Gated on `require_manage`, not the Admin-plus-step-up its mutating siblings
+  use. An operator who may read the ACL and the policy set may read what their
+  own agent issued — same category of question — and a step-up that fires on
+  every page of a list is one people learn to clear without reading. The read is
+  audited anyway: "who enumerated the issuance log" is what an incident review
+  asks, and nothing else would record it.
+
+  ## Bumping trust-tasks-rs to 0.17.4 surfaced the vault/credentials family
+
+  Those eight URIs have been dispatched since before they had a specification.
+  Specifying them (#338, shipped in 0.17.4) made them *published*, which is what
+  finally let the conformance sweep see them — and it found two real defects in
+  shapes that had never been checked against anything:
+
+  - **`ReceiveBody` serialized `credentialBase64: null`.** `#[serde(default)]`
+    without `skip_serializing_if` leaves an unset member as `null`, and the
+    schema's `oneOf` counts a null member as *present* — so the body matched
+    neither branch. Same defect class as the sibling registry's
+    `payload_null_census`.
+  - **`force` was accepted by four verbs that ignore it.** `CredLifecycleBody`
+    was shared across archive, unarchive, delete, restore and purge, but only
+    `delete` reads `force`. A caller asking for something stronger than the verb
+    it named got the weaker thing and a success. `delete` now has its own body;
+    the other four refuse the member, as their schemas always said they should.
+
+  Three debt ratchets moved in the right direction as a consequence, each
+  discharged by specification rather than deletion: eight entries out of
+  `UNSPECCED_DISPATCHED_URIS`, one out of the producer-payload census's
+  `UNPUBLISHED` list (so that payload is now validated rather than skipped), and
+  vtc-service's bound-URI count from 12 to 4 — what remains is the four
+  *secrets*-store lifecycle verbs, which still have no spec.
+
+  ## Tests
+
+  `page_rows` is split out of `list_issued` and unit-tested because the cursor is
+  where a bug hides: it is the last storage key of the previous page and
+  resumption is strictly after it, so a credential issued mid-walk cannot shift a
+  window and skip a row nobody has seen. That case is a test. So are the status
+  precedence, an unreadable expiry reading as active rather than expired, and
+  that a serialized summary contains no credential.
+
+  `IssuedCredentialSummary` is the census's first `NO_EXT_BY_DESIGN` entry: it is
+  a list row rather than a payload root, and its published schema declares no
+  `ext` slot, so adding the field would make this crate emit documents the schema
+  rejects — the inverse of the defect that census exists to catch.
+
+
+
+### Fixed
+
+- **sdk**: Accept the `ext` member every payload schema declares ([#1231](https://github.com/yaroslava-kurash/verifiable-trust-infrastructure/pull/1231))
+
+SPEC §4.5.1 gives every Trust Task payload an `ext` slot, and the published
+  schemas declare it — `acl/list/0.1` lists `ext` among its properties, as do
+  `policy/list/0.2`, every `vta/memory/*` body, `app-state` writes, config show
+  and patch, and both credential-issuance bodies.
+
+  Sixteen `deny_unknown_fields` structs had no field for it, so a producer doing
+  exactly what the schema permits had its whole document rejected:
+
+      malformed request: payload parse: unknown field `ext`, expected one of
+      `role`, `scope`, `direction`, `subjectPrefix`, `pageSize`, `cursor`
+
+  Seven sibling structs already carry `ext`, with the reasoning written out on
+  each; this completes that work rather than starting it. `deny_unknown_fields`
+  stays: carrying `ext` explicitly is what keeps a *typo* refused, which is the
+  guard that clause was there for, while letting through the one member the spec
+  says is always allowed.
+
+  Found from a browser-based VTA management console: its Access and Policy panes
+  died outright, and the operator was shown a parse error naming a field the
+  spec had told the client it could send. Nothing caught it earlier because
+  whether a caller trips this is decided entirely by whether it populates `ext`
+  — the conformance table exercises the members its fixtures set, and this
+  defect lives in the member they leave unset.
+
+  So the guard is a census over the source rather than another fixture:
+  `payload_ext_census.rs` fails on any `deny_unknown_fields` type under
+  `protocols/` that carries no `ext`, with an exceptions list that has to state
+  a reason. Verified to fail by reverting one struct.
+
+
+
 ## [0.32.3](https://github.com/OpenVTC/verifiable-trust-infrastructure/compare/vta-sdk-v0.32.2...vta-sdk-v0.32.3) — 2026-09-01
 
 
